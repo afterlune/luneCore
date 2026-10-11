@@ -47,6 +47,7 @@ type Definition = model.FunctionTool
 // Tool runs one model-requested operation. The invocation ID is available via
 // InvocationID(ctx) and stays stable when the host explicitly retries recovery.
 // The same registered instance may run concurrently for different sessions.
+// Implementations should return promptly when ctx is canceled.
 type Tool interface {
 	Definition() Definition
 	Run(context.Context, json.RawMessage) Result
@@ -125,7 +126,8 @@ type CommandResult struct {
 
 // CommandExecutor executes a shell command. Hosts may bind this to an OS-level
 // sandbox. Direct local execution is available only when explicitly enabled.
-// Implementations must support concurrent calls from separate sessions.
+// Implementations must support concurrent calls from separate sessions and
+// should return promptly when ctx is canceled.
 type CommandExecutor interface {
 	Execute(context.Context, CommandRequest) (CommandResult, error)
 }

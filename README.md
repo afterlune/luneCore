@@ -71,6 +71,8 @@ The workspace may supply `config.json` for model profiles and project runtime se
 
 Core stores sessions, checkpoints, team runs, and tool invocation records under `StateDir` (default `.luneagent`). Enabled MCP-server state uses the same directory. Front ends receive runtime events through `SetEventHandler` and resolve tool approvals or user interactions through the matching Core methods.
 
+Each `StateDir` is exclusively owned by one Core instance at a time, including across process boundaries. `New` returns an error matching `core.ErrStateDirInUse` if another Core already holds the directory lock. The lock is released by `Close` and automatically by the operating system when the process exits.
+
 ## Host extensions
 
 Hosts can provide a model catalog through `core.Config.ModelConfig`, custom implementations through `core.Config.ModelProviders`, and custom tools through `core.Config.Tools`. These are programmatic equivalents of the corresponding `config.json` model fields; explicit Go entries override file entries with the same provider or profile name, and the file supplies entries not given in Go. A programmatic model config can be used without a `config.json` file.
@@ -83,8 +85,10 @@ Hosts can set `core.Config.CommandExecutor` to run commands through their own sa
 
 A Core can run tasks for different sessions concurrently. It rejects a second task for a session that is already running. Use `StateForSession` for one session and `ActiveTasks` for the set of currently running tasks; `State` remains as a compatibility view of the most recently changed task.
 
+Cancel a task started by `RunTask` or `ResumeTask` with `CancelTask(sessionID)`. It returns `true` when cancellation was requested and `false` when that session has no cancellable task running. Cancellation is cooperative, so host providers and tools should honor their context. A canceled task with a saved checkpoint remains paused and can be continued with `ResumeTask`; use `DiscardTask` to abandon it. `Close` continues to return an error while any task is running. Cancel tasks and wait for their `RunTask` calls to return before closing the Core.
+
 If the process stops while a tool may have caused a side effect, `ResumeTask` pauses and emits `EventToolRecoveryRequired`. The host can inspect one or more requests with `PendingToolRecovery` or `PendingToolRecoveries`, choose `ToolRecoveryRetry` or `ToolRecoverySkip` with `ResolveToolRecovery`, then call `ResumeTask` again. Completed tool results are replayed from the invocation ledger without running the tool again. Recovery covers parent and team-worker calls.
 
-Use one Core process for a given `StateDir`; task concurrency is coordinated within each Core instance.
+Task concurrency is coordinated within each Core instance. The `StateDir` lock prevents another Core instance from opening the same directory concurrently.
 
 Public consumers should import the root `core` package plus `model` and `tool` only when implementing host extensions. The `internal` packages remain implementation details.

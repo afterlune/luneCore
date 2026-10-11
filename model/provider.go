@@ -11,7 +11,8 @@ import (
 // tool execution; implementations translate this shared contract to a model
 // service's native request and response format.
 //
-// Implementations must be safe for concurrent calls from separate sessions.
+// Implementations must be safe for concurrent calls from separate sessions
+// and should return promptly when ctx is canceled.
 type Provider interface {
 	Name() string
 	CreateResponse(context.Context, ModelRequest, ModelProfile) (*ModelResponse, error)

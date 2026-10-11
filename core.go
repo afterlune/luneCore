@@ -38,6 +38,9 @@ const (
 	DefaultAttachmentMaxFiles   = projectconfig.DefaultAttachmentMaxFiles
 )
 
+// ErrStateDirInUse indicates that another Core instance already owns the state directory.
+var ErrStateDirInUse = errors.New("state directory is already in use by another Core instance")
+
 const (
 	DefaultAttachmentMaxFileBytes  = projectconfig.DefaultAttachmentMaxFileBytes
 	DefaultAttachmentMaxTotalBytes = projectconfig.DefaultAttachmentMaxTotalBytes
@@ -389,12 +392,14 @@ type Core struct {
 	mcpManager       *mcp.Manager
 	checkpoints      *sqlite.Store[agentgraph.State]
 	sessions         *session.Store
+	stateDirLock     *stateDirectoryLock
 
 	mu                       sync.RWMutex
 	runtimeConfigMu          sync.RWMutex
 	usageMu                  sync.Mutex
 	active                   TaskState
 	activeTasks              map[string]TaskState
+	taskCancels              map[string]context.CancelFunc
 	handler                  EventHandler
 	approvals                map[string]chan bool
 	interactions             map[string]chan userInteractionResult
@@ -425,6 +430,18 @@ func New(config Config) (_ *Core, err error) {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
+	stateLock, err := acquireStateDirectoryLock(stateDir)
+	if err != nil {
+		return nil, fmt.Errorf("acquire StateDir lock: %w", err)
+	}
+	keepStateLock := false
+	defer func() {
+		if !keepStateLock {
+			if lockErr := stateLock.Close(); lockErr != nil {
+				err = errors.Join(err, fmt.Errorf("release StateDir lock after initialization failure: %w", lockErr))
+			}
+		}
+	}()
 	projectConfig, err := loadProjectConfig(workspace, config.ModelConfig, config.ModelProviders)
 	if err != nil {
 		return nil, err
@@ -493,8 +510,10 @@ func New(config Config) (_ *Core, err error) {
 		sessions:     sessions,
 		active:       TaskState{Status: TaskIdle},
 		activeTasks:  make(map[string]TaskState),
+		taskCancels:  make(map[string]context.CancelFunc),
 		approvals:    make(map[string]chan bool),
 		interactions: make(map[string]chan userInteractionResult),
+		stateDirLock: stateLock,
 	}
 	attachmentLimits := c.ProjectAttachmentLimits()
 	mcpManager, err := mcp.NewManager(mcp.Options{
@@ -525,6 +544,7 @@ func New(config Config) (_ *Core, err error) {
 		return nil, err
 	}
 	closeCheckpoints, closeSessions, closeTeamRuns, closeRegistry, closeMCPManager = false, false, false, false, false
+	keepStateLock = true
 	return c, nil
 }
 
@@ -622,7 +642,7 @@ func (c *Core) Close() error {
 	if c.mcpManager != nil {
 		closeMCP = c.mcpManager.Close()
 	}
-	return errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.teamRuns.Close(), c.registry.Close())
+	return errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.teamRuns.Close(), c.registry.Close(), c.stateDirLock.Close())
 }
 
 func (c *Core) MCPServers() []MCPServerStatus {
@@ -819,6 +839,26 @@ func (c *Core) ActiveTasks() []TaskState {
 		states = append(states, c.activeTasks[id])
 	}
 	return states
+}
+
+// CancelTask requests cancellation of a running task started by RunTask or
+// ResumeTask for the given session. It returns true when a running task accepted
+// the cancellation request and false when no cancellable task is running.
+// Cancellation is cooperative; the task's providers and tools must return when
+// their context is canceled.
+func (c *Core) CancelTask(sessionID string) bool {
+	if c == nil || sessionID == "" {
+		return false
+	}
+	c.mu.RLock()
+	cancel, exists := c.taskCancels[sessionID]
+	state := c.activeTasks[sessionID]
+	c.mu.RUnlock()
+	if !exists || state.Status != TaskRunning {
+		return false
+	}
+	cancel()
+	return true
 }
 
 func (c *Core) hasRunningTasksLocked() bool {
@@ -1168,10 +1208,14 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		}
 		modelContext = &decoded
 	}
-	if _, err := c.beginTask(ctx, sessionID, planMode, settings, profile, effectiveModel, taskOptions, saved.UpdatedAt); err != nil {
+	taskCtx, cancelTask := context.WithCancel(ctx)
+	taskID, err := c.beginTask(taskCtx, sessionID, planMode, settings, profile, effectiveModel, taskOptions, saved.UpdatedAt, cancelTask)
+	if err != nil {
+		cancelTask()
 		return nil, err
 	}
-	defer c.endTask(sessionID)
+	defer c.endTask(sessionID, taskID, cancelTask)
+	ctx = taskCtx
 	taskState, _ := c.StateForSession(sessionID)
 	ctx = publictool.WithCallIdentity(ctx, publictool.CallIdentity{
 		SessionID: sessionID, TaskID: taskState.TaskID, RunID: c.runtime.checkpointID(sessionID),
@@ -1243,7 +1287,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	return encoded, err
 }
 
-func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, settings SessionSettings, profile model.ModelProfile, modelName string, taskOptions agentgraph.TaskOptions, expectedUpdatedAt time.Time) (string, error) {
+func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, settings SessionSettings, profile model.ModelProfile, modelName string, taskOptions agentgraph.TaskOptions, expectedUpdatedAt time.Time, cancel context.CancelFunc) (string, error) {
 	if ctx == nil {
 		return "", errors.New("context is nil")
 	}
@@ -1282,6 +1326,11 @@ func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, s
 		c.activeTasks = make(map[string]TaskState)
 	}
 	c.activeTasks[sessionID] = state
+	if cancel != nil {
+		c.taskCancels[sessionID] = cancel
+	} else {
+		delete(c.taskCancels, sessionID)
+	}
 	c.active = state
 	c.mu.Unlock()
 	c.emit(Event{Kind: EventTaskStarted, TaskID: id, ExecutionID: taskOptions.ExecutionID, SessionID: sessionID, Status: TaskRunning, ContextWindow: taskOptions.ContextWindow,
@@ -1289,15 +1338,21 @@ func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, s
 	return id, nil
 }
 
-func (c *Core) endTask(sessionID string) {
+func (c *Core) endTask(sessionID, taskID string, cancel context.CancelFunc) {
 	c.mu.Lock()
 	state, ok := c.activeTasks[sessionID]
-	if ok && state.Status == TaskRunning {
-		state.Status = TaskIdle
-		c.activeTasks[sessionID] = state
-		c.active = state
+	if ok && state.TaskID == taskID {
+		delete(c.taskCancels, sessionID)
+		if state.Status == TaskRunning {
+			state.Status = TaskIdle
+			c.activeTasks[sessionID] = state
+			c.active = state
+		}
 	}
 	c.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
@@ -1787,10 +1842,11 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		ContextWindow: effective.ContextWindow, ReserveOutputTokens: effective.ReserveOutputTokens,
 		AutoCompact: effective.AutoCompact, AutoCompactThreshold: effective.AutoCompactThreshold,
 	}
-	if _, err := c.beginTask(ctx, sessionID, false, settings, profile, profile.Model, compactOptions, saved.UpdatedAt); err != nil {
+	taskID, err := c.beginTask(ctx, sessionID, false, settings, profile, profile.Model, compactOptions, saved.UpdatedAt, nil)
+	if err != nil {
 		return 0, err
 	}
-	defer c.endTask(sessionID)
+	defer c.endTask(sessionID, taskID, nil)
 	taskState, _ := c.StateForSession(sessionID)
 	ctx = publictool.WithCallIdentity(ctx, publictool.CallIdentity{
 		SessionID: sessionID, TaskID: taskState.TaskID, RunID: c.runtime.checkpointID(sessionID), AgentID: "lead",
