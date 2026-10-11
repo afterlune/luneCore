@@ -90,10 +90,17 @@ submission, err := runtime.SubmitTurn(ctx, core.TurnRequest{Input: input}, core.
 if err != nil {
 	log.Fatal(err)
 }
-// submission.ExecutionID can be passed to runtime.Interrupt.
+// submission.ExecutionID can be passed to runtime.Interrupt and WaitTurn.
+result, err := runtime.WaitTurn(ctx, submission.ExecutionID)
+if err != nil {
+	log.Fatal(err)
+}
+if result.Status == core.TaskCompleted {
+	// result.Response is the same raw JSON response returned by RunTask.
+}
 ```
 
-`StartIfIdle` rejects work if the session is running, queued, or paused. `QueueInput` appends a durable FIFO turn. Queued work starts when a runtime event subscriber is attached, so it can pause safely for host decisions. The submission context controls admission only; accepted work continues until completion, failure, interruption, or pause. `RunTask` and `ResumeTask` remain blocking wrappers over this runtime path. The durable event log omits model deltas, tool arguments, approval arguments, interaction payloads, and free-form errors; full pending requests are available through `runtime.PendingRequests(ctx)` while the Core process is alive. A public event subscription also enables the host to resolve approval requests through `runtime.ResolveApproval`.
+`StartIfIdle` rejects work if the session is running, queued, or paused. `QueueInput` appends a durable FIFO turn. Queued work starts when a runtime event subscriber or `WaitTurn` is attached, so it can pause safely for host decisions. The submission context controls admission only; accepted work continues until completion, failure, interruption, or pause. Canceling a `WaitTurn` context stops only that wait. A paused result returns promptly; after `Recover`, call `WaitTurn` again with the same execution ID. Results remain available until the session is deleted; failed results contain status only. `RunTask` and `ResumeTask` remain blocking wrappers over this runtime path. The durable event log omits model deltas, tool arguments, approval arguments, interaction payloads, and free-form errors; full pending requests are available through `runtime.PendingRequests(ctx)` while the Core process is alive. A public event subscription also enables the host to resolve approval requests through `runtime.ResolveApproval`.
 
 Each `StateDir` is exclusively owned by one Core instance at a time, including across process boundaries. `New` returns an error matching `core.ErrStateDirInUse` if another Core already holds the directory lock. The lock is released by `Close` and automatically by the operating system when the process exits.
 

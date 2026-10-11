@@ -20,18 +20,19 @@ const (
 )
 
 type graphResponder struct {
-	agent           *agentgraph.Agent
-	store           graph.Store[agentgraph.State]
-	requester       *usageTrackingRequester
-	historyMu       sync.RWMutex
-	history         *model.ResponseInput // provider-specific model context
-	transcript      *model.ResponseInput
-	contextKey      string
-	sessionID       string
-	taskOptions     agentgraph.TaskOptions
-	modelName       string
-	reasoningEffort string
-	historySaver    func(string, *model.ResponseInput, *model.ResponseInput, string) error
+	agent                 *agentgraph.Agent
+	store                 graph.Store[agentgraph.State]
+	requester             *usageTrackingRequester
+	historyMu             sync.RWMutex
+	history               *model.ResponseInput // provider-specific model context
+	transcript            *model.ResponseInput
+	contextKey            string
+	sessionID             string
+	taskOptions           agentgraph.TaskOptions
+	modelName             string
+	reasoningEffort       string
+	historySaver          func(string, *model.ResponseInput, *model.ResponseInput, string) error
+	deferCompletedCleanup bool
 }
 
 func (r *graphResponder) SetTaskOptions(options agentgraph.TaskOptions) { r.taskOptions = options }
@@ -47,6 +48,10 @@ func (r *graphResponder) SetHistorySaver(saver func(string, *model.ResponseInput
 	r.historyMu.Lock()
 	r.historySaver = saver
 	r.historyMu.Unlock()
+}
+
+func (r *graphResponder) DeferCompletedCleanup(deferCleanup bool) {
+	r.deferCompletedCleanup = deferCleanup
 }
 
 func (r *graphResponder) SetSession(id string, history *model.ResponseInput) {
@@ -140,10 +145,31 @@ func (r *graphResponder) PendingStateForRunID(ctx context.Context, runID string)
 	return pendingStateForRunID(ctx, r.store, runID)
 }
 
+// CheckpointForSession uses luneGraph's durable completion contract: Store.Load
+// returns Completed, Final, Failure, and HadLocalFailures, and Store.Delete
+// removes the checkpoint after the session transaction commits.
+func (r *graphResponder) CheckpointForSession(ctx context.Context, sessionID string) (graph.Checkpoint[agentgraph.State], error) {
+	return r.store.Load(ctx, r.checkpointID(sessionID))
+}
+
+func (r *graphResponder) DeleteCompletedRunForSession(sessionID string) error {
+	err := r.store.Delete(context.Background(), r.checkpointID(sessionID))
+	if errors.Is(err, checkpoint.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("delete completed task checkpoint: %w", err)
+	}
+	return nil
+}
+
 func pendingStateForRunID(ctx context.Context, store graph.Store[agentgraph.State], runID string) (agentgraph.State, bool, error) {
 	checkpoint, err := store.Load(ctx, runID)
 	if err != nil {
 		return agentgraph.State{}, false, err
+	}
+	if checkpoint.Completed {
+		return agentgraph.State{}, false, nil
 	}
 	for index := len(checkpoint.Invocations) - 1; index >= 0; index-- {
 		invocation := checkpoint.Invocations[index]
@@ -294,14 +320,14 @@ func (r *graphResponder) HasPending() (bool, error) {
 }
 
 func (r *graphResponder) HasPendingFor(sessionID string, ctx context.Context) (bool, error) {
-	_, err := r.store.Load(ctx, r.checkpointID(sessionID))
+	cp, err := r.store.Load(ctx, r.checkpointID(sessionID))
 	if errors.Is(err, checkpoint.ErrNotFound) {
 		return false, nil
 	}
 	if err != nil {
 		return false, err
 	}
-	return true, nil
+	return !cp.Completed, nil
 }
 
 func (r *graphResponder) Compact(ctx context.Context) (int, error) {
@@ -439,8 +465,10 @@ func logGraphEvent(ctx context.Context, event graph.Event) {
 func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr error) (*model.Response, error) {
 	if result.Status == graph.StatusCompleted {
 		if result.Checkpoint.Final == nil {
-			if err := r.deleteCompletedRun(); err != nil {
-				runErr = errors.Join(runErr, err)
+			if !r.deferCompletedCleanup {
+				if err := r.deleteCompletedRun(); err != nil {
+					runErr = errors.Join(runErr, err)
+				}
 			}
 			return nil, errors.Join(runErr, errors.New("agent graph completed without a final state"))
 		}
@@ -454,20 +482,26 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 		r.transcript = model.NewResponseInputItems(responseHistoryItems(&transcript)...)
 		r.historyMu.Unlock()
 		response := state.FinalResponse
-		if err := r.persistSessionHistory(); err != nil {
-			return response, errors.Join(runErr, fmt.Errorf("persist completed session history: %w", err))
+		if !r.deferCompletedCleanup {
+			if err := r.persistSessionHistory(); err != nil {
+				return response, errors.Join(runErr, fmt.Errorf("persist completed session history: %w", err))
+			}
 		}
 		if response == nil {
-			if err := r.deleteCompletedRun(); err != nil {
-				runErr = errors.Join(runErr, err)
+			if !r.deferCompletedCleanup {
+				if err := r.deleteCompletedRun(); err != nil {
+					runErr = errors.Join(runErr, err)
+				}
 			}
 			if state.TaskError != "" {
 				return nil, errors.Join(runErr, errors.New(state.TaskError))
 			}
 			return nil, errors.Join(runErr, errors.New("agent graph completed without a final response"))
 		}
-		if err := r.deleteCompletedRun(); err != nil {
-			return response, errors.Join(runErr, err)
+		if !r.deferCompletedCleanup {
+			if err := r.deleteCompletedRun(); err != nil {
+				return response, errors.Join(runErr, err)
+			}
 		}
 		if state.TaskError != "" {
 			return response, errors.Join(runErr, errors.New(state.TaskError))
@@ -475,8 +509,10 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 		return response, runErr
 	}
 	if result.Status == graph.StatusCompletedWithFailures {
-		if err := r.deleteCompletedRun(); err != nil {
-			runErr = errors.Join(runErr, err)
+		if !r.deferCompletedCleanup {
+			if err := r.deleteCompletedRun(); err != nil {
+				runErr = errors.Join(runErr, err)
+			}
 		}
 		if runErr == nil {
 			runErr = errors.New("agent graph completed with callback failures")
@@ -489,7 +525,7 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 		// and unresolved tool outcomes can leave a valid checkpoint to recover.
 		var recoveryRequired *ToolRecoveryRequiredError
 		preserveCheckpoint := errors.Is(runErr, graph.ErrConflict) || errors.Is(runErr, ErrToolInvocationPersistence) || errors.As(runErr, &recoveryRequired)
-		if result.Checkpoint.Failure != nil && !preserveCheckpoint {
+		if result.Checkpoint.Failure != nil && !preserveCheckpoint && !r.deferCompletedCleanup {
 			if err := r.deleteCompletedRun(); err != nil {
 				runErr = errors.Join(runErr, err)
 			}

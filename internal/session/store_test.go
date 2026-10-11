@@ -117,8 +117,8 @@ func TestOpenMigratesVersionThreeDatabaseToRuntimeTables(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 4 {
-		t.Fatalf("user_version = %d, want 4", version)
+	if version != 5 {
+		t.Fatalf("user_version = %d, want 5", version)
 	}
 	if _, err := store.Get(context.Background(), "old", "workspace"); err != nil {
 		t.Fatalf("old session was not preserved: %v", err)
@@ -144,6 +144,48 @@ func TestOpenMigratesVersionThreeDatabaseToRuntimeTables(t *testing.T) {
 	events, err = store.RuntimeEventsAfter(context.Background(), "old", 0, 10)
 	if err != nil || len(events) != 0 {
 		t.Fatalf("events after session delete = %#v, error=%v", events, err)
+	}
+}
+
+func TestOpenMigratesVersionFourDatabaseWithoutBackfillingTurnResults(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`CREATE TABLE sessions (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, updated_at INTEGER NOT NULL, data BLOB NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`INSERT INTO sessions(id, workspace, updated_at, data) VALUES('old', 'workspace', 7, ?)`, []byte(`{"history":null}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`PRAGMA user_version = 4`); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open v4 database: %v", err)
+	}
+	defer store.Close()
+	var version int
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 5 {
+		t.Fatalf("user_version = %d, want 5", version)
+	}
+	var count int
+	if err := store.db.QueryRow(`SELECT count(*) FROM turn_results`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 0 {
+		t.Fatalf("migration backfilled %d turn results, want none", count)
+	}
+	if _, err := store.Get(context.Background(), "old", "workspace"); err != nil {
+		t.Fatalf("old session was not preserved: %v", err)
 	}
 }
 
@@ -243,6 +285,84 @@ func TestUpdateConversationAtomicallySavesTranscriptAndProviderContext(t *testin
 	}
 	if strings.Contains(string(snapshot.Data), "opaque") || strings.Contains(string(snapshot.Data), "responses:openai") {
 		t.Fatalf("replacing canonical history retained stale provider context: %s", snapshot.Data)
+	}
+}
+
+func TestCompleteQueuedTurnAtomicallyPersistsConversationResultAndEvent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	store, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if err := store.Save(ctx, Snapshot{ID: "session", Workspace: "workspace", Data: json.RawMessage(`{"history":null}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.EnqueueTurn(ctx, QueuedTurn{
+		SessionID: "session", QueueID: "queue", ExecutionID: "execution", Request: json.RawMessage(`{"input":"hello"}`),
+	}, json.RawMessage(`{"kind":"task_queued"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.Exec(`CREATE TRIGGER reject_terminal_event BEFORE INSERT ON runtime_events
+		WHEN json_extract(CAST(NEW.payload AS TEXT), '$.kind') = 'task_finished'
+		BEGIN SELECT RAISE(ABORT, 'reject terminal event'); END`); err != nil {
+		t.Fatal(err)
+	}
+	history := json.RawMessage(`{"items":[{"role":"assistant","text":"done"}]}`)
+	response := json.RawMessage(`{"id":"response-1","output":[]}`)
+	event := json.RawMessage(`{"kind":"task_finished","status":"completed"}`)
+	if _, err := store.CompleteQueuedTurn(ctx, "session", "queue", "execution", "completed", response, history, history, "context-key", event); err == nil {
+		t.Fatal("CompleteQueuedTurn succeeded despite a rejected terminal event")
+	}
+	snapshot, err := store.Get(ctx, "session", "workspace")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(snapshot.Data) != `{"history":null}` {
+		t.Fatalf("session changed despite rolled back completion: %s", snapshot.Data)
+	}
+	queued, err := store.QueuedTurns(ctx, "session")
+	if err != nil || len(queued) != 1 {
+		t.Fatalf("queue after rollback = %#v, error=%v", queued, err)
+	}
+	if _, found, err := store.TurnResult(ctx, "session", "execution"); err != nil || found {
+		t.Fatalf("result after rollback found=%t, error=%v", found, err)
+	}
+	if _, err := store.db.Exec(`DROP TRIGGER reject_terminal_event`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CompleteQueuedTurn(ctx, "session", "queue", "execution", "completed", response, history, history, "context-key", event); err != nil {
+		t.Fatalf("CompleteQueuedTurn: %v", err)
+	}
+	stored, found, err := store.TurnResult(ctx, "session", "execution")
+	if err != nil || !found || stored.Status != "completed" || string(stored.Response) != string(response) {
+		t.Fatalf("turn result = %#v found=%t error=%v", stored, found, err)
+	}
+	queued, err = store.QueuedTurns(ctx, "session")
+	if err != nil || len(queued) != 0 {
+		t.Fatalf("queue after completion = %#v, error=%v", queued, err)
+	}
+	snapshot, err = store.Get(ctx, "session", "workspace")
+	if err != nil || !strings.Contains(string(snapshot.Data), `"text":"done"`) {
+		t.Fatalf("completed conversation = %s, error=%v", snapshot.Data, err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer reopened.Close()
+	stored, found, err = reopened.TurnResult(ctx, "session", "execution")
+	if err != nil || !found || string(stored.Response) != string(response) {
+		t.Fatalf("reopened turn result = %#v found=%t error=%v", stored, found, err)
+	}
+	if deleted, err := reopened.Delete(ctx, "session", "workspace"); err != nil || !deleted {
+		t.Fatalf("delete session = %t, error=%v", deleted, err)
+	}
+	if _, found, err := reopened.TurnResult(ctx, "session", "execution"); err != nil || found {
+		t.Fatalf("result after session deletion found=%t, error=%v", found, err)
 	}
 }
 

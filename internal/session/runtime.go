@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -31,6 +32,14 @@ type RuntimeEvent struct {
 	SessionID string
 	Payload   json.RawMessage
 	CreatedAt time.Time
+}
+
+type TurnResult struct {
+	SessionID   string
+	ExecutionID string
+	Status      string
+	Response    json.RawMessage
+	UpdatedAt   time.Time
 }
 
 func (s *Store) EnqueueTurn(ctx context.Context, queued QueuedTurn, event json.RawMessage) (QueuedTurn, int64, error) {
@@ -217,6 +226,13 @@ func (s *Store) SetQueuedTurnWithEvent(ctx context.Context, sessionID, queueID, 
 	if updated == 0 {
 		return 0, fmt.Errorf("queued turn %q does not exist in session %q", queueID, sessionID)
 	}
+	if status == QueuedTurnQueued {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM turn_results WHERE session_id = ? AND execution_id = (
+			SELECT execution_id FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ?
+		)`, sessionID, sessionID, queueID); err != nil {
+			return 0, fmt.Errorf("clear paused turn result: %w", err)
+		}
+	}
 	cursor, err := appendRuntimeEventTx(ctx, tx, sessionID, event, time.Now())
 	if err != nil {
 		return 0, err
@@ -227,16 +243,151 @@ func (s *Store) SetQueuedTurnWithEvent(ctx context.Context, sessionID, queueID, 
 	return cursor, nil
 }
 
-func (s *Store) DiscardQueuedTurn(ctx context.Context, sessionID, queueID string, event json.RawMessage) (bool, int64, error) {
-	if s == nil || s.db == nil || sessionID == "" || queueID == "" || !json.Valid(event) {
-		return false, 0, errors.New("session store, session id, queue id, and valid event JSON are required")
+// PauseQueuedTurn stores the resumable state and the observable paused result
+// together. Recovering the turn clears this result before it is queued again.
+func (s *Store) PauseQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, event json.RawMessage) (int64, error) {
+	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
+		return 0, errors.New("session store, turn identity, status, and valid event JSON are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin paused turn update: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE queued_turn_inputs SET status = ?, updated_at = ?
+		WHERE session_id = ? AND queue_id = ? AND execution_id = ?`, QueuedTurnPaused, time.Now().UnixNano(), sessionID, queueID, executionID)
+	if err != nil {
+		return 0, fmt.Errorf("pause queued turn: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("check paused turn update: %w", err)
+	}
+	if updated == 0 {
+		return 0, fmt.Errorf("queued turn %q does not exist in session %q", queueID, sessionID)
+	}
+	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, nil, time.Now()); err != nil {
+		return 0, err
+	}
+	cursor, err := appendRuntimeEventTx(ctx, tx, sessionID, event, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit paused turn update: %w", err)
+	}
+	return cursor, nil
+}
+
+// CompleteQueuedTurn atomically saves conversation state, the durable result,
+// the terminal event, and queue removal.
+func (s *Store) CompleteQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, response, history, modelContext json.RawMessage, contextKey string, event json.RawMessage) (int64, error) {
+	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
+		return 0, errors.New("session store, turn identity, status, and valid event JSON are required")
+	}
+	if len(response) > 0 && !json.Valid(response) || len(history) > 0 && !json.Valid(history) || len(modelContext) > 0 && !json.Valid(modelContext) {
+		return 0, errors.New("turn response and conversation must be valid JSON")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin turn completion: %w", err)
+	}
+	defer tx.Rollback()
+	if len(history) > 0 {
+		if len(modelContext) == 0 {
+			modelContext = json.RawMessage("null")
+		}
+		if bytes.Equal(history, modelContext) {
+			modelContext = json.RawMessage("null")
+			contextKey = ""
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE sessions
+			SET data = CAST(json_set(
+				json_set(
+					json_set(CAST(data AS TEXT), '$.history', json(?)),
+					'$.model_context', json(?)),
+				'$.model_context_key', ?) AS BLOB), updated_at = ?
+			WHERE id = ?`, string(history), string(modelContext), contextKey, time.Now().UnixNano(), sessionID)
+		if err != nil {
+			return 0, fmt.Errorf("persist completed conversation for session %q: %w", sessionID, err)
+		}
+		updated, err := result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("check completed conversation update: %w", err)
+		}
+		if updated == 0 {
+			return 0, fmt.Errorf("session %q does not exist", sessionID)
+		}
+	}
+	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, response, time.Now()); err != nil {
+		return 0, err
+	}
+	result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ? AND execution_id = ?`, sessionID, queueID, executionID)
+	if err != nil {
+		return 0, fmt.Errorf("remove completed turn from queue: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("check completed turn removal: %w", err)
+	}
+	if deleted == 0 {
+		return 0, fmt.Errorf("queued turn %q does not exist in session %q", queueID, sessionID)
+	}
+	cursor, err := appendRuntimeEventTx(ctx, tx, sessionID, event, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit turn completion: %w", err)
+	}
+	return cursor, nil
+}
+
+func upsertTurnResultTx(ctx context.Context, tx *sql.Tx, sessionID, executionID, status string, response json.RawMessage, now time.Time) error {
+	var payload any
+	if len(response) > 0 {
+		payload = []byte(response)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO turn_results(session_id, execution_id, status, response, updated_at)
+		VALUES(?, ?, ?, ?, ?)
+		ON CONFLICT(session_id, execution_id) DO UPDATE SET status = excluded.status, response = excluded.response, updated_at = excluded.updated_at`,
+		sessionID, executionID, status, payload, now.UnixNano()); err != nil {
+		return fmt.Errorf("persist turn result: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) TurnResult(ctx context.Context, sessionID, executionID string) (TurnResult, bool, error) {
+	if s == nil || s.db == nil || sessionID == "" || executionID == "" {
+		return TurnResult{}, false, errors.New("session store, session id, and execution id are required")
+	}
+	var result TurnResult
+	var response []byte
+	var updatedAt int64
+	err := s.db.QueryRowContext(ctx, `SELECT session_id, execution_id, status, response, updated_at
+		FROM turn_results WHERE session_id = ? AND execution_id = ?`, sessionID, executionID).
+		Scan(&result.SessionID, &result.ExecutionID, &result.Status, &response, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TurnResult{}, false, nil
+	}
+	if err != nil {
+		return TurnResult{}, false, fmt.Errorf("load turn result: %w", err)
+	}
+	result.Response = append(json.RawMessage(nil), response...)
+	result.UpdatedAt = time.Unix(0, updatedAt)
+	return result, true, nil
+}
+
+func (s *Store) DiscardQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, event json.RawMessage) (bool, int64, error) {
+	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
+		return false, 0, errors.New("session store, turn identity, status, and valid event JSON are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, 0, fmt.Errorf("begin queued turn discard: %w", err)
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ? AND status = ?`, sessionID, queueID, QueuedTurnPaused)
+	result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ? AND execution_id = ? AND status = ?`, sessionID, queueID, executionID, QueuedTurnPaused)
 	if err != nil {
 		return false, 0, fmt.Errorf("discard paused turn: %w", err)
 	}
@@ -246,6 +397,9 @@ func (s *Store) DiscardQueuedTurn(ctx context.Context, sessionID, queueID string
 	}
 	if deleted == 0 {
 		return false, 0, nil
+	}
+	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, nil, time.Now()); err != nil {
+		return false, 0, err
 	}
 	cursor, err := appendRuntimeEventTx(ctx, tx, sessionID, event, time.Now())
 	if err != nil {
@@ -291,46 +445,16 @@ func (s *Store) SetQueuedTurnStatusWithEvent(ctx context.Context, sessionID, que
 	return cursor, nil
 }
 
-func (s *Store) FinishQueuedTurn(ctx context.Context, sessionID, queueID string, event json.RawMessage) (int64, error) {
-	if s == nil || s.db == nil || sessionID == "" || queueID == "" || !json.Valid(event) {
-		return 0, errors.New("session store, session id, queue id, and valid event JSON are required")
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, fmt.Errorf("begin queued turn completion: %w", err)
-	}
-	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ?`, sessionID, queueID)
-	if err != nil {
-		return 0, fmt.Errorf("finish queued turn: %w", err)
-	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return 0, fmt.Errorf("check queued turn completion: %w", err)
-	}
-	if deleted == 0 {
-		return 0, fmt.Errorf("queued turn %q does not exist in session %q", queueID, sessionID)
-	}
-	cursor, err := appendRuntimeEventTx(ctx, tx, sessionID, event, time.Now())
-	if err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit queued turn completion: %w", err)
-	}
-	return cursor, nil
-}
-
-func (s *Store) CancelQueuedTurn(ctx context.Context, sessionID, queueID string, event json.RawMessage) (bool, int64, error) {
-	if s == nil || s.db == nil || sessionID == "" || queueID == "" || !json.Valid(event) {
-		return false, 0, errors.New("session store, session id, queue id, and valid event JSON are required")
+func (s *Store) CancelQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, event json.RawMessage) (bool, int64, error) {
+	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
+		return false, 0, errors.New("session store, turn identity, status, and valid event JSON are required")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return false, 0, fmt.Errorf("begin queued turn cancellation: %w", err)
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ? AND status = ?`, sessionID, queueID, QueuedTurnQueued)
+	result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ? AND execution_id = ? AND status = ?`, sessionID, queueID, executionID, QueuedTurnQueued)
 	if err != nil {
 		return false, 0, fmt.Errorf("cancel queued turn: %w", err)
 	}
@@ -340,6 +464,9 @@ func (s *Store) CancelQueuedTurn(ctx context.Context, sessionID, queueID string,
 	}
 	if deleted == 0 {
 		return false, 0, nil
+	}
+	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, nil, time.Now()); err != nil {
+		return false, 0, err
 	}
 	cursor, err := appendRuntimeEventTx(ctx, tx, sessionID, event, time.Now())
 	if err != nil {

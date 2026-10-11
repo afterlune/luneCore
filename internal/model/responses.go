@@ -206,10 +206,11 @@ func (v InputCustomToolCallOutput) MarshalJSON() ([]byte, error) {
 }
 
 type InputReasoning struct {
-	ID        string          `json:"id,omitempty"`
-	Status    string          `json:"status,omitempty"`
-	Content   []ReasoningText `json:"content"`
-	Signature string          `json:"signature,omitempty"`
+	ID               string          `json:"id,omitempty"`
+	Status           string          `json:"status,omitempty"`
+	Content          []ReasoningText `json:"content"`
+	EncryptedContent string          `json:"encrypted_content,omitempty"`
+	Signature        string          `json:"signature,omitempty"`
 }
 
 func (InputReasoning) isInputItem() {}

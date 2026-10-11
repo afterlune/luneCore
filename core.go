@@ -64,6 +64,8 @@ const (
 	TaskPaused    TaskStatus = "paused"
 	TaskCompleted TaskStatus = "completed"
 	TaskFailed    TaskStatus = "failed"
+	TaskCancelled TaskStatus = "cancelled"
+	TaskDiscarded TaskStatus = "discarded"
 )
 
 type EventKind string
@@ -432,6 +434,7 @@ type Core struct {
 	eventHubs           map[string]*sessionEventHub
 	queueDraining       map[string]bool
 	turnWaiters         map[string]chan turnResult
+	executionRuns       map[string]chan struct{}
 	interruptRequests   map[string]bool
 	queueDrainWG        sync.WaitGroup
 	closed              bool
@@ -547,6 +550,7 @@ func New(config Config) (_ *Core, err error) {
 		eventHubs:           make(map[string]*sessionEventHub),
 		queueDraining:       make(map[string]bool),
 		turnWaiters:         make(map[string]chan turnResult),
+		executionRuns:       make(map[string]chan struct{}),
 		interruptRequests:   make(map[string]bool),
 		stateDirLock:        stateLock,
 	}
@@ -644,25 +648,46 @@ func (c *Core) Close() error {
 	if c == nil {
 		return nil
 	}
-	if !c.runtimeConfigMu.TryLock() {
-		return errors.New("cannot close core while tasks or runtime configuration changes are active")
+	runtimeConfigLocked := c.runtimeConfigMu.TryLock()
+	closingAfterQueueDrain := false
+	if !runtimeConfigLocked {
+		c.mu.Lock()
+		if c.closed {
+			c.mu.Unlock()
+			return nil
+		}
+		if c.hasRunningTasksLocked() {
+			c.mu.Unlock()
+			return errors.New("cannot close core while a task is running")
+		}
+		if len(c.queueDraining) == 0 {
+			c.mu.Unlock()
+			return errors.New("cannot close core while runtime configuration changes are active")
+		}
+		c.closed = true
+		c.mu.Unlock()
+		c.queueDrainWG.Wait()
+		for !c.runtimeConfigMu.TryLock() {
+			time.Sleep(time.Millisecond)
+		}
+		runtimeConfigLocked = true
+		closingAfterQueueDrain = true
 	}
-	runtimeConfigLocked := true
 	defer func() {
 		if runtimeConfigLocked {
 			c.runtimeConfigMu.Unlock()
 		}
 	}()
 	c.mu.Lock()
-	if c.closed {
+	if c.closed && !closingAfterQueueDrain {
 		c.mu.Unlock()
 		return nil
 	}
-	if c.hasRunningTasksLocked() {
+	if !closingAfterQueueDrain && c.hasRunningTasksLocked() {
 		c.mu.Unlock()
 		return errors.New("cannot close core while a task is running")
 	}
-	if len(c.queueDraining) > 0 {
+	if !closingAfterQueueDrain && len(c.queueDraining) > 0 {
 		c.closed = true
 		c.mu.Unlock()
 		c.runtimeConfigMu.Unlock()
@@ -1296,14 +1321,23 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		return c.setSessionConversation(context.Background(), id, transcript, modelContext, key)
 	})
 	defer taskRuntime.SetHistorySaver(nil)
+	taskRuntime.DeferCompletedCleanup(queueID != "")
 	var response *model.Response
 	if resume {
 		response, err = taskRuntime.Resume(ctx)
 	} else {
 		response, err = taskRuntime.Respond(ctx, input)
 	}
-	if response != nil {
+	if response != nil && queueID == "" {
 		_ = c.saveHistoryUsage(ctx, sessionID, taskRuntime)
+	}
+	var encoded json.RawMessage
+	if response != nil {
+		var encodeErr error
+		encoded, encodeErr = json.Marshal(response)
+		if encodeErr != nil {
+			err = errors.Join(err, fmt.Errorf("encode task response: %w", encodeErr))
+		}
 	}
 	status := TaskCompleted
 	if err != nil {
@@ -1315,8 +1349,18 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	if pending, pendingErr := c.hasPending(ctx, sessionID); pendingErr == nil && pending && status != TaskCompleted {
 		status = TaskPaused
 	}
+	if status == TaskCompleted && response == nil {
+		status = TaskFailed
+		err = errors.Join(err, errors.New("agent task completed without a response"))
+	}
+	if queueID != "" && status != TaskPaused {
+		queued := session.QueuedTurn{SessionID: sessionID, QueueID: queueID, ExecutionID: executionID}
+		if persistErr := c.completeQueuedTurnFromRuntime(ctx, queued, status, encoded, taskRuntime); persistErr != nil {
+			err = errors.Join(err, fmt.Errorf("persist completed turn: %w", persistErr))
+		}
+	}
 	c.finishTaskState(sessionID, status, err)
-	if status != TaskPaused && c.teamRuns != nil {
+	if queueID == "" && status != TaskPaused && c.teamRuns != nil {
 		if cleanupErr := c.teamRuns.DeleteParent(taskRuntime.runID()); cleanupErr != nil {
 			slog.Warn("delete completed team runs", "error", cleanupErr)
 		}
@@ -1326,10 +1370,6 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	}
 	if response == nil {
 		return nil, err
-	}
-	encoded, encodeErr := json.Marshal(response)
-	if encodeErr != nil {
-		return nil, errors.Join(err, fmt.Errorf("encode task response: %w", encodeErr))
 	}
 	return encoded, err
 }
@@ -1428,14 +1468,16 @@ func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
 	event := Event{Kind: EventTaskFinished, TaskID: state.TaskID, ExecutionID: state.ExecutionID, QueueID: state.QueueID, SessionID: sessionID, Status: status,
 		ContextWindow: state.ContextWindow, Err: errorString(err), ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model}
 	if state.QueueID != "" {
+		if status != TaskPaused {
+			// The queue worker commits terminal state, result, conversation, and
+			// event together after the graph has produced a durable checkpoint.
+			return
+		}
 		persistErr := c.persistQueuedEvent(context.Background(), event, func(payload json.RawMessage) (int64, error) {
-			if status == TaskPaused {
-				return c.sessions.SetQueuedTurnStatusWithEvent(context.Background(), sessionID, state.QueueID, session.QueuedTurnPaused, payload)
-			}
-			return c.sessions.FinishQueuedTurn(context.Background(), sessionID, state.QueueID, payload)
+			return c.sessions.PauseQueuedTurn(context.Background(), sessionID, state.QueueID, state.ExecutionID, string(TaskPaused), payload)
 		})
 		if persistErr != nil {
-			slog.Warn("persist queued task completion", "error", persistErr)
+			slog.Warn("persist paused queued task", "error", persistErr)
 		}
 		return
 	}

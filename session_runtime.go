@@ -17,8 +17,9 @@ import (
 )
 
 var (
-	ErrSessionBusy = errors.New("session already has active or queued work")
-	ErrTaskPaused  = errors.New("session has a paused task; recover or discard it first")
+	ErrSessionBusy  = errors.New("session already has active or queued work")
+	ErrTaskPaused   = errors.New("session has a paused task; recover or discard it first")
+	ErrTurnNotFound = errors.New("execution id does not exist in this session")
 )
 
 type SubmissionMode string
@@ -60,6 +61,12 @@ type QueuedTurnState struct {
 type RuntimeState struct {
 	Task  TaskState
 	Queue []QueuedTurnState
+}
+
+type TurnResult struct {
+	ExecutionID string
+	Status      TaskStatus
+	Response    json.RawMessage
 }
 
 type PendingRequestKind string
@@ -206,13 +213,13 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (*Sessi
 		c.mu.Unlock()
 		return nil, err
 	}
-	if !c.sessionIsRunningLocked(sessionID) && !c.queueDraining[sessionID] {
+	reconcile := !c.sessionIsRunningLocked(sessionID) && !c.queueDraining[sessionID]
+	c.mu.Unlock()
+	if reconcile {
 		if err := c.reconcileQueuedTurns(ctx, sessionID); err != nil {
-			c.mu.Unlock()
 			return nil, err
 		}
 	}
-	c.mu.Unlock()
 	return &SessionRuntime{core: c, sessionID: sessionID}, nil
 }
 
@@ -237,6 +244,61 @@ func (r *SessionRuntime) SubmitTurn(ctx context.Context, request TurnRequest, mo
 	}
 	submission, _, err := r.core.submitTurn(ctx, r.sessionID, request, mode, false)
 	return submission, err
+}
+
+// WaitTurn returns the durable outcome for an accepted execution. Canceling
+// ctx stops this wait only; it does not interrupt the turn.
+func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (TurnResult, error) {
+	if r == nil || r.core == nil || ctx == nil || executionID == "" {
+		return TurnResult{}, errors.New("session runtime, context, and execution id are required")
+	}
+	if _, err := r.core.GetSession(ctx, r.sessionID); err != nil {
+		return TurnResult{}, err
+	}
+	hub := r.core.eventHub(r.sessionID)
+	_, unsubscribe := hub.subscribeLive(false)
+	defer unsubscribe()
+	r.core.scheduleQueueDrain(r.sessionID)
+	for {
+		changed := hub.changeChannel()
+		stored, found, err := r.core.sessions.TurnResult(ctx, r.sessionID, executionID)
+		if err != nil {
+			return TurnResult{}, err
+		}
+		if found {
+			r.core.mu.RLock()
+			runDone := r.core.executionRuns[executionID]
+			r.core.mu.RUnlock()
+			if runDone != nil {
+				select {
+				case <-runDone:
+					continue
+				case <-ctx.Done():
+					return TurnResult{}, ctx.Err()
+				}
+			}
+			return TurnResult{
+				ExecutionID: stored.ExecutionID,
+				Status:      TaskStatus(stored.Status),
+				Response:    append(json.RawMessage(nil), stored.Response...),
+			}, nil
+		}
+		_, queued, err := r.core.sessions.QueuedTurnByExecutionID(ctx, r.sessionID, executionID)
+		if err != nil {
+			return TurnResult{}, err
+		}
+		if !queued {
+			if _, err := r.core.GetSession(ctx, r.sessionID); err != nil {
+				return TurnResult{}, err
+			}
+			return TurnResult{}, ErrTurnNotFound
+		}
+		select {
+		case <-changed:
+		case <-ctx.Done():
+			return TurnResult{}, ctx.Err()
+		}
+	}
 }
 
 // SubscribeEvents replays durable events after afterCursor, then follows new
@@ -776,20 +838,175 @@ func (c *Core) reconcileQueuedTurns(ctx context.Context, sessionID string) error
 		if item.Status != session.QueuedTurnActive {
 			continue
 		}
+		completed, _, finalizeErr := c.completeQueuedTurnFromCheckpoint(ctx, item)
+		if finalizeErr != nil {
+			return finalizeErr
+		}
+		if completed {
+			continue
+		}
 		status := session.QueuedTurnQueued
 		event := Event{Kind: EventTaskQueued, SessionID: sessionID, QueueID: item.QueueID, ExecutionID: item.ExecutionID, Status: TaskQueued}
 		if found && pending.ExecutionID == item.ExecutionID {
 			status = session.QueuedTurnPaused
 			event.Kind, event.Status = EventTaskFinished, TaskPaused
 		}
-		if _, err := c.sessions.SetQueuedTurnStatusWithEvent(ctx, sessionID, item.QueueID, status, mustMarshalEvent(event)); err != nil {
-			return err
+		var updateErr error
+		if status == session.QueuedTurnPaused {
+			_, updateErr = c.sessions.PauseQueuedTurn(ctx, sessionID, item.QueueID, item.ExecutionID, string(TaskPaused), mustMarshalEvent(event))
+		} else {
+			_, updateErr = c.sessions.SetQueuedTurnStatusWithEvent(ctx, sessionID, item.QueueID, status, mustMarshalEvent(event))
+		}
+		if updateErr != nil {
+			return updateErr
 		}
 		if hub := c.eventHubs[sessionID]; hub != nil {
 			hub.notifyDurable()
 		}
 	}
+	// A committed result may survive a crash that happened before checkpoint
+	// deletion. It cannot be resumed and should not block the next turn.
+	if completedCheckpoint, err := c.runtime.CheckpointForSession(ctx, sessionID); err == nil && completedCheckpoint.Completed {
+		if err := c.runtime.DeleteCompletedRunForSession(sessionID); err != nil {
+			return err
+		}
+	} else if err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
+		return err
+	}
 	return nil
+}
+
+func (c *Core) completeQueuedTurnFromCheckpoint(ctx context.Context, queued session.QueuedTurn) (bool, json.RawMessage, error) {
+	cp, err := c.runtime.CheckpointForSession(ctx, queued.SessionID)
+	if errors.Is(err, checkpoint.ErrNotFound) {
+		return false, nil, nil
+	}
+	if err != nil {
+		return false, nil, err
+	}
+	if !cp.Completed {
+		return false, nil, nil
+	}
+	state := cp.Final
+	if state != nil && state.ExecutionID != "" && state.ExecutionID != queued.ExecutionID {
+		return false, nil, nil
+	}
+	status := TaskFailed
+	var response, history, modelContext json.RawMessage
+	contextKey := ""
+	if state != nil {
+		transcript := state.Transcript
+		if transcript.Items == nil && transcript.Text == nil {
+			transcript = state.History
+		}
+		history, err = json.Marshal(&transcript)
+		if err != nil {
+			return true, nil, fmt.Errorf("encode completed transcript: %w", err)
+		}
+		modelContext, err = json.Marshal(&state.History)
+		if err != nil {
+			return true, nil, fmt.Errorf("encode completed model context: %w", err)
+		}
+		if state.FinalResponse != nil && state.TaskError == "" && cp.Failure == nil && !cp.HadLocalFailures {
+			response, err = json.Marshal(state.FinalResponse)
+			if err != nil {
+				return true, nil, fmt.Errorf("encode completed turn response: %w", err)
+			}
+			status = TaskCompleted
+		}
+	}
+	saved, err := c.GetSession(ctx, queued.SessionID)
+	if err != nil {
+		return true, nil, err
+	}
+	contextKey = saved.ModelContextKey
+	if state != nil && state.Provider != "" {
+		if providerConfig, ok := c.models.ProviderConfig(state.Provider); ok {
+			effectiveModel := state.Model
+			if state.ModelOverride != "" {
+				effectiveModel = state.ModelOverride
+			}
+			contextKey = modelContextKey(state.Provider, effectiveModel, providerConfig)
+		}
+	}
+	if state != nil && state.TaskError != "" {
+		response = nil
+	}
+	if status != TaskCompleted {
+		response = nil
+	}
+	if err := c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey); err != nil {
+		return true, nil, err
+	}
+	return true, response, nil
+}
+
+func (c *Core) completeQueuedTurnFromRuntime(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response json.RawMessage, runtime *graphResponder) error {
+	var history, modelContext json.RawMessage
+	contextKey := ""
+	var err error
+	if runtime != nil {
+		transcript := runtime.SessionHistory()
+		if transcript == nil {
+			transcript = model.NewResponseInputItems()
+		}
+		history, err = json.Marshal(transcript)
+		if err != nil {
+			return fmt.Errorf("encode completed transcript: %w", err)
+		}
+		context := runtime.ModelContextHistory()
+		if context != nil {
+			modelContext, err = json.Marshal(context)
+			if err != nil {
+				return fmt.Errorf("encode completed model context: %w", err)
+			}
+		}
+		contextKey = runtime.ContextKey()
+	}
+	if status != TaskCompleted {
+		response = nil
+	}
+	return c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey)
+}
+
+func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response, history, modelContext json.RawMessage, contextKey string) error {
+	taskState, ok := c.StateForSession(queued.SessionID)
+	var taskID string
+	if ok && taskState.ExecutionID == queued.ExecutionID {
+		taskID = taskState.TaskID
+	}
+	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, TaskID: taskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: status}
+	if _, err := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(status), response, history, modelContext, contextKey, mustMarshalEvent(event)); err != nil {
+		return err
+	}
+	c.rememberQueuedTaskStatus(queued.SessionID, queued.ExecutionID, queued.QueueID, status)
+	if hub := c.eventHubs[queued.SessionID]; hub != nil {
+		hub.notifyDurable()
+	}
+	if err := c.runtime.DeleteCompletedRunForSession(queued.SessionID); err != nil {
+		slog.Warn("delete completed graph checkpoint", "error", err)
+	}
+	if c.teamRuns != nil {
+		if err := c.teamRuns.DeleteParent(c.runtime.checkpointID(queued.SessionID)); err != nil {
+			slog.Warn("delete completed team runs", "error", err)
+		}
+	}
+	if err := c.sessions.DeleteToolInvocationsForSession(context.Background(), queued.SessionID); err != nil {
+		slog.Warn("delete completed tool invocation records", "error", err)
+	}
+	return nil
+}
+
+func (c *Core) rememberQueuedTaskStatus(sessionID, executionID, queueID string, status TaskStatus) {
+	c.mu.Lock()
+	state := c.activeTasks[sessionID]
+	if state.ExecutionID != executionID {
+		state = TaskState{SessionID: sessionID, ExecutionID: executionID, QueueID: queueID}
+	}
+	state.Status = status
+	c.activeTasks[sessionID] = state
+	c.active = state
+	c.mu.Unlock()
 }
 
 func (c *Core) scheduleQueueDrain(sessionID string) {
@@ -830,6 +1047,10 @@ func (c *Core) drainQueue(sessionID string) {
 		}
 	}()
 	ctx := context.Background()
+	if err := c.reconcileQueuedTurns(ctx, sessionID); err != nil {
+		slog.Warn("reconcile queued turns before draining", "error", err)
+		return
+	}
 	for {
 		c.mu.RLock()
 		closed := c.closed
@@ -883,7 +1104,18 @@ func (c *Core) drainQueue(sessionID string) {
 			c.failQueuedTurn(ctx, queued, err)
 			continue
 		}
+		runDone := make(chan struct{})
+		c.mu.Lock()
+		c.executionRuns[queued.ExecutionID] = runDone
+		c.mu.Unlock()
 		response, runErr := c.run(ctx, sessionID, request.PlanMode, request.MaxToolRounds, request.Model, request.Resume, input, queued.QueueID, queued.ExecutionID)
+		c.mu.Lock()
+		if c.executionRuns[queued.ExecutionID] == runDone {
+			delete(c.executionRuns, queued.ExecutionID)
+		}
+		close(runDone)
+		c.mu.Unlock()
+		c.eventHub(sessionID).notifyDurable()
 		c.mu.RLock()
 		closing = c.closed
 		c.mu.RUnlock()
@@ -902,13 +1134,25 @@ func (c *Core) drainQueue(sessionID string) {
 				if current.Status != session.QueuedTurnPaused {
 					event := Event{Kind: EventTaskFinished, SessionID: sessionID, TaskID: state.TaskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskPaused, Err: errorString(runErr)}
 					if persistErr := c.persistQueuedEvent(ctx, event, func(payload json.RawMessage) (int64, error) {
-						return c.sessions.SetQueuedTurnStatusWithEvent(ctx, sessionID, queued.QueueID, session.QueuedTurnPaused, payload)
+						return c.sessions.PauseQueuedTurn(ctx, sessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), payload)
 					}); persistErr != nil {
 						slog.Warn("restore paused queued turn", "error", persistErr)
 					}
 				}
 			} else {
-				c.failQueuedTurn(ctx, queued, runErr)
+				completed, finalResponse, finalizeErr := c.completeQueuedTurnFromCheckpoint(ctx, current)
+				if finalizeErr != nil {
+					slog.Warn("finalize completed queued turn", "error", finalizeErr)
+					c.resolveTurnWaiter(queued.ExecutionID, turnResult{response: response, err: finalizeErr})
+					return
+				}
+				if completed {
+					if finalResponse != nil {
+						response = finalResponse
+					}
+				} else {
+					c.failQueuedTurn(ctx, queued, runErr)
+				}
 			}
 		}
 		c.resolveTurnWaiter(queued.ExecutionID, turnResult{response: response, err: runErr})
@@ -920,10 +1164,10 @@ func (c *Core) drainQueue(sessionID string) {
 
 func (c *Core) failQueuedTurn(ctx context.Context, queued session.QueuedTurn, err error) {
 	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskFailed, Err: errorString(err)}
-	if persistErr := c.persistQueuedEvent(ctx, event, func(payload json.RawMessage) (int64, error) {
-		return c.sessions.FinishQueuedTurn(ctx, queued.SessionID, queued.QueueID, payload)
-	}); persistErr != nil {
+	if _, persistErr := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(TaskFailed), nil, nil, nil, "", mustMarshalEvent(event)); persistErr != nil {
 		slog.Warn("finish rejected queued turn", "error", persistErr)
+	} else if hub := c.eventHubs[queued.SessionID]; hub != nil {
+		hub.notifyDurable()
 	}
 	c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: err})
 }
@@ -965,8 +1209,8 @@ func (c *Core) interruptExecution(sessionID, executionID string) bool {
 	}
 	c.interruptRequests[executionID] = true
 	c.mu.Unlock()
-	event := Event{Kind: EventTaskFinished, SessionID: sessionID, QueueID: queued.QueueID, ExecutionID: executionID, Status: TaskFailed, Err: "interrupted before the turn started"}
-	deleted, _, err := c.sessions.CancelQueuedTurn(context.Background(), sessionID, queued.QueueID, mustMarshalEvent(event))
+	event := Event{Kind: EventTaskFinished, SessionID: sessionID, QueueID: queued.QueueID, ExecutionID: executionID, Status: TaskCancelled, Err: "interrupted before the turn started"}
+	deleted, _, err := c.sessions.CancelQueuedTurn(context.Background(), sessionID, queued.QueueID, executionID, string(TaskCancelled), mustMarshalEvent(event))
 	if err == nil && deleted {
 		c.mu.Lock()
 		delete(c.interruptRequests, executionID)
@@ -1048,8 +1292,8 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 	}
 	deletedQueue := false
 	if paused != nil {
-		event := Event{Kind: EventTaskDiscarded, SessionID: sessionID, QueueID: paused.QueueID, ExecutionID: paused.ExecutionID, Status: TaskIdle}
-		deletedQueue, _, err = c.sessions.DiscardQueuedTurn(ctx, sessionID, paused.QueueID, mustMarshalEvent(event))
+		event := Event{Kind: EventTaskDiscarded, SessionID: sessionID, QueueID: paused.QueueID, ExecutionID: paused.ExecutionID, Status: TaskDiscarded}
+		deletedQueue, _, err = c.sessions.DiscardQueuedTurn(ctx, sessionID, paused.QueueID, paused.ExecutionID, string(TaskDiscarded), mustMarshalEvent(event))
 		if err != nil {
 			return false, err
 		}

@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 4
+const currentSchemaVersion = 5
 
 // Snapshot is the persisted state for one workspace session. Data is owned by
 // the caller so the session package does not depend on the TUI or model layer.
@@ -160,6 +160,18 @@ func Open(path string) (*Store, error) {
 		_ = tx.Rollback()
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize runtime event index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS turn_results (
+		session_id TEXT NOT NULL,
+		execution_id TEXT NOT NULL,
+		status TEXT NOT NULL,
+		response BLOB,
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY (session_id, execution_id)
+	)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize turn result store: %w", err)
 	}
 	if version < currentSchemaVersion {
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
@@ -312,6 +324,9 @@ func (s *Store) Delete(ctx context.Context, id, workspace string) (bool, error) 
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM runtime_events WHERE session_id = ?`, id); err != nil {
 		return false, fmt.Errorf("delete runtime events for session %q: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM turn_results WHERE session_id = ?`, id); err != nil {
+		return false, fmt.Errorf("delete turn results for session %q: %w", id, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit session deletion: %w", err)
