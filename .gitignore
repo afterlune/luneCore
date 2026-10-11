@@ -1,0 +1,5 @@
+/.codex/
+/.idea/
+/.tmp-go-cache/
+/config.json
+.luneagent/
