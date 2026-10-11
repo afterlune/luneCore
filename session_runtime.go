@@ -72,7 +72,9 @@ type TurnResult struct {
 type PendingRequestKind string
 
 const (
-	PendingApproval        PendingRequestKind = "approval"
+	PendingApproval PendingRequestKind = "approval"
+	// PendingUserQuestion is a lead-agent clarification waiting for the host.
+	PendingUserQuestion    PendingRequestKind = "user_question"
 	PendingUserInteraction PendingRequestKind = "user_interaction"
 	PendingToolRecovery    PendingRequestKind = "tool_recovery"
 )
@@ -80,6 +82,7 @@ const (
 type PendingRequest struct {
 	Kind         PendingRequestKind
 	Approval     *ApprovalRequest
+	UserQuestion *UserQuestionRequest
 	Interaction  *UserInteractionRequest
 	ToolRecovery *ToolRecoveryRequest
 }
@@ -454,6 +457,12 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 			requests = append(requests, PendingRequest{Kind: PendingApproval, Approval: &copy})
 		}
 	}
+	for _, pending := range c.userQuestions {
+		if pending.sessionID == r.sessionID {
+			copy := cloneUserQuestion(pending.request)
+			requests = append(requests, PendingRequest{Kind: PendingUserQuestion, UserQuestion: &copy})
+		}
+	}
 	for _, pending := range c.interactions {
 		if pending.sessionID == r.sessionID {
 			copy := cloneInteraction(pending.request)
@@ -484,6 +493,10 @@ func pendingRequestID(request PendingRequest) string {
 		if request.Approval != nil {
 			return request.Approval.ID
 		}
+	case PendingUserQuestion:
+		if request.UserQuestion != nil {
+			return request.UserQuestion.ID
+		}
 	case PendingUserInteraction:
 		if request.Interaction != nil {
 			return request.Interaction.ID
@@ -501,6 +514,14 @@ func (r *SessionRuntime) ResolveApproval(id string, allowed bool) error {
 		return errors.New("session runtime and approval id are required")
 	}
 	return r.core.resolveApproval(r.sessionID, id, allowed)
+}
+
+// ResolveUserQuestion sends the host's choice or free-text answer back to the lead agent.
+func (r *SessionRuntime) ResolveUserQuestion(id, answer string) error {
+	if r == nil || r.core == nil || id == "" {
+		return errors.New("session runtime and user question id are required")
+	}
+	return r.core.resolveUserQuestion(r.sessionID, id, answer)
 }
 
 func (r *SessionRuntime) ResolveUserInteraction(id string, response json.RawMessage) error {
@@ -567,6 +588,12 @@ func safeEventProjection(event Event) Event {
 		copy.Request = nil
 		event.Interaction = &copy
 	}
+	if event.UserQuestion != nil {
+		copy := cloneUserQuestion(*event.UserQuestion)
+		copy.Question = ""
+		copy.Options = nil
+		event.UserQuestion = &copy
+	}
 	if event.Compaction != nil {
 		copy := *event.Compaction
 		copy.Err = ""
@@ -604,6 +631,11 @@ func cloneApproval(request ApprovalRequest) ApprovalRequest {
 }
 func cloneInteraction(request UserInteractionRequest) UserInteractionRequest {
 	request.Request = append(json.RawMessage(nil), request.Request...)
+	return request
+}
+
+func cloneUserQuestion(request UserQuestionRequest) UserQuestionRequest {
+	request.Options = append([]string(nil), request.Options...)
 	return request
 }
 

@@ -472,6 +472,60 @@ func teamResponseHistoryText(input *model.ResponseInput) string {
 	return string(encoded)
 }
 
+func TestAgentCanAskUserDuringPlanMode(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"ask-1","name":"ask_user","arguments":"{\"question\":\"Which environment?\",\"options\":[\"local\",\"staging\"]}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will use staging."}]}]}`),
+	}}
+	var askedQuestion string
+	var askedOptions []string
+	agent, err := NewWithOptions(requester, registry, AgentOptions{
+		ID: "lead", Name: "Lead", Profile: "main", Provider: model.ProviderDeepSeek, Model: "test-model",
+		AskUser: func(_ context.Context, question string, options []string) (string, error) {
+			askedQuestion, askedOptions = question, append([]string(nil), options...)
+			return "staging", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("prepare the deployment plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := agent.Start(context.Background(), "ask-user-plan", nil, input, TaskOptions{PlanMode: true}, graph.Options[State]{Store: store})
+	if err != nil || result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+		t.Fatalf("Start = status %q, error %v", result.Status, err)
+	}
+	if askedQuestion != "Which environment?" || len(askedOptions) != 2 || askedOptions[0] != "local" || askedOptions[1] != "staging" {
+		t.Fatalf("ask_user callback question=%q options=%v", askedQuestion, askedOptions)
+	}
+	var foundAskUser bool
+	for _, definition := range requester.requests[0].Tools {
+		if function, ok := definition.(model.FunctionTool); ok && function.Name == askUserToolName {
+			foundAskUser = true
+		}
+	}
+	if !foundAskUser {
+		t.Fatalf("plan-mode tools = %#v, missing %q", requester.requests[0].Tools, askUserToolName)
+	}
+	encodedInput, err := json.Marshal(requester.requests[1].Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encodedInput, []byte("User's answer: staging")) {
+		t.Fatalf("user answer was not returned to the model: %s", encodedInput)
+	}
+}
+
 func TestAgentGraphRecoversSelectedCategoryAfterSQLiteStoreReopen(t *testing.T) {
 	readFile := &recordingTool{}
 	registry, err := tool.NewRegistry(toolRegistration(

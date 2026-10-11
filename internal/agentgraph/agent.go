@@ -67,6 +67,8 @@ type AgentOptions struct {
 	SupportsInputAudio bool
 	Model              string
 	Team               TeamExecutor
+	// AskUser is provided only to the lead agent. It blocks until the host answers.
+	AskUser            func(context.Context, string, []string) (string, error)
 	StreamObserver     func(model.ModelStreamEvent)
 	CompactionObserver func(ContextCompactionEvent)
 }
@@ -556,6 +558,17 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 	call := state.PendingCalls[state.PendingIndex]
 	var output model.InputFunctionCallOutput
 	switch {
+	case call.Name == askUserToolName && a.options.AskUser != nil:
+		question, options, err := parseUserQuestion(call.Arguments)
+		if err != nil {
+			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Question request rejected: " + err.Error())}
+		} else {
+			answer, err := a.options.AskUser(ctx, question, options)
+			if err != nil {
+				return graph.Transition[State]{}, err
+			}
+			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("User's answer: " + answer)}
+		}
 	case call.Name == teamDispatchToolName && a.options.Team != nil:
 		assignments, err := parseTeamAssignments(call.Arguments, a.options.Team)
 		if err != nil {
@@ -667,18 +680,21 @@ func ensureTranscript(state *State) {
 }
 
 func (a *Agent) visibleTools(category string, planMode bool) ([]model.ResponseTool, []string, error) {
-	addTeamTool := func(definitions []model.ResponseTool) []model.ResponseTool {
-		if a.options.Team == nil || len(a.options.Team.Profiles()) == 0 || a.options.Team.MaxParallelAgents() < 1 {
-			return definitions
+	addRuntimeTools := func(definitions []model.ResponseTool) []model.ResponseTool {
+		if a.options.Team != nil && len(a.options.Team.Profiles()) > 0 && a.options.Team.MaxParallelAgents() > 0 {
+			definitions = append(definitions, teamDispatchDefinition(a.options.Team))
 		}
-		return append(definitions, teamDispatchDefinition(a.options.Team))
+		if a.options.AskUser != nil {
+			definitions = append(definitions, askUserDefinition())
+		}
+		return definitions
 	}
 	if a.categorized == nil {
 		definitions := a.tools.Definitions()
 		if planMode {
 			definitions = readOnlyDefinitions(a.tools, definitions)
 		}
-		definitions = addTeamTool(definitions)
+		definitions = addRuntimeTools(definitions)
 		return definitions, toolNames(definitions), nil
 	}
 	categories := a.categories
@@ -697,7 +713,7 @@ func (a *Agent) visibleTools(category string, planMode bool) ([]model.ResponseTo
 			definitions = append([]model.ResponseTool{selector}, definitions...)
 		}
 	}
-	definitions = addTeamTool(definitions)
+	definitions = addRuntimeTools(definitions)
 	return definitions, toolNames(definitions), nil
 }
 
@@ -795,6 +811,59 @@ func contains(values []string, value string) bool {
 }
 
 const teamDispatchToolName = "delegate_team"
+const askUserToolName = model.UserQuestionToolName
+
+type userQuestionInput struct {
+	Question string   `json:"question"`
+	Options  []string `json:"options,omitempty"`
+}
+
+func askUserDefinition() model.FunctionTool {
+	parameters, _ := json.Marshal(map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"question": map[string]any{"type": "string", "description": "A concise clarification question for the user."},
+			"options": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "Use an empty array when no choices are needed. The user may also provide a free-text answer.",
+			},
+		},
+		"required":             []string{"question", "options"},
+		"additionalProperties": false,
+	})
+	strict := true
+	return model.FunctionTool{
+		Name: askUserToolName,
+		Description: "Ask the user a concise question only when missing information blocks useful progress. " +
+			"Optionally provide answer choices; the user may choose one or reply with free text.",
+		Parameters: parameters,
+		Strict:     &strict,
+	}
+}
+
+func parseUserQuestion(arguments string) (string, []string, error) {
+	decoder := json.NewDecoder(strings.NewReader(arguments))
+	decoder.DisallowUnknownFields()
+	var input userQuestionInput
+	if err := decoder.Decode(&input); err != nil {
+		return "", nil, err
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return "", nil, errors.New("expected one JSON object")
+	}
+	input.Question = strings.TrimSpace(input.Question)
+	if input.Question == "" {
+		return "", nil, errors.New("question must not be empty")
+	}
+	for index := range input.Options {
+		input.Options[index] = strings.TrimSpace(input.Options[index])
+		if input.Options[index] == "" {
+			return "", nil, errors.New("answer options must not be empty")
+		}
+	}
+	return input.Question, input.Options, nil
+}
 
 type teamDispatchRequest struct {
 	Tasks []TeamAssignment `json:"tasks"`

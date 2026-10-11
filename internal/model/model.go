@@ -84,7 +84,11 @@ type CategorizedToolExecutor interface {
 	DefinitionsForCategory(string) []ResponseTool
 }
 
-const CategorySelectorName = "select_tool_category"
+const (
+	CategorySelectorName = "select_tool_category"
+	// UserQuestionToolName is the runtime-owned lead-agent clarification tool.
+	UserQuestionToolName = "ask_user"
+)
 
 type Client struct {
 	mu        sync.Mutex

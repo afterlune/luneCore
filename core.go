@@ -81,6 +81,8 @@ const (
 	EventUsage                    EventKind = "usage"
 	EventApprovalRequired         EventKind = "approval_required"
 	EventApprovalCancelled        EventKind = "approval_cancelled"
+	EventUserQuestionRequired     EventKind = "user_question_required"
+	EventUserQuestionCancelled    EventKind = "user_question_cancelled"
 	EventUserInteractionRequired  EventKind = "user_interaction_required"
 	EventUserInteractionCancelled EventKind = "user_interaction_cancelled"
 	EventAgentStarted             EventKind = "agent_started"
@@ -112,6 +114,8 @@ type Event struct {
 	Usage                Usage
 	Approval             *ApprovalRequest
 	ApprovalID           string
+	UserQuestion         *UserQuestionRequest
+	UserQuestionID       string
 	Interaction          *UserInteractionRequest
 	InteractionID        string
 	Err                  string
@@ -197,9 +201,24 @@ type UserInteractionRequest struct {
 	Request    json.RawMessage
 }
 
+// UserQuestionRequest is a transient clarification requested by the lead agent.
+// The full question is available through SessionRuntime.PendingRequests.
+type UserQuestionRequest struct {
+	ID          string
+	AgentID     string
+	ExecutionID string
+	Question    string
+	Options     []string
+}
+
 type userInteractionResult struct {
 	Response json.RawMessage
 	Err      error
+}
+
+type userQuestionResult struct {
+	Answer string
+	Err    error
 }
 
 type pendingApproval struct {
@@ -213,6 +232,14 @@ type pendingApproval struct {
 type pendingInteraction struct {
 	response    chan userInteractionResult
 	request     UserInteractionRequest
+	sessionID   string
+	taskID      string
+	executionID string
+}
+
+type pendingUserQuestion struct {
+	response    chan userQuestionResult
+	request     UserQuestionRequest
 	sessionID   string
 	taskID      string
 	executionID string
@@ -429,6 +456,7 @@ type Core struct {
 	activeTasks         map[string]TaskState
 	taskCancels         map[string]context.CancelFunc
 	approvals           map[string]pendingApproval
+	userQuestions       map[string]pendingUserQuestion
 	interactions        map[string]pendingInteraction
 	interactiveSessions map[string]bool
 	eventHubs           map[string]*sessionEventHub
@@ -545,6 +573,7 @@ func New(config Config) (_ *Core, err error) {
 		activeTasks:         make(map[string]TaskState),
 		taskCancels:         make(map[string]context.CancelFunc),
 		approvals:           make(map[string]pendingApproval),
+		userQuestions:       make(map[string]pendingUserQuestion),
 		interactions:        make(map[string]pendingInteraction),
 		interactiveSessions: make(map[string]bool),
 		eventHubs:           make(map[string]*sessionEventHub),
@@ -612,6 +641,7 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		SupportsInputAudio: profile.SupportsInputAudio,
 		Team:               c.team,
+		AskUser:            c.requestUserQuestion,
 		StreamObserver: func(event model.ModelStreamEvent) {
 			activeModel := taskState.Model
 			if activeModel == "" {
@@ -708,6 +738,13 @@ func (c *Core) Close() error {
 		delete(c.approvals, id)
 		select {
 		case pending.response <- false:
+		default:
+		}
+	}
+	for id, pending := range c.userQuestions {
+		delete(c.userQuestions, id)
+		select {
+		case pending.response <- userQuestionResult{Err: errors.New("core is closing")}:
 		default:
 		}
 	}
@@ -861,6 +898,79 @@ func (c *Core) resolveUserInteraction(sessionID, id string, response json.RawMes
 		return fmt.Errorf("user interaction %q is no longer pending in this session", id)
 	}
 	pending.response <- userInteractionResult{Response: append(json.RawMessage(nil), response...)}
+	return nil
+}
+
+func (c *Core) requestUserQuestion(ctx context.Context, question string, options []string) (string, error) {
+	if c == nil || ctx == nil {
+		return "", errors.New("core and context are required")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	identity := publictool.CallIdentityFromContext(ctx)
+	if identity.AgentID != "lead" {
+		return "", errors.New("only the lead agent can ask the user a question")
+	}
+	question = strings.TrimSpace(question)
+	if question == "" {
+		return "", errors.New("question must not be empty")
+	}
+	id, err := newID()
+	if err != nil {
+		return "", fmt.Errorf("create user question ID: %w", err)
+	}
+	channel := make(chan userQuestionResult, 1)
+	request := UserQuestionRequest{
+		ID: id, AgentID: "lead", ExecutionID: identity.ExecutionID, Question: question, Options: append([]string(nil), options...),
+	}
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return "", errors.New("core is closed")
+	}
+	c.userQuestions[id] = pendingUserQuestion{
+		response: channel, request: request, sessionID: identity.SessionID, taskID: identity.TaskID, executionID: identity.ExecutionID,
+	}
+	c.mu.Unlock()
+	c.emit(Event{Kind: EventUserQuestionRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, UserQuestion: &request})
+	select {
+	case result := <-channel:
+		return result.Answer, result.Err
+	case <-ctx.Done():
+		c.mu.Lock()
+		_, stillPending := c.userQuestions[id]
+		if stillPending {
+			delete(c.userQuestions, id)
+		}
+		c.mu.Unlock()
+		if stillPending {
+			c.emit(Event{Kind: EventUserQuestionCancelled, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, UserQuestionID: id})
+			return "", ctx.Err()
+		}
+		// A host response raced with cancellation; prefer the delivered answer.
+		select {
+		case result := <-channel:
+			return result.Answer, result.Err
+		default:
+			return "", ctx.Err()
+		}
+	}
+}
+
+func (c *Core) resolveUserQuestion(sessionID, id, answer string) error {
+	c.mu.Lock()
+	pending, ok := c.userQuestions[id]
+	if ok && pending.sessionID == sessionID {
+		delete(c.userQuestions, id)
+		pending.response <- userQuestionResult{Answer: answer}
+	} else {
+		ok = false
+	}
+	c.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("user question %q is no longer pending in this session", id)
+	}
 	return nil
 }
 

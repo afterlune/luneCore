@@ -173,8 +173,8 @@ func (r *Registry) Register(registration ToolRegistration) error {
 	if definition.Name == "" {
 		return errors.New("tool name is empty")
 	}
-	if category.Name != "" && definition.Name == model.CategorySelectorName {
-		return errors.New("tool name is reserved: " + model.CategorySelectorName)
+	if definition.Name == model.UserQuestionToolName || (category.Name != "" && definition.Name == model.CategorySelectorName) {
+		return errors.New("tool name is reserved: " + definition.Name)
 	}
 	if len(definition.Parameters) == 0 {
 		return errors.New("tool parameters schema is empty")

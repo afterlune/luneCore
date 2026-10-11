@@ -21,9 +21,10 @@ import (
 )
 
 type scriptedHostProvider struct {
-	mu        sync.Mutex
-	responses []*publicmodel.ModelResponse
-	requests  int
+	mu           sync.Mutex
+	responses    []*publicmodel.ModelResponse
+	requests     int
+	seenRequests []publicmodel.ModelRequest
 }
 
 func (p *scriptedHostProvider) Name() string { return "host" }
@@ -34,6 +35,7 @@ func (p *scriptedHostProvider) CreateResponse(_ context.Context, request publicm
 	if len(p.responses) == 0 {
 		return nil, errors.New("scripted provider ran out of responses")
 	}
+	p.seenRequests = append(p.seenRequests, request)
 	response := p.responses[0]
 	p.responses = p.responses[1:]
 	p.requests++

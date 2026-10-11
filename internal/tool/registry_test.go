@@ -300,6 +300,13 @@ func TestDefaultRegistryCategorizesBuiltInTools(t *testing.T) {
 	}
 }
 
+func TestUserQuestionToolNameIsReserved(t *testing.T) {
+	_, err := NewRegistry(ToolRegistration{Tool: privateNamedTool{name: model.UserQuestionToolName}})
+	if err == nil || !strings.Contains(err.Error(), model.UserQuestionToolName) {
+		t.Fatalf("register built-in user question name error = %v", err)
+	}
+}
+
 type privateNamedTool struct{ name string }
 
 func (t privateNamedTool) Definition() model.FunctionTool {
