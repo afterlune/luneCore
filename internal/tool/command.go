@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 const (
@@ -23,8 +24,10 @@ const (
 // CommandTool executes a command in the workspace. Shell commands can still
 // access files outside the workspace; Workspace only sets their working dir.
 type CommandTool struct {
-	Workspace string
-	Timeout   time.Duration
+	Workspace         string
+	Timeout           time.Duration
+	Executor          publictool.CommandExecutor
+	AllowLocalCommand bool
 }
 
 func (CommandTool) Definition() model.FunctionTool {
@@ -52,6 +55,23 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	if t.Executor != nil {
+		invocationID := publictool.InvocationID(ctx)
+		requestContext := publictool.WithInvocationID(commandCtx, invocationID)
+		result, err := t.Executor.Execute(requestContext, publictool.CommandRequest{
+			Command: args.Command, Workspace: workspace, InvocationID: invocationID,
+		})
+		if commandCtx.Err() != nil {
+			return Result{Output: result.Output, Err: fmt.Errorf("command stopped: %w", commandCtx.Err())}
+		}
+		if err != nil {
+			return Result{Output: result.Output, Err: fmt.Errorf("run command: %w", err)}
+		}
+		return Result{Output: result.Output}
+	}
+	if !t.AllowLocalCommand {
+		return Result{Err: errors.New("no command executor is configured; inject a host executor or explicitly enable local shell execution")}
+	}
 
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {

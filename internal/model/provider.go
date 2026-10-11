@@ -109,14 +109,14 @@ func NewProviderCatalogWithProviders(config Config, overrides map[string]Provide
 	httpClient := &http.Client{Timeout: requestTimeout}
 	catalog := &ProviderCatalog{config: config, providers: make(map[string]Provider)}
 	for name, providerConfig := range config.Providers {
-		if strings.TrimSpace(providerConfig.APIKey) == "" {
-			continue
-		}
 		if provider, ok := overrides[name]; ok {
 			if provider == nil || provider.Name() != name {
 				return nil, fmt.Errorf("provider override for %q has an invalid name", name)
 			}
 			catalog.providers[name] = provider
+			continue
+		}
+		if strings.TrimSpace(providerConfig.APIKey) == "" {
 			continue
 		}
 		apiKey := strings.TrimSpace(providerConfig.APIKey)

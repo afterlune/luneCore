@@ -10,6 +10,7 @@ import (
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/tool"
+	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
 	"github.com/afterlune/luneGraph/checkpoint"
 )
@@ -34,9 +35,16 @@ func (t *teamExecutor) Run(ctx context.Context, runID string, assignments []agen
 	if len(assignments) == 0 || len(assignments) > t.MaxParallelAgents() {
 		return nil, fmt.Errorf("team task count must be between 1 and %d", t.MaxParallelAgents())
 	}
-	parentID, callID, ok := strings.Cut(runID, ":")
-	if !ok || parentID == "" || callID == "" {
+	parts := strings.SplitN(runID, ":", 3)
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" {
 		return nil, errors.New("team run ID must include a parent run and tool call ID")
+	}
+	parentID, callID := parts[0], parts[1]
+	if len(parts) == 3 {
+		if parts[2] == "" {
+			return nil, errors.New("team run ID must include a parent run and tool call ID")
+		}
+		callID += ":" + parts[2]
 	}
 	record, _, err := t.store.GetOrCreate(parentID, callID, assignments, t.models.Profiles())
 	if err != nil {
@@ -91,7 +99,12 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 	requester := &usageTrackingRequester{
 		inner: client, agentID: member.ID, profile: member.Model,
 		providerName: profile.Provider, modelName: profile.Model,
-		observer: t.core.onAgentUsage,
+	}
+	requester.SetContextAgentUsageObserver(t.core.onAgentUsageContext)
+	identity := publictool.CallIdentityFromContext(ctx)
+	taskState, _ := t.core.StateForSession(identity.SessionID)
+	if taskState.SessionID == "" {
+		taskState = TaskState{SessionID: identity.SessionID, TaskID: identity.TaskID}
 	}
 	agentOptions := agentgraph.AgentOptions{
 		ID: member.ID, Name: member.ID, Profile: member.Model,
@@ -99,7 +112,7 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 		ServerCompaction: providerConfig.ServerCompaction, Model: profile.Model,
 		SupportsInputAudio: profile.SupportsInputAudio,
 		StreamObserver: func(event model.ModelStreamEvent) {
-			t.core.onModelStream(member.ID, member.ID, member.Model, profile.Provider, profile.Model, event)
+			t.core.onModelStreamForTask(taskState, member.ID, member.ID, member.Model, profile.Provider, profile.Model, event)
 		},
 	}
 	agent, err := agentgraph.NewWithOptions(requester, t.tools, agentOptions)
@@ -129,7 +142,7 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 		return result, err
 	}
 	t.core.emit(Event{
-		Kind: EventAgentStarted, SessionID: t.core.State().SessionID, TaskID: t.core.State().TaskID,
+		Kind: EventAgentStarted, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 		AgentID: member.ID, AgentName: member.ID, AgentRole: "worker", TeamRunID: teamRunID,
 		ModelProfile: member.Model, Provider: profile.Provider, Model: profile.Model, Status: TaskRunning,
 	})
@@ -151,26 +164,26 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 		if ctx.Err() != nil {
 			updated.Status = "paused"
 			_ = t.store.UpdateMember(teamRunID, updated)
-			t.emitMemberFinished(teamRunID, member, profile, TaskPaused, err.Error())
+			t.emitMemberFinished(teamRunID, member, profile, identity, TaskPaused, err.Error())
 			return result, ctx.Err()
 		}
-		return t.failMember(teamRunID, member, profile, result, err)
+		return t.failMember(teamRunID, member, profile, result, identity, err)
 	}
 	if ctx.Err() != nil || graphResult.Status == graph.StatusCancelled || graphResult.Status == graph.StatusWaiting {
 		updated.Status = "paused"
 		_ = t.store.UpdateMember(teamRunID, updated)
-		t.emitMemberFinished(teamRunID, member, profile, TaskPaused, "task interrupted")
+		t.emitMemberFinished(teamRunID, member, profile, identity, TaskPaused, "task interrupted")
 		return result, ctx.Err()
 	}
 	if graphResult.Checkpoint.Final == nil {
-		return t.failMember(teamRunID, member, profile, result, fmt.Errorf("team member ended with status %s and no final state", graphResult.Status))
+		return t.failMember(teamRunID, member, profile, result, identity, fmt.Errorf("team member ended with status %s and no final state", graphResult.Status))
 	}
 	state := graphResult.Checkpoint.Final
 	if state.TaskError != "" && state.FinalResponse == nil {
-		return t.failMember(teamRunID, member, profile, result, errors.New(state.TaskError))
+		return t.failMember(teamRunID, member, profile, result, identity, errors.New(state.TaskError))
 	}
 	if state.FinalResponse == nil {
-		return t.failMember(teamRunID, member, profile, result, errors.New("team member completed without a response"))
+		return t.failMember(teamRunID, member, profile, result, identity, errors.New("team member completed without a response"))
 	}
 	result.Text = teamResponseText(state.FinalResponse)
 	updated.Status = "completed"
@@ -180,11 +193,11 @@ func (t *teamExecutor) runMember(ctx context.Context, teamRunID string, member t
 		return result, err
 	}
 	_ = t.checkpoints.Delete(context.Background(), childRunID)
-	t.emitMemberFinished(teamRunID, member, profile, TaskCompleted, "")
+	t.emitMemberFinished(teamRunID, member, profile, identity, TaskCompleted, "")
 	return result, nil
 }
 
-func (t *teamExecutor) failMember(teamRunID string, member teamMemberRecord, profile model.ModelProfile, result agentgraph.TeamMemberResult, err error) (agentgraph.TeamMemberResult, error) {
+func (t *teamExecutor) failMember(teamRunID string, member teamMemberRecord, profile model.ModelProfile, result agentgraph.TeamMemberResult, identity publictool.CallIdentity, err error) (agentgraph.TeamMemberResult, error) {
 	result.Error = err.Error()
 	updated := member
 	updated.Status = "failed"
@@ -193,13 +206,13 @@ func (t *teamExecutor) failMember(teamRunID string, member teamMemberRecord, pro
 		return result, errors.Join(err, saveErr)
 	}
 	_ = t.checkpoints.Delete(context.Background(), teamRunID+":"+member.ID)
-	t.emitMemberFinished(teamRunID, member, profile, TaskFailed, result.Error)
+	t.emitMemberFinished(teamRunID, member, profile, identity, TaskFailed, result.Error)
 	return result, nil
 }
 
-func (t *teamExecutor) emitMemberFinished(teamRunID string, member teamMemberRecord, profile model.ModelProfile, status TaskStatus, message string) {
+func (t *teamExecutor) emitMemberFinished(teamRunID string, member teamMemberRecord, profile model.ModelProfile, identity publictool.CallIdentity, status TaskStatus, message string) {
 	t.core.emit(Event{
-		Kind: EventAgentFinished, SessionID: t.core.State().SessionID, TaskID: t.core.State().TaskID,
+		Kind: EventAgentFinished, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 		AgentID: member.ID, AgentName: member.ID, AgentRole: "worker", TeamRunID: teamRunID,
 		ModelProfile: member.Model, Provider: profile.Provider, Model: profile.Model, Status: status, Err: message,
 	})

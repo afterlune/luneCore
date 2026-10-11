@@ -170,13 +170,14 @@ func (r *graphResponder) checkpointID(sessionID string) string {
 }
 
 type usageTrackingRequester struct {
-	inner        agentgraph.Requester
-	mu           sync.RWMutex
-	observer     func(model.ResponseUsage, string, string, string, string, int64)
-	agentID      string
-	profile      string
-	providerName string
-	modelName    string
+	inner           agentgraph.Requester
+	mu              sync.RWMutex
+	observer        func(model.ResponseUsage, string, string, string, string, int64)
+	contextObserver func(context.Context, model.ResponseUsage, string, string, string, string, int64)
+	agentID         string
+	profile         string
+	providerName    string
+	modelName       string
 }
 
 func (r *usageTrackingRequester) CreateResponse(ctx context.Context, request model.ModelRequest) (*model.ModelResponse, error) {
@@ -184,12 +185,19 @@ func (r *usageTrackingRequester) CreateResponse(ctx context.Context, request mod
 	if response != nil {
 		r.mu.RLock()
 		observer := r.observer
+		contextObserver := r.contextObserver
 		modelName := r.modelName
 		r.mu.RUnlock()
 		if request.Model != "" {
 			modelName = request.Model
 		}
-		if observer != nil {
+		if contextObserver != nil {
+			estimatedInputTokens := int64(0)
+			if response.Usage.InputTokens <= 0 {
+				estimatedInputTokens = model.EstimateInputTokens(request)
+			}
+			contextObserver(ctx, response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
+		} else if observer != nil {
 			estimatedInputTokens := int64(0)
 			if response.Usage.InputTokens <= 0 {
 				estimatedInputTokens = model.EstimateInputTokens(request)
@@ -209,12 +217,19 @@ func (r *usageTrackingRequester) StreamResponse(ctx context.Context, request mod
 	if response != nil {
 		r.mu.RLock()
 		observer := r.observer
+		contextObserver := r.contextObserver
 		modelName := r.modelName
 		r.mu.RUnlock()
 		if request.Model != "" {
 			modelName = request.Model
 		}
-		if observer != nil {
+		if contextObserver != nil {
+			estimatedInputTokens := int64(0)
+			if response.Usage.InputTokens <= 0 {
+				estimatedInputTokens = model.EstimateInputTokens(request)
+			}
+			contextObserver(ctx, response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
+		} else if observer != nil {
 			estimatedInputTokens := int64(0)
 			if response.Usage.InputTokens <= 0 {
 				estimatedInputTokens = model.EstimateInputTokens(request)
@@ -238,6 +253,14 @@ func (r *usageTrackingRequester) SetUsageObserver(observer func(model.ResponseUs
 func (r *usageTrackingRequester) SetAgentUsageObserver(observer func(model.ResponseUsage, string, string, string, string, int64)) {
 	r.mu.Lock()
 	r.observer = observer
+	r.contextObserver = nil
+	r.mu.Unlock()
+}
+
+func (r *usageTrackingRequester) SetContextAgentUsageObserver(observer func(context.Context, model.ResponseUsage, string, string, string, string, int64)) {
+	r.mu.Lock()
+	r.contextObserver = observer
+	r.observer = nil
 	r.mu.Unlock()
 }
 
@@ -462,9 +485,11 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 	}
 
 	if result.Status == graph.StatusFailed {
-		// Only remove a persisted graph failure. Store conflicts and I/O errors
-		// can leave a valid checkpoint owned by another call or process.
-		if result.Checkpoint.Failure != nil && !errors.Is(runErr, graph.ErrConflict) {
+		// Only remove a persisted graph failure. Store conflicts, ledger errors,
+		// and unresolved tool outcomes can leave a valid checkpoint to recover.
+		var recoveryRequired *ToolRecoveryRequiredError
+		preserveCheckpoint := errors.Is(runErr, graph.ErrConflict) || errors.Is(runErr, ErrToolInvocationPersistence) || errors.As(runErr, &recoveryRequired)
+		if result.Checkpoint.Failure != nil && !preserveCheckpoint {
 			if err := r.deleteCompletedRun(); err != nil {
 				runErr = errors.Join(runErr, err)
 			}

@@ -3,6 +3,8 @@ package agentgraph
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
 )
 
@@ -23,7 +26,7 @@ const (
 )
 
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
-const CurrentTaskSettingsVersion = 1
+const CurrentTaskSettingsVersion = 3
 
 // Requester sends one Responses API request without managing history or tools.
 type Requester interface {
@@ -81,7 +84,9 @@ type ContextCompactionEvent struct {
 // custom JSON decoder so typed and unknown multimodal input items survive clone
 // and checkpoint round trips.
 type State struct {
-	RunID                    string                     `json:"run_id,omitempty"`
+	RunID string `json:"run_id,omitempty"`
+	// ExecutionID is stable across resume attempts and namespaces tool calls.
+	ExecutionID              string                     `json:"execution_id,omitempty"`
 	AgentID                  string                     `json:"agent_id,omitempty"`
 	AgentName                string                     `json:"agent_name,omitempty"`
 	Provider                 string                     `json:"provider,omitempty"`
@@ -106,6 +111,7 @@ type State struct {
 	SelectedCategory         string                     `json:"selected_category,omitempty"`
 	PendingCalls             []model.OutputFunctionCall `json:"pending_calls,omitempty"`
 	PendingIndex             int                        `json:"pending_index,omitempty"`
+	PendingInvocationID      string                     `json:"pending_invocation_id,omitempty"`
 	VisibleTools             []string                   `json:"visible_tools,omitempty"`
 	ToolRounds               int                        `json:"tool_rounds,omitempty"`
 	MaxToolRounds            int                        `json:"max_tool_rounds,omitempty"`
@@ -115,6 +121,7 @@ type State struct {
 
 // TaskOptions configures one user task. A zero tool-round limit is unlimited.
 type TaskOptions struct {
+	ExecutionID   string
 	MaxToolRounds int
 	PlanMode      bool
 	// Model optionally overrides the configured profile's model identifier for this task.
@@ -214,6 +221,10 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 		return graph.Result[State]{Status: graph.StatusFailed}, err
 	}
 	state.RunID = runID
+	state.ExecutionID = taskOptions.ExecutionID
+	if state.ExecutionID == "" {
+		state.ExecutionID = runID
+	}
 	state.AgentID = a.options.ID
 	state.AgentName = a.options.Name
 	state.Provider = a.options.Provider
@@ -514,6 +525,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	}
 	state.PendingCalls = calls
 	state.PendingIndex = 0
+	state.PendingInvocationID = pendingToolInvocationID(state.ExecutionID, state.RunID, state.AgentID, state.ToolRounds, state.PendingIndex, calls[0].CallID)
 	state.VisibleTools = visibleNames
 	return graph.To(state, toolNode), nil
 }
@@ -549,8 +561,9 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 		if err != nil {
 			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Team request rejected: " + err.Error())}
 		} else {
-			results, err := a.options.Team.Run(ctx, state.RunID+":"+call.CallID, assignments, TaskOptions{
-				MaxToolRounds: state.MaxToolRounds, PlanMode: state.PlanMode, ReasoningEffort: state.ReasoningEffort,
+			results, err := a.options.Team.Run(ctx, state.RunID+":"+state.ExecutionID+":"+call.CallID, assignments, TaskOptions{
+				ExecutionID: state.ExecutionID, MaxToolRounds: state.MaxToolRounds,
+				PlanMode: state.PlanMode, ReasoningEffort: state.ReasoningEffort,
 			})
 			if err != nil {
 				return graph.Transition[State]{}, err
@@ -595,7 +608,23 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 	default:
 		toolContext := model.WithAgentID(ctx, state.AgentID)
 		toolContext = model.WithInputAudioSupport(toolContext, state.SupportsInputAudio)
-		output = a.tools.ExecuteCall(toolContext, call)
+		identity := publictool.CallIdentityFromContext(toolContext)
+		identity.RunID = state.RunID
+		identity.ExecutionID = state.ExecutionID
+		identity.AgentID = state.AgentID
+		identity.InvocationID = state.PendingInvocationID
+		toolContext = publictool.WithCallIdentity(toolContext, identity)
+		if recoverable, ok := a.tools.(interface {
+			ExecuteCallRecoverable(context.Context, model.OutputFunctionCall) (model.InputFunctionCallOutput, error)
+		}); ok {
+			var err error
+			output, err = recoverable.ExecuteCallRecoverable(toolContext, call)
+			if err != nil {
+				return graph.Transition[State]{}, err
+			}
+		} else {
+			output = a.tools.ExecuteCall(toolContext, call)
+		}
 	}
 
 	transcriptOnly := output.TranscriptOnly
@@ -609,13 +638,21 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 	}
 	state.PendingIndex++
 	if state.PendingIndex < len(state.PendingCalls) {
+		state.PendingInvocationID = pendingToolInvocationID(state.ExecutionID, state.RunID, state.AgentID, state.ToolRounds, state.PendingIndex, state.PendingCalls[state.PendingIndex].CallID)
 		return graph.To(state, toolNode), nil
 	}
 	state.ToolRounds++
 	state.PendingCalls = nil
 	state.PendingIndex = 0
+	state.PendingInvocationID = ""
 	state.VisibleTools = nil
 	return graph.To(state, modelNode), nil
+}
+
+func pendingToolInvocationID(executionID, runID, agentID string, toolRound, pendingIndex int, callID string) string {
+	identity := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%d\x00%s", executionID, runID, agentID, toolRound, pendingIndex, callID)
+	digest := sha256.Sum256([]byte(identity))
+	return "tool_" + hex.EncodeToString(digest[:])
 }
 
 func ensureTranscript(state *State) {

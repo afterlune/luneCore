@@ -360,6 +360,9 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	if pausedState.ModelOverride != taskModel {
 		t.Fatalf("checkpoint model override = %q, want %q", pausedState.ModelOverride, taskModel)
 	}
+	if pausedState.ExecutionID == "" {
+		t.Fatal("paused checkpoint has no stable task execution ID")
+	}
 	assertTaskSettingsSnapshot(t, pausedState, taskSettings{
 		Goal: "preserve this goal", ContextWindow: 32000, ReserveOutputTokens: 2048,
 		AutoCompact: true, AutoCompactThreshold: 0.7,
@@ -382,12 +385,22 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("resumed request was not observed")
 	}
-	assertTaskOptionsSnapshot(t, client.runtime.taskOptions, taskSettings{
+	resumedState, found := client.StateForSession(saved.ID)
+	if !found {
+		t.Fatal("resumed task state was not retained")
+	}
+	assertTaskOptionsSnapshot(t, agentgraph.TaskOptions{
+		Goal: resumedState.Goal, ContextWindow: resumedState.ContextWindow, ReserveOutputTokens: resumedState.ReserveOutputTokens,
+		AutoCompact: resumedState.AutoCompact, AutoCompactThreshold: resumedState.AutoCompactThreshold,
+	}, taskSettings{
 		Goal: "preserve this goal", ContextWindow: 32000, ReserveOutputTokens: 2048,
 		AutoCompact: true, AutoCompactThreshold: 0.7,
 	})
-	if client.runtime.taskOptions.Model != taskModel {
-		t.Fatalf("resumed task model override = %q, want %q", client.runtime.taskOptions.Model, taskModel)
+	if resumedState.ModelOverride != taskModel {
+		t.Fatalf("resumed task model override = %q, want %q", resumedState.ModelOverride, taskModel)
+	}
+	if resumedState.ExecutionID != pausedState.ExecutionID {
+		t.Fatalf("resumed execution ID = %q, want stable ID %q", resumedState.ExecutionID, pausedState.ExecutionID)
 	}
 	current, err := client.GetSession(context.Background(), saved.ID)
 	if err != nil {

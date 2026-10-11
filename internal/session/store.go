@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 1
+const currentSchemaVersion = 3
 
 // Snapshot is the persisted state for one workspace session. Data is owned by
 // the caller so the session package does not depend on the TUI or model layer.
@@ -87,6 +87,43 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("migrate session metadata: %w", err)
 		}
 		if _, err := tx.Exec(`PRAGMA user_version = 1`); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return nil, fmt.Errorf("set session database version: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS tool_invocations (
+		run_id TEXT NOT NULL,
+		invocation_id TEXT NOT NULL,
+		session_id TEXT NOT NULL,
+		execution_id TEXT NOT NULL DEFAULT '',
+		agent_id TEXT NOT NULL,
+		call_id TEXT NOT NULL,
+		name TEXT NOT NULL,
+		arguments BLOB NOT NULL,
+		status TEXT NOT NULL,
+		output BLOB,
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY (run_id, invocation_id)
+	)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize tool invocation store: %w", err)
+	}
+	if version >= 2 && version < 3 {
+		if _, err := tx.Exec(`ALTER TABLE tool_invocations ADD COLUMN execution_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate tool invocation execution IDs: %w", err)
+		}
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS tool_invocations_session ON tool_invocations(session_id, run_id)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize tool invocation index: %w", err)
+	}
+	if version < currentSchemaVersion {
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
 			_ = tx.Rollback()
 			_ = db.Close()
 			return nil, fmt.Errorf("set session database version: %w", err)

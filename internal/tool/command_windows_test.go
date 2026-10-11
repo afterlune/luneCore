@@ -32,7 +32,7 @@ func TestCommandCancellationStopsShellChildrenPromptly(t *testing.T) {
 	defer cancel()
 	resultChannel := make(chan Result, 1)
 	go func() {
-		resultChannel <- (CommandTool{Workspace: workspace}).Run(ctx, command)
+		resultChannel <- (CommandTool{Workspace: workspace, AllowLocalCommand: true}).Run(ctx, command)
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	for {

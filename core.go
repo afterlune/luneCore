@@ -26,6 +26,8 @@ import (
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
 	"github.com/afterlune/luneCore/internal/tool"
+	publicmodel "github.com/afterlune/luneCore/model"
+	publictool "github.com/afterlune/luneCore/tool"
 	"github.com/afterlune/luneGraph/checkpoint"
 	"github.com/afterlune/luneGraph/checkpoint/sqlite"
 )
@@ -76,13 +78,16 @@ const (
 	EventAgentFinished            EventKind = "agent_finished"
 	EventModelStream              EventKind = "model_stream"
 	EventContextCompaction        EventKind = "context_compaction"
+	EventToolRecoveryRequired     EventKind = "tool_recovery_required"
 )
 
 // Event is a structured runtime notification. Arguments and response payloads
 // are transient; clients should not persist or log them without sanitizing.
 type Event struct {
-	Kind                 EventKind
-	TaskID               string
+	Kind   EventKind
+	TaskID string
+	// ExecutionID remains stable when a paused task resumes with a new TaskID.
+	ExecutionID          string
 	SessionID            string
 	Status               TaskStatus
 	ContextWindow        int64
@@ -103,6 +108,7 @@ type Event struct {
 	Model                string
 	Stream               *ModelStreamEvent
 	Compaction           *ContextCompactionDetails
+	ToolRecovery         *ToolRecoveryRequest
 }
 
 type ContextCompactionDetails struct {
@@ -125,14 +131,38 @@ type ModelStreamEvent struct {
 }
 
 type ToolCall struct {
-	ID        string
-	AgentID   string
-	Name      string
-	Arguments json.RawMessage
-	Duration  time.Duration
-	Started   bool
-	Failed    bool
-	Canceled  bool
+	ID string
+	// InvocationID remains stable across explicit recovery retries.
+	InvocationID string
+	AgentID      string
+	Name         string
+	Arguments    json.RawMessage
+	Duration     time.Duration
+	Started      bool
+	Recovered    bool
+	Failed       bool
+	Canceled     bool
+}
+
+type ToolRecoveryDecision string
+
+const (
+	ToolRecoveryRetry ToolRecoveryDecision = "retry"
+	ToolRecoverySkip  ToolRecoveryDecision = "skip"
+)
+
+type ToolRecoveryRequest struct {
+	InvocationID string
+	CallID       string
+	AgentID      string
+	Tool         string
+	Arguments    json.RawMessage
+}
+
+type ToolRecoveryRequiredError struct{ InvocationID string }
+
+func (e *ToolRecoveryRequiredError) Error() string {
+	return fmt.Sprintf("tool invocation %q has an unknown outcome; resolve it as retry or skip before resuming", e.InvocationID)
 }
 
 type ApprovalRequest struct {
@@ -315,20 +345,36 @@ type TaskRequest struct {
 }
 
 type TaskState struct {
-	Status          TaskStatus
-	SessionID       string
-	TaskID          string
-	ContextWindow   int64
-	PlanMode        bool
-	ModelProfile    string
-	Provider        string
-	Model           string
-	ReasoningEffort string
+	Status    TaskStatus
+	SessionID string
+	TaskID    string
+	// ExecutionID identifies the logical run across pause and resume attempts.
+	ExecutionID          string
+	ContextWindow        int64
+	ReserveOutputTokens  int64
+	AutoCompact          bool
+	AutoCompactThreshold float64
+	Goal                 string
+	MaxToolRounds        int
+	ModelOverride        string
+	PlanMode             bool
+	ModelProfile         string
+	Provider             string
+	Model                string
+	ReasoningEffort      string
 }
 
+// Config constructs an embedded runtime. ModelConfig values override matching
+// entries from config.json; omitted model settings are loaded from that file.
+// ModelProviders replace protocol adapters with host implementations.
 type Config struct {
-	Workspace string
-	StateDir  string
+	Workspace         string
+	StateDir          string
+	ModelConfig       *publicmodel.Config
+	ModelProviders    map[string]publicmodel.Provider
+	Tools             []publictool.Registration
+	CommandExecutor   publictool.CommandExecutor
+	AllowLocalCommand bool
 }
 
 type Core struct {
@@ -345,9 +391,10 @@ type Core struct {
 	sessions         *session.Store
 
 	mu                       sync.RWMutex
+	runtimeConfigMu          sync.RWMutex
 	usageMu                  sync.Mutex
-	approvalQueueMu          sync.Mutex
 	active                   TaskState
+	activeTasks              map[string]TaskState
 	handler                  EventHandler
 	approvals                map[string]chan bool
 	interactions             map[string]chan userInteractionResult
@@ -378,7 +425,17 @@ func New(config Config) (_ *Core, err error) {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
-	registry, err := tool.NewDefaultRegistry(workspace)
+	projectConfig, err := loadProjectConfig(workspace, config.ModelConfig, config.ModelProviders)
+	if err != nil {
+		return nil, err
+	}
+	hostTools, err := tool.HostToolRegistrations(config.Tools)
+	if err != nil {
+		return nil, err
+	}
+	registry, err := tool.NewDefaultRegistry(workspace, tool.RegistryOptions{
+		Tools: hostTools, CommandExecutor: config.CommandExecutor, AllowLocalCommands: config.AllowLocalCommand,
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -388,11 +445,7 @@ func New(config Config) (_ *Core, err error) {
 			_ = registry.Close()
 		}
 	}()
-	projectConfig, err := projectconfig.Load(filepath.Join(workspace, projectconfig.FileName))
-	if err != nil {
-		return nil, err
-	}
-	models, err := model.NewProviderCatalog(projectConfig.ModelConfig())
+	models, err := model.NewProviderCatalogWithHostProviders(projectConfig.ModelConfig(), config.ModelProviders)
 	if err != nil {
 		return nil, err
 	}
@@ -439,12 +492,13 @@ func New(config Config) (_ *Core, err error) {
 		checkpoints:  checkpoints,
 		sessions:     sessions,
 		active:       TaskState{Status: TaskIdle},
+		activeTasks:  make(map[string]TaskState),
 		approvals:    make(map[string]chan bool),
 		interactions: make(map[string]chan userInteractionResult),
 	}
 	attachmentLimits := c.ProjectAttachmentLimits()
 	mcpManager, err := mcp.NewManager(mcp.Options{
-		Workspace: workspace, StateDir: filepath.Join(workspace, ".luneagent"), Servers: projectConfig.MCPServers, Registry: registry,
+		Workspace: workspace, StateDir: stateDir, Servers: projectConfig.MCPServers, Registry: registry,
 		Limits:             mcp.Limits{MaxBinaryBlocks: attachmentLimits.MaxFiles, MaxFileBytes: attachmentLimits.MaxFileBytes, MaxTotalBytes: attachmentLimits.MaxTotalBytes},
 		RequestInteraction: c.requestUserInteraction,
 	})
@@ -465,6 +519,7 @@ func New(config Config) (_ *Core, err error) {
 	c.team = team
 	c.runtime = &graphResponder{store: checkpoints}
 	registry.SetToolEventObserver(c.onToolEvent)
+	registry.SetToolCallController(c.executeToolCall)
 	registry.SetPermissionApprovalHandler(c.requestApproval)
 	if err := c.migrateLegacySession(context.Background()); err != nil {
 		return nil, err
@@ -473,7 +528,7 @@ func New(config Config) (_ *Core, err error) {
 	return c, nil
 }
 
-func (c *Core) buildAgent(profileID string) (*agentgraph.Agent, *usageTrackingRequester, model.ModelProfile, error) {
+func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Agent, *usageTrackingRequester, model.ModelProfile, error) {
 	profile, ok := c.models.Profile(profileID)
 	if !ok {
 		return nil, nil, model.ModelProfile{}, fmt.Errorf("unknown model profile %q", profileID)
@@ -489,28 +544,29 @@ func (c *Core) buildAgent(profileID string) (*agentgraph.Agent, *usageTrackingRe
 	requester := &usageTrackingRequester{
 		inner: client, agentID: "lead", profile: profileID,
 		providerName: profile.Provider, modelName: profile.Model,
-		observer: c.onAgentUsage,
 	}
+	requester.SetContextAgentUsageObserver(func(ctx context.Context, usage model.ResponseUsage, agentID, profileName, providerName, modelID string, estimated int64) {
+		c.onAgentUsageForTask(taskState, usage, agentID, profileName, providerName, modelID, estimated)
+	})
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		SupportsInputAudio: profile.SupportsInputAudio,
 		Team:               c.team,
 		StreamObserver: func(event model.ModelStreamEvent) {
-			activeModel := c.State().Model
+			activeModel := taskState.Model
 			if activeModel == "" {
 				activeModel = profile.Model
 			}
-			c.onModelStream("lead", "Lead", profileID, profile.Provider, activeModel, event)
+			c.onModelStreamForTask(taskState, "lead", "Lead", profileID, profile.Provider, activeModel, event)
 		},
 		CompactionObserver: func(event agentgraph.ContextCompactionEvent) {
-			active := c.State()
 			details := &ContextCompactionDetails{
 				Stage: event.Stage, Mode: event.Mode, BeforeTokens: event.BeforeTokens,
 				AfterTokens: event.AfterTokens, Threshold: event.Threshold, Err: errorString(event.Error),
 			}
-			c.emit(Event{Kind: EventContextCompaction, TaskID: active.TaskID, SessionID: active.SessionID,
-				Provider: profile.Provider, ModelProfile: profileID, Model: active.Model, Err: errorString(event.Error), Compaction: details})
+			c.emit(Event{Kind: EventContextCompaction, TaskID: taskState.TaskID, ExecutionID: taskState.ExecutionID, SessionID: taskState.SessionID,
+				Provider: profile.Provider, ModelProfile: profileID, Model: taskState.Model, Err: errorString(event.Error), Compaction: details})
 		},
 	})
 	if err != nil {
@@ -519,25 +575,30 @@ func (c *Core) buildAgent(profileID string) (*agentgraph.Agent, *usageTrackingRe
 	return agent, requester, profile, nil
 }
 
-func (c *Core) configureRuntime(profileID, reasoningEffort string) (model.ModelProfile, error) {
-	agent, requester, profile, err := c.buildAgent(profileID)
+func (c *Core) configureRuntime(profileID, reasoningEffort string, taskState TaskState) (*graphResponder, model.ModelProfile, error) {
+	agent, requester, profile, err := c.buildAgent(profileID, taskState)
 	if err != nil {
-		return model.ModelProfile{}, err
+		return nil, model.ModelProfile{}, err
 	}
-	c.runtime.SetRunModel(agent, requester, profile.Model, reasoningEffort)
-	return profile, nil
+	runtime := &graphResponder{store: c.checkpoints}
+	runtime.SetRunModel(agent, requester, profile.Model, reasoningEffort)
+	return runtime, profile, nil
 }
 
 func (c *Core) Close() error {
 	if c == nil {
 		return nil
 	}
+	if !c.runtimeConfigMu.TryLock() {
+		return errors.New("cannot close core while tasks or runtime configuration changes are active")
+	}
+	defer c.runtimeConfigMu.Unlock()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
 		return nil
 	}
-	if c.active.Status == TaskRunning {
+	if c.hasRunningTasksLocked() {
 		c.mu.Unlock()
 		return errors.New("cannot close core while a task is running")
 	}
@@ -583,7 +644,14 @@ func (c *Core) EnableMCPServer(name string) error {
 	if c == nil || c.mcpManager == nil {
 		return errors.New("MCP manager is unavailable")
 	}
-	if c.State().Status == TaskRunning {
+	if !c.runtimeConfigMu.TryLock() {
+		return errors.New("cannot change MCP servers while a task is running")
+	}
+	defer c.runtimeConfigMu.Unlock()
+	c.mu.RLock()
+	running := c.hasRunningTasksLocked()
+	c.mu.RUnlock()
+	if running {
 		return errors.New("cannot change MCP servers while a task is running")
 	}
 	return c.mcpManager.Enable(name)
@@ -593,7 +661,14 @@ func (c *Core) DisableMCPServer(name string) error {
 	if c == nil || c.mcpManager == nil {
 		return errors.New("MCP manager is unavailable")
 	}
-	if c.State().Status == TaskRunning {
+	if !c.runtimeConfigMu.TryLock() {
+		return errors.New("cannot change MCP servers while a task is running")
+	}
+	defer c.runtimeConfigMu.Unlock()
+	c.mu.RLock()
+	running := c.hasRunningTasksLocked()
+	c.mu.RUnlock()
+	if running {
 		return errors.New("cannot change MCP servers while a task is running")
 	}
 	return c.mcpManager.Disable(name)
@@ -603,7 +678,14 @@ func (c *Core) AuthenticateMCPServer(ctx context.Context, name string) error {
 	if c == nil || c.mcpManager == nil {
 		return errors.New("MCP manager is unavailable")
 	}
-	if c.State().Status == TaskRunning {
+	if !c.runtimeConfigMu.TryLock() {
+		return errors.New("cannot authorize an MCP server while a task is running")
+	}
+	defer c.runtimeConfigMu.Unlock()
+	c.mu.RLock()
+	running := c.hasRunningTasksLocked()
+	c.mu.RUnlock()
+	if running {
 		return errors.New("cannot authorize an MCP server while a task is running")
 	}
 	return c.mcpManager.Authorize(ctx, name)
@@ -670,7 +752,8 @@ func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName s
 	}
 	c.interactions[id] = channel
 	c.mu.Unlock()
-	c.emit(Event{Kind: EventUserInteractionRequired, SessionID: c.State().SessionID,
+	identity := publictool.CallIdentityFromContext(ctx)
+	c.emit(Event{Kind: EventUserInteractionRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 		Interaction: &UserInteractionRequest{ID: id, AgentID: agentID, ServerName: serverName, Request: append(json.RawMessage(nil), request...)}})
 	select {
 	case result := <-channel:
@@ -679,11 +762,13 @@ func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName s
 		c.mu.Lock()
 		delete(c.interactions, id)
 		c.mu.Unlock()
-		c.emit(Event{Kind: EventUserInteractionCancelled, InteractionID: id})
+		c.emit(Event{Kind: EventUserInteractionCancelled, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, InteractionID: id})
 		return nil, ctx.Err()
 	}
 }
 
+// SetEventHandler installs the host event callback. Calls may arrive
+// concurrently when tasks for different sessions are running.
 func (c *Core) SetEventHandler(handler EventHandler) {
 	if c == nil {
 		return
@@ -693,6 +778,8 @@ func (c *Core) SetEventHandler(handler EventHandler) {
 	c.mu.Unlock()
 }
 
+// State returns the state last changed by any session. Use StateForSession or
+// ActiveTasks when a Core is running multiple sessions concurrently.
 func (c *Core) State() TaskState {
 	if c == nil {
 		return TaskState{Status: TaskFailed}
@@ -700,6 +787,54 @@ func (c *Core) State() TaskState {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.active
+}
+
+// StateForSession returns the most recent task state for one session.
+func (c *Core) StateForSession(sessionID string) (TaskState, bool) {
+	if c == nil || sessionID == "" {
+		return TaskState{}, false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	state, ok := c.activeTasks[sessionID]
+	return state, ok
+}
+
+// ActiveTasks returns currently running tasks in stable session ID order.
+func (c *Core) ActiveTasks() []TaskState {
+	if c == nil {
+		return nil
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	ids := make([]string, 0, len(c.activeTasks))
+	for id, state := range c.activeTasks {
+		if state.Status == TaskRunning {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	states := make([]TaskState, 0, len(ids))
+	for _, id := range ids {
+		states = append(states, c.activeTasks[id])
+	}
+	return states
+}
+
+func (c *Core) hasRunningTasksLocked() bool {
+	for _, state := range c.activeTasks {
+		if state.Status == TaskRunning {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Core) sessionIsRunningLocked(sessionID string) bool {
+	if c.activeTasks[sessionID].Status == TaskRunning {
+		return true
+	}
+	return c.active.Status == TaskRunning && c.active.SessionID == sessionID
 }
 
 func (c *Core) Workspace() string {
@@ -854,7 +989,8 @@ func (c *Core) resolveTaskSettings(settings SessionSettings) (taskSettings, erro
 
 func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 	return agentgraph.TaskOptions{
-		PlanMode: state.PlanMode, MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
+		ExecutionID: state.ExecutionID,
+		PlanMode:    state.PlanMode, MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
 		Goal: state.Goal, ContextWindow: state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,
 		AutoCompact: state.AutoCompact, AutoCompactThreshold: state.AutoCompactThreshold,
 	}
@@ -926,6 +1062,14 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	if maxRounds < 0 {
 		return nil, errors.New("maximum tool rounds must not be negative")
 	}
+	c.runtimeConfigMu.RLock()
+	defer c.runtimeConfigMu.RUnlock()
+	c.mu.RLock()
+	closed := c.closed
+	c.mu.RUnlock()
+	if closed {
+		return nil, errors.New("core is closed")
+	}
 	modelOverride = strings.TrimSpace(modelOverride)
 	saved, err := c.GetSession(ctx, sessionID)
 	if err != nil {
@@ -993,6 +1137,16 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 			AutoCompactThreshold: effective.AutoCompactThreshold,
 		}
 	}
+	if resume {
+		if taskOptions.ExecutionID == "" {
+			return nil, errors.New("paused task checkpoint is missing its execution identity; discard it and start a new task")
+		}
+	} else {
+		taskOptions.ExecutionID, err = newID()
+		if err != nil {
+			return nil, fmt.Errorf("create task execution ID: %w", err)
+		}
+	}
 	var transcript *model.ResponseInput
 	if len(saved.History) > 0 && string(saved.History) != "null" {
 		var decoded model.ResponseInput
@@ -1014,11 +1168,28 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		}
 		modelContext = &decoded
 	}
-	if _, err := c.beginTask(ctx, sessionID, planMode, settings, profile, effectiveModel, taskOptions.ContextWindow, saved.UpdatedAt); err != nil {
+	if _, err := c.beginTask(ctx, sessionID, planMode, settings, profile, effectiveModel, taskOptions, saved.UpdatedAt); err != nil {
 		return nil, err
 	}
-	defer c.endTask()
-	if _, err := c.configureRuntime(settings.ModelProfile, settings.ReasoningEffort); err != nil {
+	defer c.endTask(sessionID)
+	taskState, _ := c.StateForSession(sessionID)
+	ctx = publictool.WithCallIdentity(ctx, publictool.CallIdentity{
+		SessionID: sessionID, TaskID: taskState.TaskID, RunID: c.runtime.checkpointID(sessionID),
+		ExecutionID: taskOptions.ExecutionID, AgentID: "lead",
+	})
+	if resume {
+		if recoveryErr := c.checkToolRecovery(ctx, sessionID, taskState); recoveryErr != nil {
+			status := TaskFailed
+			var required *ToolRecoveryRequiredError
+			if errors.As(recoveryErr, &required) {
+				status = TaskPaused
+			}
+			c.finishTaskState(sessionID, status, recoveryErr)
+			return nil, recoveryErr
+		}
+	}
+	taskRuntime, _, err := c.configureRuntime(settings.ModelProfile, settings.ReasoningEffort, taskState)
+	if err != nil {
 		c.finishTaskState(sessionID, TaskFailed, err)
 		return nil, err
 	}
@@ -1028,20 +1199,20 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 			return nil, err
 		}
 	}
-	c.runtime.SetSessionState(sessionID, transcript, modelContext, contextKey)
-	c.runtime.SetTaskOptions(taskOptions)
-	c.runtime.SetHistorySaver(func(id string, transcript, modelContext *model.ResponseInput, key string) error {
+	taskRuntime.SetSessionState(sessionID, transcript, modelContext, contextKey)
+	taskRuntime.SetTaskOptions(taskOptions)
+	taskRuntime.SetHistorySaver(func(id string, transcript, modelContext *model.ResponseInput, key string) error {
 		return c.setSessionConversation(context.Background(), id, transcript, modelContext, key)
 	})
-	defer c.runtime.SetHistorySaver(nil)
+	defer taskRuntime.SetHistorySaver(nil)
 	var response *model.Response
 	if resume {
-		response, err = c.runtime.Resume(ctx)
+		response, err = taskRuntime.Resume(ctx)
 	} else {
-		response, err = c.runtime.Respond(ctx, input)
+		response, err = taskRuntime.Respond(ctx, input)
 	}
 	if response != nil {
-		_ = c.saveHistoryUsage(ctx, sessionID)
+		_ = c.saveHistoryUsage(ctx, sessionID, taskRuntime)
 	}
 	status := TaskCompleted
 	if err != nil {
@@ -1055,8 +1226,11 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	}
 	c.finishTaskState(sessionID, status, err)
 	if status != TaskPaused && c.teamRuns != nil {
-		if cleanupErr := c.teamRuns.DeleteParent(c.runtime.runID()); cleanupErr != nil {
+		if cleanupErr := c.teamRuns.DeleteParent(taskRuntime.runID()); cleanupErr != nil {
 			slog.Warn("delete completed team runs", "error", cleanupErr)
+		}
+		if cleanupErr := c.sessions.DeleteToolInvocationsForSession(context.Background(), sessionID); cleanupErr != nil {
+			slog.Warn("delete completed tool invocation records", "error", cleanupErr)
 		}
 	}
 	if response == nil {
@@ -1069,7 +1243,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	return encoded, err
 }
 
-func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, settings SessionSettings, profile model.ModelProfile, modelName string, contextWindow int64, expectedUpdatedAt time.Time) (string, error) {
+func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, settings SessionSettings, profile model.ModelProfile, modelName string, taskOptions agentgraph.TaskOptions, expectedUpdatedAt time.Time) (string, error) {
 	if ctx == nil {
 		return "", errors.New("context is nil")
 	}
@@ -1078,9 +1252,9 @@ func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, s
 		c.mu.Unlock()
 		return "", errors.New("core is closed")
 	}
-	if c.active.Status == TaskRunning {
+	if c.sessionIsRunningLocked(sessionID) {
 		c.mu.Unlock()
-		return "", errors.New("a task is already running")
+		return "", errors.New("a task is already running in this session")
 	}
 	snapshot, err := c.sessions.Get(ctx, sessionID, c.workspace)
 	if err != nil {
@@ -1096,35 +1270,44 @@ func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, s
 		c.mu.Unlock()
 		return "", err
 	}
-	c.active = TaskState{
-		Status: TaskRunning, SessionID: sessionID, TaskID: id, ContextWindow: contextWindow, PlanMode: planMode,
+	state := TaskState{
+		Status: TaskRunning, SessionID: sessionID, TaskID: id, ExecutionID: taskOptions.ExecutionID, ContextWindow: taskOptions.ContextWindow,
+		ReserveOutputTokens: taskOptions.ReserveOutputTokens, AutoCompact: taskOptions.AutoCompact,
+		AutoCompactThreshold: taskOptions.AutoCompactThreshold, Goal: taskOptions.Goal, MaxToolRounds: taskOptions.MaxToolRounds,
+		ModelOverride: taskOptions.Model, PlanMode: planMode,
 		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: modelName,
 		ReasoningEffort: settings.ReasoningEffort,
 	}
+	if c.activeTasks == nil {
+		c.activeTasks = make(map[string]TaskState)
+	}
+	c.activeTasks[sessionID] = state
+	c.active = state
 	c.mu.Unlock()
-	c.emit(Event{Kind: EventTaskStarted, TaskID: id, SessionID: sessionID, Status: TaskRunning, ContextWindow: contextWindow,
+	c.emit(Event{Kind: EventTaskStarted, TaskID: id, ExecutionID: taskOptions.ExecutionID, SessionID: sessionID, Status: TaskRunning, ContextWindow: taskOptions.ContextWindow,
 		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: modelName})
 	return id, nil
 }
 
-func (c *Core) endTask() {
+func (c *Core) endTask(sessionID string) {
 	c.mu.Lock()
-	if c.active.Status == TaskRunning {
-		c.active.Status = TaskIdle
+	state, ok := c.activeTasks[sessionID]
+	if ok && state.Status == TaskRunning {
+		state.Status = TaskIdle
+		c.activeTasks[sessionID] = state
+		c.active = state
 	}
 	c.mu.Unlock()
 }
 
-func (c *Core) setTaskStatus(status TaskStatus) {
-	c.mu.Lock()
-	c.active.Status = status
-	c.mu.Unlock()
-}
-
 func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
-	c.setTaskStatus(status)
-	state := c.State()
-	c.emit(Event{Kind: EventTaskFinished, TaskID: state.TaskID, SessionID: sessionID, Status: status, ContextWindow: state.ContextWindow, Err: errorString(err),
+	c.mu.Lock()
+	state := c.activeTasks[sessionID]
+	state.Status = status
+	c.activeTasks[sessionID] = state
+	c.active = state
+	c.mu.Unlock()
+	c.emit(Event{Kind: EventTaskFinished, TaskID: state.TaskID, ExecutionID: state.ExecutionID, SessionID: sessionID, Status: status, ContextWindow: state.ContextWindow, Err: errorString(err),
 		ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model})
 }
 
@@ -1148,13 +1331,17 @@ func (c *Core) onToolEvent(event tool.ToolEvent) {
 	if event.Started {
 		kind = EventToolStarted
 	}
-	c.emit(Event{Kind: kind, SessionID: c.State().SessionID, TaskID: c.State().TaskID, Tool: ToolCall{
-		ID: event.CallID, AgentID: event.AgentID, Name: event.Name, Arguments: event.Arguments, Started: event.Started,
-		Duration: event.Duration, Failed: event.Failed, Canceled: event.Canceled,
+	c.emit(Event{Kind: kind, SessionID: event.SessionID, TaskID: event.TaskID, ExecutionID: event.ExecutionID, Tool: ToolCall{
+		ID: event.CallID, InvocationID: event.InvocationID, AgentID: event.AgentID, Name: event.Name, Arguments: event.Arguments, Started: event.Started,
+		Duration: event.Duration, Recovered: event.Recovered, Failed: event.Failed, Canceled: event.Canceled,
 	}})
 }
 
 func (c *Core) onModelStream(agentID, agentName, profile, provider, modelID string, event model.ModelStreamEvent) {
+	c.onModelStreamForTask(c.State(), agentID, agentName, profile, provider, modelID, event)
+}
+
+func (c *Core) onModelStreamForTask(state TaskState, agentID, agentName, profile, provider, modelID string, event model.ModelStreamEvent) {
 	stream := &ModelStreamEvent{
 		Type: string(event.Type), ItemID: event.ItemID, OutputIndex: event.OutputIndex,
 		Delta: event.Delta,
@@ -1163,7 +1350,7 @@ func (c *Core) onModelStream(agentID, agentName, profile, provider, modelID stri
 		stream.ToolCallID, stream.ToolName, stream.ToolArguments = event.ToolCall.CallID, event.ToolCall.Name, event.ToolCall.Arguments
 	}
 	c.emit(Event{
-		Kind: EventModelStream, SessionID: c.State().SessionID, TaskID: c.State().TaskID,
+		Kind: EventModelStream, SessionID: state.SessionID, TaskID: state.TaskID, ExecutionID: state.ExecutionID,
 		AgentID: agentID, AgentName: agentName, ModelProfile: profile, Provider: provider, Model: modelID,
 		Stream: stream,
 	})
@@ -1174,11 +1361,23 @@ func (c *Core) onUsage(usage model.ResponseUsage) {
 }
 
 func (c *Core) onAgentUsage(usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64) {
+	c.onAgentUsageForTask(c.State(), usage, agentID, profile, provider, modelID, estimatedInputTokens)
+}
+
+func (c *Core) onAgentUsageContext(ctx context.Context, usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64) {
+	identity := publictool.CallIdentityFromContext(ctx)
+	state, ok := c.StateForSession(identity.SessionID)
+	if !ok {
+		state = TaskState{SessionID: identity.SessionID, TaskID: identity.TaskID}
+	}
+	c.onAgentUsageForTask(state, usage, agentID, profile, provider, modelID, estimatedInputTokens)
+}
+
+func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64) {
 	value := Usage{InputTokens: usage.InputTokens, InputTokensDetails: TokenInputDetails{
 		CachedTokens: usage.InputTokensDetails.CachedTokens, CacheCreationTokens: usage.InputTokensDetails.CacheCreationTokens,
 	},
 		OutputTokens: usage.OutputTokens, OutputTokensDetails: TokenOutputDetails{ReasoningTokens: usage.OutputTokensDetails.ReasoningTokens}, TotalTokens: usage.TotalTokens}
-	state := c.State()
 	contextWindow := state.ContextWindow
 	if agentID != "" && agentID != "lead" {
 		contextWindow = 0
@@ -1188,14 +1387,12 @@ func (c *Core) onAgentUsage(usage model.ResponseUsage, agentID, profile, provide
 			slog.Warn("persist token usage", "error", err)
 		}
 	}
-	c.emit(Event{Kind: EventUsage, SessionID: state.SessionID, TaskID: state.TaskID, Usage: value,
+	c.emit(Event{Kind: EventUsage, SessionID: state.SessionID, TaskID: state.TaskID, ExecutionID: state.ExecutionID, Usage: value,
 		AgentID: agentID, ModelProfile: profile, Provider: provider, Model: modelID, ContextWindow: contextWindow,
 		EstimatedInputTokens: estimatedInputTokensIfMissing(value.InputTokens, estimatedInputTokens)})
 }
 
 func (c *Core) requestApproval(ctx context.Context, request tool.PermissionRequest) bool {
-	c.approvalQueueMu.Lock()
-	defer c.approvalQueueMu.Unlock()
 	if ctx.Err() != nil {
 		return false
 	}
@@ -1211,7 +1408,8 @@ func (c *Core) requestApproval(ctx context.Context, request tool.PermissionReque
 	}
 	c.approvals[id] = response
 	c.mu.Unlock()
-	c.emit(Event{Kind: EventApprovalRequired, SessionID: c.State().SessionID, TaskID: c.State().TaskID,
+	identity := publictool.CallIdentityFromContext(ctx)
+	c.emit(Event{Kind: EventApprovalRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 		AgentID:  request.AgentID,
 		Approval: &ApprovalRequest{ID: id, AgentID: request.AgentID, Tool: request.Tool, Arguments: append(json.RawMessage(nil), request.Arguments...)}})
 	select {
@@ -1221,7 +1419,7 @@ func (c *Core) requestApproval(ctx context.Context, request tool.PermissionReque
 		c.mu.Lock()
 		delete(c.approvals, id)
 		c.mu.Unlock()
-		c.emit(Event{Kind: EventApprovalCancelled, SessionID: c.State().SessionID, TaskID: c.State().TaskID, ApprovalID: id})
+		c.emit(Event{Kind: EventApprovalCancelled, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, ApprovalID: id})
 		return false
 	}
 }
@@ -1264,7 +1462,7 @@ func (c *Core) ForkSession(ctx context.Context, sessionID string) (Session, erro
 	if c.closed {
 		return Session{}, errors.New("core is closed")
 	}
-	if c.active.Status == TaskRunning && c.active.SessionID == sessionID {
+	if c.sessionIsRunningLocked(sessionID) {
 		return Session{}, errors.New("cannot fork a session while its task is running")
 	}
 	c.usageMu.Lock()
@@ -1334,7 +1532,7 @@ func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 	if c.closed {
 		return errors.New("core is closed")
 	}
-	if c.active.Status == TaskRunning && c.active.SessionID == sessionID {
+	if c.sessionIsRunningLocked(sessionID) {
 		return errors.New("cannot delete a session while its task is running")
 	}
 	// Save-based usage/settings updates must not recreate a session after its
@@ -1360,6 +1558,9 @@ func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 	if err := c.teamRuns.DeleteParent(parentID); err != nil {
 		return err
 	}
+	if err := c.sessions.DeleteToolInvocationsForSession(ctx, sessionID); err != nil {
+		return err
+	}
 	deleted, err := c.sessions.Delete(ctx, sessionID, c.workspace)
 	if err != nil {
 		return err
@@ -1382,7 +1583,7 @@ func (c *Core) RewindSession(ctx context.Context, sessionID string, userTurns in
 	if c.closed {
 		return 0, errors.New("core is closed")
 	}
-	if c.active.Status == TaskRunning && c.active.SessionID == sessionID {
+	if c.sessionIsRunningLocked(sessionID) {
 		return 0, errors.New("cannot rewind a session while its task is running")
 	}
 	pending, err := c.HasPending(ctx, sessionID)
@@ -1508,22 +1709,44 @@ func (c *Core) DiscardTask(ctx context.Context, sessionID string) (bool, error) 
 	if c == nil || ctx == nil || sessionID == "" {
 		return false, errors.New("core, context, and session id are required")
 	}
-	if c.State().Status == TaskRunning {
+	if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskRunning {
 		return false, errors.New("cannot discard a task while another task is running")
 	}
-	err := c.checkpoints.Delete(ctx, c.runtime.checkpointID(sessionID))
-	if errors.Is(err, checkpoint.ErrNotFound) {
-		return false, nil
-	}
+	parentID := c.runtime.checkpointID(sessionID)
+	childCheckpoints, err := c.teamRuns.CheckpointIDs(parentID)
 	if err != nil {
 		return false, err
 	}
-	return true, nil
+	deleteErr := c.checkpoints.Delete(ctx, parentID)
+	deleted := deleteErr == nil
+	if deleteErr != nil && !errors.Is(deleteErr, checkpoint.ErrNotFound) {
+		return false, deleteErr
+	}
+	for _, childID := range childCheckpoints {
+		if err := c.checkpoints.Delete(ctx, childID); err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
+			return false, fmt.Errorf("delete team member checkpoint for session %q: %w", sessionID, err)
+		}
+	}
+	if err := c.teamRuns.DeleteParent(parentID); err != nil {
+		return false, err
+	}
+	if err := c.sessions.DeleteToolInvocationsForSession(ctx, sessionID); err != nil {
+		return false, err
+	}
+	return deleted || len(childCheckpoints) > 0, nil
 }
 
 func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return 0, errors.New("core, context, and session id are required")
+	}
+	c.runtimeConfigMu.RLock()
+	defer c.runtimeConfigMu.RUnlock()
+	c.mu.RLock()
+	closed := c.closed
+	c.mu.RUnlock()
+	if closed {
+		return 0, errors.New("core is closed")
 	}
 	saved, err := c.GetSession(ctx, sessionID)
 	if err != nil {
@@ -1559,11 +1782,21 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		}
 		modelContext = &decoded
 	}
-	if _, err := c.beginTask(ctx, sessionID, false, settings, profile, profile.Model, effective.ContextWindow, saved.UpdatedAt); err != nil {
+	compactOptions := agentgraph.TaskOptions{
+		ReasoningEffort: settings.ReasoningEffort, Goal: effective.Goal,
+		ContextWindow: effective.ContextWindow, ReserveOutputTokens: effective.ReserveOutputTokens,
+		AutoCompact: effective.AutoCompact, AutoCompactThreshold: effective.AutoCompactThreshold,
+	}
+	if _, err := c.beginTask(ctx, sessionID, false, settings, profile, profile.Model, compactOptions, saved.UpdatedAt); err != nil {
 		return 0, err
 	}
-	defer c.endTask()
-	if _, err := c.configureRuntime(settings.ModelProfile, settings.ReasoningEffort); err != nil {
+	defer c.endTask(sessionID)
+	taskState, _ := c.StateForSession(sessionID)
+	ctx = publictool.WithCallIdentity(ctx, publictool.CallIdentity{
+		SessionID: sessionID, TaskID: taskState.TaskID, RunID: c.runtime.checkpointID(sessionID), AgentID: "lead",
+	})
+	taskRuntime, _, err := c.configureRuntime(settings.ModelProfile, settings.ReasoningEffort, taskState)
+	if err != nil {
 		c.finishTaskState(sessionID, TaskFailed, err)
 		return 0, err
 	}
@@ -1571,10 +1804,10 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		c.finishTaskState(sessionID, TaskFailed, err)
 		return 0, err
 	}
-	c.runtime.SetSessionState(sessionID, transcript, modelContext, contextKey)
-	compacted, err := c.runtime.Compact(ctx)
+	taskRuntime.SetSessionState(sessionID, transcript, modelContext, contextKey)
+	compacted, err := taskRuntime.Compact(ctx)
 	if err == nil {
-		err = c.saveHistoryUsage(ctx, sessionID)
+		err = c.saveHistoryUsage(ctx, sessionID, taskRuntime)
 	}
 	status := TaskCompleted
 	if err != nil {
@@ -1602,8 +1835,8 @@ func (c *Core) resetTaskUsage(ctx context.Context, sessionID string) error {
 	return c.saveSession(ctx, saved)
 }
 
-func (c *Core) saveHistoryUsage(ctx context.Context, sessionID string) error {
-	return c.setSessionConversation(ctx, sessionID, c.runtime.SessionHistory(), c.runtime.ModelContextHistory(), c.runtime.ContextKey())
+func (c *Core) saveHistoryUsage(ctx context.Context, sessionID string, runtime *graphResponder) error {
+	return c.setSessionConversation(ctx, sessionID, runtime.SessionHistory(), runtime.ModelContextHistory(), runtime.ContextKey())
 }
 
 func modelContextKey(providerName, effectiveModel string, providerConfig model.ProviderConfig) string {

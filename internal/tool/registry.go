@@ -12,38 +12,50 @@ import (
 	"time"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 // Registry stores tools by their function name.
 type Registry struct {
-	mu            sync.RWMutex
-	tools         map[string]Tool
-	toolMetadata  map[string]model.ToolMetadata
-	toolOrder     []string
-	categories    map[string]model.ToolCategory
-	categoryOrder []string
-	uncategorized int
-	eventObserver ToolEventObserver
-	permissions   *permissionSettings
-	workspaceRoot *workspaceIdentity
+	mu             sync.RWMutex
+	tools          map[string]Tool
+	toolMetadata   map[string]model.ToolMetadata
+	toolOrder      []string
+	categories     map[string]model.ToolCategory
+	categoryOrder  []string
+	uncategorized  int
+	eventObserver  ToolEventObserver
+	callController ToolCallController
+	permissions    *permissionSettings
+	workspaceRoot  *workspaceIdentity
 }
 
 // ToolEvent describes a tool call. Arguments are transient so clients can build
 // a presentation appropriate to their interface; do not log or persist them.
 type ToolEvent struct {
-	CallID    string
-	AgentID   string
-	Name      string
-	Arguments json.RawMessage `json:"-"`
-	Started   bool
-	Duration  time.Duration
-	Failed    bool
-	Canceled  bool
+	CallID       string
+	InvocationID string
+	SessionID    string
+	TaskID       string
+	RunID        string
+	ExecutionID  string
+	AgentID      string
+	Name         string
+	Arguments    json.RawMessage `json:"-"`
+	Started      bool
+	Duration     time.Duration
+	Failed       bool
+	Canceled     bool
+	Recovered    bool
 }
 
 // ToolEventObserver receives tool lifecycle events. Implementations should
 // return promptly because tool execution calls the observer synchronously.
 type ToolEventObserver func(ToolEvent)
+
+type ToolCallExecution func() model.InputFunctionCallOutput
+
+type ToolCallController func(context.Context, model.OutputFunctionCall, ToolCallExecution) (model.InputFunctionCallOutput, error)
 
 var _ model.ToolExecutor = (*Registry)(nil)
 var _ model.CategorizedToolExecutor = (*Registry)(nil)
@@ -52,6 +64,14 @@ var _ model.CategorizedToolExecutor = (*Registry)(nil)
 type ToolRegistration struct {
 	Tool     Tool
 	Metadata model.ToolMetadata
+}
+
+// RegistryOptions supplies host extensions and command execution policy to the
+// default workspace registry.
+type RegistryOptions struct {
+	Tools              []ToolRegistration
+	CommandExecutor    publictool.CommandExecutor
+	AllowLocalCommands bool
 }
 
 func NewRegistry(registrations ...ToolRegistration) (*Registry, error) {
@@ -75,6 +95,15 @@ func (r *Registry) SetToolEventObserver(observer ToolEventObserver) {
 	}
 	r.mu.Lock()
 	r.eventObserver = observer
+	r.mu.Unlock()
+}
+
+func (r *Registry) SetToolCallController(controller ToolCallController) {
+	if r == nil {
+		return
+	}
+	r.mu.Lock()
+	r.callController = controller
 	r.mu.Unlock()
 }
 
@@ -331,35 +360,66 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 // ExecuteCall runs a function call from a Responses API result and returns the
 // matching function_call_output input item for the next request.
 func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCall) model.InputFunctionCallOutput {
+	output, err := r.ExecuteCallRecoverable(ctx, call)
+	if err != nil {
+		return model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Error: " + err.Error())}
+	}
+	return output
+}
+
+// ExecuteCallRecoverable allows Core to persist the tool result before the
+// graph advances to the next checkpoint.
+func (r *Registry) ExecuteCallRecoverable(ctx context.Context, call model.OutputFunctionCall) (model.InputFunctionCallOutput, error) {
+	ctx = withCallID(ctx, call.CallID)
+	identity := publictool.CallIdentityFromContext(ctx)
+	identity.AgentID = model.AgentIDFromContext(ctx)
+	if identity.InvocationID == "" {
+		identity.InvocationID = call.CallID
+	}
+	ctx = publictool.WithInvocationID(ctx, identity.InvocationID)
+	ctx = publictool.WithCallIdentity(ctx, identity)
 	started := time.Now()
 	arguments := json.RawMessage(call.Arguments)
 	registeredTool, permissionErr := r.authorizedTool(ctx, call.Name, arguments)
-	var result Result
 	if permissionErr != nil {
-		result = Result{Err: permissionErr}
-	} else {
+		return toolCallOutput(call.CallID, Result{Err: permissionErr}), nil
+	}
+	execute := func() model.InputFunctionCallOutput {
 		slog.Info("tool execution started", "tool", call.Name, "call_id", call.CallID)
-		r.observeToolEvent(ToolEvent{CallID: call.CallID, AgentID: model.AgentIDFromContext(ctx), Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Started: true})
-		result = registeredTool.Run(ctx, arguments)
+		r.observeToolEvent(ToolEvent{CallID: call.CallID, InvocationID: identity.InvocationID, SessionID: identity.SessionID, TaskID: identity.TaskID, RunID: identity.RunID, ExecutionID: identity.ExecutionID, AgentID: identity.AgentID, Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Started: true})
+		result := registeredTool.Run(ctx, arguments)
+		duration := time.Since(started)
+		attributes := []any{
+			"tool", call.Name, "call_id", call.CallID, "duration", duration,
+			"failed", result.Err != nil,
+			"canceled", errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
+		}
+		if result.Err != nil {
+			slog.Warn("tool execution finished", attributes...)
+		} else {
+			slog.Info("tool execution finished", attributes...)
+		}
+		r.observeToolEvent(ToolEvent{
+			CallID: call.CallID, InvocationID: identity.InvocationID, SessionID: identity.SessionID, TaskID: identity.TaskID, RunID: identity.RunID, ExecutionID: identity.ExecutionID, AgentID: identity.AgentID,
+			Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Duration: duration,
+			Failed: result.Err != nil, Canceled: errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
+		})
+		return toolCallOutput(call.CallID, result)
 	}
-	duration := time.Since(started)
-	attributes := []any{
-		"tool", call.Name,
-		"call_id", call.CallID,
-		"duration", duration,
-		"failed", result.Err != nil,
-		"canceled", errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
+	r.mu.RLock()
+	controller := r.callController
+	r.mu.RUnlock()
+	if controller != nil {
+		output, err := controller(ctx, call, execute)
+		if err != nil {
+			return model.InputFunctionCallOutput{}, err
+		}
+		return output, nil
 	}
-	if result.Err != nil {
-		slog.Warn("tool execution finished", attributes...)
-	} else {
-		slog.Info("tool execution finished", attributes...)
-	}
-	r.observeToolEvent(ToolEvent{
-		CallID: call.CallID, AgentID: model.AgentIDFromContext(ctx), Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Duration: duration,
-		Failed:   result.Err != nil,
-		Canceled: errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
-	})
+	return execute(), nil
+}
+
+func toolCallOutput(callID string, result Result) model.InputFunctionCallOutput {
 	toolOutput := model.NewToolOutputText(result.Text())
 	if result.ModelOutput != nil {
 		toolOutput = *result.ModelOutput
@@ -372,9 +432,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCal
 		}
 	}
 	return model.InputFunctionCallOutput{
-		CallID:         call.CallID,
-		Output:         toolOutput,
-		TranscriptOnly: append([]model.ContentPart(nil), result.TranscriptOnly...),
+		CallID: callID, Output: toolOutput, TranscriptOnly: append([]model.ContentPart(nil), result.TranscriptOnly...),
 	}
 }
 
@@ -398,7 +456,11 @@ func (r *Registry) observeToolEvent(event ToolEvent) {
 
 // NewDefaultRegistry creates the built-in workspace and web tools. Call Close
 // when the registry is no longer in use to release its pinned workspace root.
-func NewDefaultRegistry(workspace string) (*Registry, error) {
+func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry, error) {
+	var registryOptions RegistryOptions
+	if len(options) > 0 {
+		registryOptions = options[0]
+	}
 	rootHandle, err := openWorkspaceRoot(workspace)
 	if err != nil {
 		return nil, err
@@ -419,13 +481,19 @@ func NewDefaultRegistry(workspace string) (*Registry, error) {
 		ToolRegistration{Tool: ReadFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
 		ToolRegistration{Tool: WriteFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
 		ToolRegistration{Tool: EditFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
-		ToolRegistration{Tool: CommandTool{Workspace: workspacePath}, Metadata: command},
+		ToolRegistration{Tool: CommandTool{Workspace: workspacePath, Executor: registryOptions.CommandExecutor, AllowLocalCommand: registryOptions.AllowLocalCommands}, Metadata: command},
 		ToolRegistration{Tool: WebSearchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 		ToolRegistration{Tool: WebFetchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 	)
 	if err != nil {
 		_ = workspaceID.closeRoot()
 		return nil, err
+	}
+	for _, registration := range registryOptions.Tools {
+		if err := registry.Register(registration); err != nil {
+			_ = registry.Close()
+			return nil, err
+		}
 	}
 	registry.workspaceRoot = workspaceID
 	if err := registry.SetPermissionMode(PermissionModeWorkspace); err != nil {
