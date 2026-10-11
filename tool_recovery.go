@@ -107,9 +107,9 @@ func (c *Core) emitToolRecoveryRequired(identity publictool.CallIdentity, record
 	})
 }
 
-// ResolveToolRecovery records an explicit retry or skip choice for a tool call
+// resolveToolRecovery records an explicit retry or skip choice for a tool call
 // whose process may have stopped after causing a side effect.
-func (c *Core) ResolveToolRecovery(ctx context.Context, sessionID, invocationID string, decision ToolRecoveryDecision) error {
+func (c *Core) resolveToolRecovery(ctx context.Context, sessionID, invocationID string, decision ToolRecoveryDecision) error {
 	if c == nil || ctx == nil || sessionID == "" || invocationID == "" {
 		return errors.New("core, context, session id, and invocation id are required")
 	}
@@ -140,36 +140,11 @@ func (c *Core) ResolveToolRecovery(ctx context.Context, sessionID, invocationID 
 	return c.sessions.ResolveToolInvocation(ctx, sessionID, record.RunID, invocationID, resolution, output)
 }
 
-// PendingToolRecovery describes a side-effecting invocation that needs a host
-// decision before its paused task can resume.
-func (c *Core) PendingToolRecovery(ctx context.Context, sessionID string) (ToolRecoveryRequest, bool, error) {
-	if c == nil || ctx == nil || sessionID == "" {
-		return ToolRecoveryRequest{}, false, errors.New("core, context, and session id are required")
-	}
-	if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskRunning {
-		return ToolRecoveryRequest{}, false, errors.New("cannot inspect tool recovery while the session task is running")
-	}
-	recoveries, err := c.pendingToolRecoveries(ctx, sessionID)
-	if err != nil || len(recoveries) == 0 {
-		return ToolRecoveryRequest{}, false, err
-	}
-	return recoveries[0], true, nil
-}
-
-// PendingToolRecoveries returns every unresolved invocation for a session.
-// It is useful when several subagents were running when the host stopped.
-func (c *Core) PendingToolRecoveries(ctx context.Context, sessionID string) ([]ToolRecoveryRequest, error) {
-	if c == nil || ctx == nil || sessionID == "" {
-		return nil, errors.New("core, context, and session id are required")
-	}
-	if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskRunning {
-		return nil, errors.New("cannot inspect tool recovery while the session task is running")
-	}
-	return c.pendingToolRecoveries(ctx, sessionID)
-}
-
 func (c *Core) pendingToolRecoveries(ctx context.Context, sessionID string) ([]ToolRecoveryRequest, error) {
-	pendingState, found, err := c.runtime.PendingStateFor(ctx, sessionID)
+	if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskRunning {
+		return nil, nil
+	}
+	pendingState, found, err := c.pendingState(ctx, sessionID)
 	if err != nil || !found || pendingState.ExecutionID == "" {
 		return nil, err
 	}

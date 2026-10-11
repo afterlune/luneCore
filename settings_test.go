@@ -350,7 +350,7 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	if err := <-firstDone; !errors.Is(err, context.Canceled) {
 		t.Fatalf("interrupted task error = %v, want context canceled", err)
 	}
-	if pending, err := client.HasPending(context.Background(), saved.ID); err != nil || !pending {
+	if pending, err := client.hasPending(context.Background(), saved.ID); err != nil || !pending {
 		t.Fatalf("pending after interruption = %v, error = %v", pending, err)
 	}
 	pausedState, ok, err := client.runtime.PendingStateFor(context.Background(), saved.ID)

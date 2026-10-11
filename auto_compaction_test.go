@@ -93,10 +93,17 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	var events []Event
-	client.SetEventHandler(func(event Event) { events = append(events, event) })
+	eventStream := subscribeTestEvents(t, client, saved.ID)
 	if _, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: mustSettingsTaskInput(t, "start long task")}); err != nil {
 		t.Fatalf("Responses RunTask: %v", err)
+	}
+	var events []Event
+	for {
+		event := <-eventStream
+		events = append(events, event)
+		if event.Kind == EventTaskFinished {
+			break
+		}
 	}
 	responsesSession, err := client.GetSession(context.Background(), saved.ID)
 	if err != nil {

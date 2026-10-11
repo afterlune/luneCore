@@ -81,6 +81,72 @@ func TestOpenMigratesUnversionedSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestOpenMigratesVersionThreeDatabaseToRuntimeTables(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sessions.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, statement := range []string{
+		`CREATE TABLE sessions (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, updated_at INTEGER NOT NULL, data BLOB NOT NULL)`,
+		`CREATE TABLE tool_invocations (
+			run_id TEXT NOT NULL, invocation_id TEXT NOT NULL, session_id TEXT NOT NULL,
+			execution_id TEXT NOT NULL DEFAULT '', agent_id TEXT NOT NULL, call_id TEXT NOT NULL,
+			name TEXT NOT NULL, arguments BLOB NOT NULL, status TEXT NOT NULL, output BLOB, updated_at INTEGER NOT NULL,
+			PRIMARY KEY (run_id, invocation_id)
+		)`,
+		`PRAGMA user_version = 3`,
+	} {
+		if _, err := db.Exec(statement); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := db.Exec(`INSERT INTO sessions(id, workspace, updated_at, data) VALUES('old', 'workspace', 7, ?)`, []byte(`{"title":"old","history":null}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	store, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open v3 database: %v", err)
+	}
+	defer store.Close()
+	var version int
+	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		t.Fatal(err)
+	}
+	if version != 4 {
+		t.Fatalf("user_version = %d, want 4", version)
+	}
+	if _, err := store.Get(context.Background(), "old", "workspace"); err != nil {
+		t.Fatalf("old session was not preserved: %v", err)
+	}
+	queued, cursor, err := store.EnqueueTurn(context.Background(), QueuedTurn{
+		SessionID: "old", QueueID: "q1", ExecutionID: "e1", Request: json.RawMessage(`{"input":"hello"}`),
+	}, json.RawMessage(`{"kind":"task_queued"}`))
+	if err != nil || queued.Position != 1 || cursor == 0 {
+		t.Fatalf("enqueue after migration = %#v cursor=%d error=%v", queued, cursor, err)
+	}
+	events, err := store.RuntimeEventsAfter(context.Background(), "old", 0, 10)
+	if err != nil || len(events) != 1 || events[0].Cursor != cursor {
+		t.Fatalf("runtime events = %#v, error=%v", events, err)
+	}
+	deleted, err := store.Delete(context.Background(), "old", "workspace")
+	if err != nil || !deleted {
+		t.Fatalf("delete migrated session = %v, error=%v", deleted, err)
+	}
+	queuedRows, err := store.QueuedTurns(context.Background(), "old")
+	if err != nil || len(queuedRows) != 0 {
+		t.Fatalf("queued rows after session delete = %#v, error=%v", queuedRows, err)
+	}
+	events, err = store.RuntimeEventsAfter(context.Background(), "old", 0, 10)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("events after session delete = %#v, error=%v", events, err)
+	}
+}
+
 func TestOpenRejectsNewerSchemaVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.db")
 	db, err := sql.Open("sqlite", path)

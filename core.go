@@ -59,6 +59,7 @@ type TaskStatus string
 
 const (
 	TaskIdle      TaskStatus = "idle"
+	TaskQueued    TaskStatus = "queued"
 	TaskRunning   TaskStatus = "running"
 	TaskPaused    TaskStatus = "paused"
 	TaskCompleted TaskStatus = "completed"
@@ -70,6 +71,9 @@ type EventKind string
 const (
 	EventTaskStarted              EventKind = "task_started"
 	EventTaskFinished             EventKind = "task_finished"
+	EventTaskDiscarded            EventKind = "task_discarded"
+	EventTaskQueued               EventKind = "task_queued"
+	EventRuntimeStreamFailed      EventKind = "runtime_stream_failed"
 	EventToolStarted              EventKind = "tool_started"
 	EventToolFinished             EventKind = "tool_finished"
 	EventUsage                    EventKind = "usage"
@@ -87,8 +91,15 @@ const (
 // Event is a structured runtime notification. Arguments and response payloads
 // are transient; clients should not persist or log them without sanitizing.
 type Event struct {
-	Kind   EventKind
-	TaskID string
+	Kind EventKind
+	// Cursor is non-zero for events written to the durable runtime event log.
+	// Model stream deltas are live-only and have a zero cursor.
+	Cursor int64
+	// OccurredAt is set for events recorded in the durable runtime event log.
+	OccurredAt time.Time
+	// QueueID identifies an accepted queued turn until it starts or is discarded.
+	QueueID string
+	TaskID  string
 	// ExecutionID remains stable when a paused task resumes with a new TaskID.
 	ExecutionID          string
 	SessionID            string
@@ -189,7 +200,21 @@ type userInteractionResult struct {
 	Err      error
 }
 
-type EventHandler func(Event)
+type pendingApproval struct {
+	response    chan bool
+	request     ApprovalRequest
+	sessionID   string
+	taskID      string
+	executionID string
+}
+
+type pendingInteraction struct {
+	response    chan userInteractionResult
+	request     UserInteractionRequest
+	sessionID   string
+	taskID      string
+	executionID string
+}
 
 type Usage struct {
 	InputTokens         int64              `json:"input_tokens"`
@@ -353,6 +378,7 @@ type TaskState struct {
 	TaskID    string
 	// ExecutionID identifies the logical run across pause and resume attempts.
 	ExecutionID          string
+	QueueID              string
 	ContextWindow        int64
 	ReserveOutputTokens  int64
 	AutoCompact          bool
@@ -394,17 +420,21 @@ type Core struct {
 	sessions         *session.Store
 	stateDirLock     *stateDirectoryLock
 
-	mu                       sync.RWMutex
-	runtimeConfigMu          sync.RWMutex
-	usageMu                  sync.Mutex
-	active                   TaskState
-	activeTasks              map[string]TaskState
-	taskCancels              map[string]context.CancelFunc
-	handler                  EventHandler
-	approvals                map[string]chan bool
-	interactions             map[string]chan userInteractionResult
-	userInteractionAvailable bool
-	closed                   bool
+	mu                  sync.RWMutex
+	runtimeConfigMu     sync.RWMutex
+	usageMu             sync.Mutex
+	active              TaskState
+	activeTasks         map[string]TaskState
+	taskCancels         map[string]context.CancelFunc
+	approvals           map[string]pendingApproval
+	interactions        map[string]pendingInteraction
+	interactiveSessions map[string]bool
+	eventHubs           map[string]*sessionEventHub
+	queueDraining       map[string]bool
+	turnWaiters         map[string]chan turnResult
+	interruptRequests   map[string]bool
+	queueDrainWG        sync.WaitGroup
+	closed              bool
 }
 
 func New(config Config) (_ *Core, err error) {
@@ -505,15 +535,20 @@ func New(config Config) (_ *Core, err error) {
 			ContextWindow: projectConfig.ContextWindow, ReserveOutputTokens: projectConfig.ReserveOutputTokens,
 			AutoCompact: projectConfig.AutoCompact, AutoCompactThreshold: projectConfig.AutoCompactThreshold,
 		},
-		teamRuns:     teamRuns,
-		checkpoints:  checkpoints,
-		sessions:     sessions,
-		active:       TaskState{Status: TaskIdle},
-		activeTasks:  make(map[string]TaskState),
-		taskCancels:  make(map[string]context.CancelFunc),
-		approvals:    make(map[string]chan bool),
-		interactions: make(map[string]chan userInteractionResult),
-		stateDirLock: stateLock,
+		teamRuns:            teamRuns,
+		checkpoints:         checkpoints,
+		sessions:            sessions,
+		active:              TaskState{Status: TaskIdle},
+		activeTasks:         make(map[string]TaskState),
+		taskCancels:         make(map[string]context.CancelFunc),
+		approvals:           make(map[string]pendingApproval),
+		interactions:        make(map[string]pendingInteraction),
+		interactiveSessions: make(map[string]bool),
+		eventHubs:           make(map[string]*sessionEventHub),
+		queueDraining:       make(map[string]bool),
+		turnWaiters:         make(map[string]chan turnResult),
+		interruptRequests:   make(map[string]bool),
+		stateDirLock:        stateLock,
 	}
 	attachmentLimits := c.ProjectAttachmentLimits()
 	mcpManager, err := mcp.NewManager(mcp.Options{
@@ -612,7 +647,12 @@ func (c *Core) Close() error {
 	if !c.runtimeConfigMu.TryLock() {
 		return errors.New("cannot close core while tasks or runtime configuration changes are active")
 	}
-	defer c.runtimeConfigMu.Unlock()
+	runtimeConfigLocked := true
+	defer func() {
+		if runtimeConfigLocked {
+			c.runtimeConfigMu.Unlock()
+		}
+	}()
 	c.mu.Lock()
 	if c.closed {
 		c.mu.Unlock()
@@ -622,18 +662,34 @@ func (c *Core) Close() error {
 		c.mu.Unlock()
 		return errors.New("cannot close core while a task is running")
 	}
+	if len(c.queueDraining) > 0 {
+		c.closed = true
+		c.mu.Unlock()
+		c.runtimeConfigMu.Unlock()
+		runtimeConfigLocked = false
+		c.queueDrainWG.Wait()
+		for !c.runtimeConfigMu.TryLock() {
+			time.Sleep(time.Millisecond)
+		}
+		runtimeConfigLocked = true
+		c.mu.Lock()
+	}
 	c.closed = true
-	for id, response := range c.approvals {
+	for executionID, waiter := range c.turnWaiters {
+		delete(c.turnWaiters, executionID)
+		waiter <- turnResult{err: errors.New("core is closing")}
+	}
+	for id, pending := range c.approvals {
 		delete(c.approvals, id)
 		select {
-		case response <- false:
+		case pending.response <- false:
 		default:
 		}
 	}
-	for id, response := range c.interactions {
+	for id, pending := range c.interactions {
 		delete(c.interactions, id)
 		select {
-		case response <- userInteractionResult{Err: errors.New("core is closing")}:
+		case pending.response <- userInteractionResult{Err: errors.New("core is closing")}:
 		default:
 		}
 	}
@@ -669,8 +725,12 @@ func (c *Core) EnableMCPServer(name string) error {
 	}
 	defer c.runtimeConfigMu.Unlock()
 	c.mu.RLock()
+	closed := c.closed
 	running := c.hasRunningTasksLocked()
 	c.mu.RUnlock()
+	if closed {
+		return errors.New("core is closed")
+	}
 	if running {
 		return errors.New("cannot change MCP servers while a task is running")
 	}
@@ -686,8 +746,12 @@ func (c *Core) DisableMCPServer(name string) error {
 	}
 	defer c.runtimeConfigMu.Unlock()
 	c.mu.RLock()
+	closed := c.closed
 	running := c.hasRunningTasksLocked()
 	c.mu.RUnlock()
+	if closed {
+		return errors.New("core is closed")
+	}
 	if running {
 		return errors.New("cannot change MCP servers while a task is running")
 	}
@@ -703,8 +767,12 @@ func (c *Core) AuthenticateMCPServer(ctx context.Context, name string) error {
 	}
 	defer c.runtimeConfigMu.Unlock()
 	c.mu.RLock()
+	closed := c.closed
 	running := c.hasRunningTasksLocked()
 	c.mu.RUnlock()
+	if closed {
+		return errors.New("core is closed")
+	}
 	if running {
 		return errors.New("cannot authorize an MCP server while a task is running")
 	}
@@ -718,46 +786,16 @@ func (c *Core) OpenMCPURL(serverName, target string) error {
 	return c.mcpManager.OpenElicitationURL(serverName, target)
 }
 
-// SetUserInteractionAvailable marks whether the active front end can answer
-// generic user-input requests. Headless clients leave this disabled so MCP
-// tools fail immediately instead of waiting forever.
-func (c *Core) SetUserInteractionAvailable(available bool) {
-	if c == nil {
-		return
-	}
-	c.mu.Lock()
-	c.userInteractionAvailable = available
-	c.mu.Unlock()
-}
-
-func (c *Core) ResolveUserInteraction(id string, response json.RawMessage) error {
-	if c == nil {
-		return errors.New("core is nil")
-	}
-	if len(response) == 0 || !json.Valid(response) {
-		return errors.New("user interaction response must be valid JSON")
-	}
-	c.mu.Lock()
-	channel, ok := c.interactions[id]
-	if ok {
-		delete(c.interactions, id)
-	}
-	c.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("user interaction %q is no longer pending", id)
-	}
-	channel <- userInteractionResult{Response: append(json.RawMessage(nil), response...)}
-	return nil
-}
-
 func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName string, request json.RawMessage) (json.RawMessage, error) {
 	if agentID != "" && agentID != "lead" {
 		return nil, errors.New("MCP user interaction from subagents is not supported")
 	}
+	identity := publictool.CallIdentityFromContext(ctx)
 	c.mu.RLock()
-	available, handler := c.userInteractionAvailable, c.handler
+	available := c.interactiveSessions[identity.SessionID]
+	hub := c.eventHubs[identity.SessionID]
 	c.mu.RUnlock()
-	if !available || handler == nil {
+	if !available || hub == nil || !hub.hasControlSubscribers() {
 		return nil, errors.New("this client cannot display MCP user interaction; use the TUI")
 	}
 	id, err := newID()
@@ -770,11 +808,10 @@ func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName s
 		c.mu.Unlock()
 		return nil, errors.New("core is closed")
 	}
-	c.interactions[id] = channel
+	interaction := UserInteractionRequest{ID: id, AgentID: agentID, ServerName: serverName, Request: append(json.RawMessage(nil), request...)}
+	c.interactions[id] = pendingInteraction{response: channel, request: interaction, sessionID: identity.SessionID, taskID: identity.TaskID, executionID: identity.ExecutionID}
 	c.mu.Unlock()
-	identity := publictool.CallIdentityFromContext(ctx)
-	c.emit(Event{Kind: EventUserInteractionRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
-		Interaction: &UserInteractionRequest{ID: id, AgentID: agentID, ServerName: serverName, Request: append(json.RawMessage(nil), request...)}})
+	c.emit(Event{Kind: EventUserInteractionRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, Interaction: &interaction})
 	select {
 	case result := <-channel:
 		return result.Response, result.Err
@@ -787,15 +824,20 @@ func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName s
 	}
 }
 
-// SetEventHandler installs the host event callback. Calls may arrive
-// concurrently when tasks for different sessions are running.
-func (c *Core) SetEventHandler(handler EventHandler) {
-	if c == nil {
-		return
-	}
+func (c *Core) resolveUserInteraction(sessionID, id string, response json.RawMessage) error {
 	c.mu.Lock()
-	c.handler = handler
+	pending, ok := c.interactions[id]
+	if ok && pending.sessionID == sessionID {
+		delete(c.interactions, id)
+	} else {
+		ok = false
+	}
 	c.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("user interaction %q is no longer pending in this session", id)
+	}
+	pending.response <- userInteractionResult{Response: append(json.RawMessage(nil), response...)}
+	return nil
 }
 
 // State returns the state last changed by any session. Use StateForSession or
@@ -839,26 +881,6 @@ func (c *Core) ActiveTasks() []TaskState {
 		states = append(states, c.activeTasks[id])
 	}
 	return states
-}
-
-// CancelTask requests cancellation of a running task started by RunTask or
-// ResumeTask for the given session. It returns true when a running task accepted
-// the cancellation request and false when no cancellable task is running.
-// Cancellation is cooperative; the task's providers and tools must return when
-// their context is canceled.
-func (c *Core) CancelTask(sessionID string) bool {
-	if c == nil || sessionID == "" {
-		return false
-	}
-	c.mu.RLock()
-	cancel, exists := c.taskCancels[sessionID]
-	state := c.activeTasks[sessionID]
-	c.mu.RUnlock()
-	if !exists || state.Status != TaskRunning {
-		return false
-	}
-	cancel()
-	return true
 }
 
 func (c *Core) hasRunningTasksLocked() bool {
@@ -1054,20 +1076,19 @@ func (c *Core) SetPermissionMode(mode PermissionMode) error {
 	return c.registry.SetPermissionMode(tool.PermissionMode(mode))
 }
 
-func (c *Core) ResolveApproval(id string, allowed bool) error {
-	if c == nil {
-		return errors.New("core is nil")
-	}
+func (c *Core) resolveApproval(sessionID, id string, allowed bool) error {
 	c.mu.Lock()
-	response, ok := c.approvals[id]
-	if ok {
+	pending, ok := c.approvals[id]
+	if ok && pending.sessionID == sessionID {
 		delete(c.approvals, id)
+	} else {
+		ok = false
 	}
 	c.mu.Unlock()
 	if !ok {
-		return fmt.Errorf("approval request %q is no longer pending", id)
+		return fmt.Errorf("approval request %q is no longer pending in this session", id)
 	}
-	response <- allowed
+	pending.response <- allowed
 	return nil
 }
 
@@ -1075,24 +1096,40 @@ func (c *Core) RunTask(ctx context.Context, request TaskRequest) (json.RawMessag
 	if c == nil || ctx == nil {
 		return nil, errors.New("core and context are required")
 	}
-	if len(request.Input.Raw) == 0 || !json.Valid(request.Input.Raw) {
-		return nil, errors.New("task input must be valid JSON")
-	}
-	input, err := model.NewResponseInput(request.Input.Raw)
-	if err != nil {
-		return nil, err
-	}
-	if err := validateTaskInputAttachments(input, c.attachmentLimits); err != nil {
-		return nil, err
-	}
-	return c.run(ctx, request.SessionID, request.PlanMode, request.MaxToolRounds, request.Model, false, input)
+	return c.runSynchronous(ctx, request)
 }
 
 func (c *Core) ResumeTask(ctx context.Context, sessionID string) (json.RawMessage, error) {
-	return c.run(ctx, sessionID, false, 0, "", true, nil)
+	if c == nil || ctx == nil || sessionID == "" {
+		return nil, errors.New("core, context, and session id are required")
+	}
+	runtime, err := c.OpenSessionRuntime(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	cursor, err := c.sessions.LatestRuntimeEventCursor(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	streamCtx, cancelStream := context.WithCancel(ctx)
+	defer cancelStream()
+	events, err := runtime.subscribeEvents(streamCtx, cursor, false, false)
+	if err != nil {
+		return nil, err
+	}
+	go func() {
+		for range events {
+		}
+	}()
+	submission, waiter, err := c.recoverSession(ctx, sessionID, true)
+	if err != nil {
+		return nil, err
+	}
+	c.scheduleQueueDrain(sessionID)
+	return c.waitForTurn(ctx, runtime, submission.ExecutionID, waiter)
 }
 
-func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRounds int, modelOverride string, resume bool, input *model.ResponseInput) (json.RawMessage, error) {
+func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRounds int, modelOverride string, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
 	if c == nil || ctx == nil {
 		return nil, errors.New("core and context are required")
 	}
@@ -1101,6 +1138,9 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	}
 	if maxRounds < 0 {
 		return nil, errors.New("maximum tool rounds must not be negative")
+	}
+	if executionID != "" && c.takeInterruptRequest(executionID) {
+		return nil, context.Canceled
 	}
 	c.runtimeConfigMu.RLock()
 	defer c.runtimeConfigMu.RUnlock()
@@ -1119,7 +1159,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	var pendingState agentgraph.State
 	if resume {
 		var ok bool
-		pendingState, ok, err = c.runtime.PendingStateFor(ctx, sessionID)
+		pendingState, ok, err = c.pendingState(ctx, sessionID)
 		if err != nil {
 			return nil, fmt.Errorf("inspect paused task settings: %w", err)
 		}
@@ -1181,10 +1221,17 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		if taskOptions.ExecutionID == "" {
 			return nil, errors.New("paused task checkpoint is missing its execution identity; discard it and start a new task")
 		}
+		if executionID != "" && executionID != taskOptions.ExecutionID {
+			return nil, errors.New("queued recovery execution id does not match the paused checkpoint")
+		}
 	} else {
-		taskOptions.ExecutionID, err = newID()
-		if err != nil {
-			return nil, fmt.Errorf("create task execution ID: %w", err)
+		if executionID != "" {
+			taskOptions.ExecutionID = executionID
+		} else {
+			taskOptions.ExecutionID, err = newID()
+			if err != nil {
+				return nil, fmt.Errorf("create task execution ID: %w", err)
+			}
 		}
 	}
 	var transcript *model.ResponseInput
@@ -1209,7 +1256,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		modelContext = &decoded
 	}
 	taskCtx, cancelTask := context.WithCancel(ctx)
-	taskID, err := c.beginTask(taskCtx, sessionID, planMode, settings, profile, effectiveModel, taskOptions, saved.UpdatedAt, cancelTask)
+	taskID, err := c.beginTask(taskCtx, sessionID, queueID, planMode, settings, profile, effectiveModel, taskOptions, saved.UpdatedAt, cancelTask)
 	if err != nil {
 		cancelTask()
 		return nil, err
@@ -1265,7 +1312,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 			status = TaskPaused
 		}
 	}
-	if pending, pendingErr := c.HasPending(ctx, sessionID); pendingErr == nil && pending && status != TaskCompleted {
+	if pending, pendingErr := c.hasPending(ctx, sessionID); pendingErr == nil && pending && status != TaskCompleted {
 		status = TaskPaused
 	}
 	c.finishTaskState(sessionID, status, err)
@@ -1287,7 +1334,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	return encoded, err
 }
 
-func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, settings SessionSettings, profile model.ModelProfile, modelName string, taskOptions agentgraph.TaskOptions, expectedUpdatedAt time.Time, cancel context.CancelFunc) (string, error) {
+func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, planMode bool, settings SessionSettings, profile model.ModelProfile, modelName string, taskOptions agentgraph.TaskOptions, expectedUpdatedAt time.Time, cancel context.CancelFunc) (string, error) {
 	if ctx == nil {
 		return "", errors.New("context is nil")
 	}
@@ -1299,6 +1346,22 @@ func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, s
 	if c.sessionIsRunningLocked(sessionID) {
 		c.mu.Unlock()
 		return "", errors.New("a task is already running in this session")
+	}
+	if c.interruptRequests[taskOptions.ExecutionID] {
+		delete(c.interruptRequests, taskOptions.ExecutionID)
+		c.mu.Unlock()
+		return "", context.Canceled
+	}
+	if queueID == "" {
+		queued, err := c.sessions.QueuedTurns(ctx, sessionID)
+		if err != nil {
+			c.mu.Unlock()
+			return "", err
+		}
+		if len(queued) > 0 {
+			c.mu.Unlock()
+			return "", ErrSessionBusy
+		}
 	}
 	snapshot, err := c.sessions.Get(ctx, sessionID, c.workspace)
 	if err != nil {
@@ -1315,7 +1378,7 @@ func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, s
 		return "", err
 	}
 	state := TaskState{
-		Status: TaskRunning, SessionID: sessionID, TaskID: id, ExecutionID: taskOptions.ExecutionID, ContextWindow: taskOptions.ContextWindow,
+		Status: TaskRunning, SessionID: sessionID, TaskID: id, ExecutionID: taskOptions.ExecutionID, QueueID: queueID, ContextWindow: taskOptions.ContextWindow,
 		ReserveOutputTokens: taskOptions.ReserveOutputTokens, AutoCompact: taskOptions.AutoCompact,
 		AutoCompactThreshold: taskOptions.AutoCompactThreshold, Goal: taskOptions.Goal, MaxToolRounds: taskOptions.MaxToolRounds,
 		ModelOverride: taskOptions.Model, PlanMode: planMode,
@@ -1333,7 +1396,7 @@ func (c *Core) beginTask(ctx context.Context, sessionID string, planMode bool, s
 	}
 	c.active = state
 	c.mu.Unlock()
-	c.emit(Event{Kind: EventTaskStarted, TaskID: id, ExecutionID: taskOptions.ExecutionID, SessionID: sessionID, Status: TaskRunning, ContextWindow: taskOptions.ContextWindow,
+	c.emit(Event{Kind: EventTaskStarted, TaskID: id, ExecutionID: taskOptions.ExecutionID, QueueID: queueID, SessionID: sessionID, Status: TaskRunning, ContextWindow: taskOptions.ContextWindow,
 		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: modelName})
 	return id, nil
 }
@@ -1362,23 +1425,21 @@ func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
 	c.activeTasks[sessionID] = state
 	c.active = state
 	c.mu.Unlock()
-	c.emit(Event{Kind: EventTaskFinished, TaskID: state.TaskID, ExecutionID: state.ExecutionID, SessionID: sessionID, Status: status, ContextWindow: state.ContextWindow, Err: errorString(err),
-		ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model})
-}
-
-func (c *Core) emit(event Event) {
-	c.mu.RLock()
-	handler := c.handler
-	c.mu.RUnlock()
-	if handler == nil {
+	event := Event{Kind: EventTaskFinished, TaskID: state.TaskID, ExecutionID: state.ExecutionID, QueueID: state.QueueID, SessionID: sessionID, Status: status,
+		ContextWindow: state.ContextWindow, Err: errorString(err), ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model}
+	if state.QueueID != "" {
+		persistErr := c.persistQueuedEvent(context.Background(), event, func(payload json.RawMessage) (int64, error) {
+			if status == TaskPaused {
+				return c.sessions.SetQueuedTurnStatusWithEvent(context.Background(), sessionID, state.QueueID, session.QueuedTurnPaused, payload)
+			}
+			return c.sessions.FinishQueuedTurn(context.Background(), sessionID, state.QueueID, payload)
+		})
+		if persistErr != nil {
+			slog.Warn("persist queued task completion", "error", persistErr)
+		}
 		return
 	}
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			slog.Warn("core event handler panicked", "panic_type", fmt.Sprintf("%T", recovered))
-		}
-	}()
-	handler(event)
+	c.emit(event)
 }
 
 func (c *Core) onToolEvent(event tool.ToolEvent) {
@@ -1456,17 +1517,18 @@ func (c *Core) requestApproval(ctx context.Context, request tool.PermissionReque
 		return false
 	}
 	response := make(chan bool, 1)
+	identity := publictool.CallIdentityFromContext(ctx)
 	c.mu.Lock()
-	if c.closed || c.handler == nil {
+	hub := c.eventHubs[identity.SessionID]
+	if c.closed || hub == nil || !hub.hasControlSubscribers() {
 		c.mu.Unlock()
 		return false
 	}
-	c.approvals[id] = response
+	approval := ApprovalRequest{ID: id, AgentID: request.AgentID, Tool: request.Tool, Arguments: append(json.RawMessage(nil), request.Arguments...)}
+	c.approvals[id] = pendingApproval{response: response, request: approval, sessionID: identity.SessionID, taskID: identity.TaskID, executionID: identity.ExecutionID}
 	c.mu.Unlock()
-	identity := publictool.CallIdentityFromContext(ctx)
 	c.emit(Event{Kind: EventApprovalRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
-		AgentID:  request.AgentID,
-		Approval: &ApprovalRequest{ID: id, AgentID: request.AgentID, Tool: request.Tool, Arguments: append(json.RawMessage(nil), request.Arguments...)}})
+		AgentID: request.AgentID, Approval: &approval})
 	select {
 	case allowed := <-response:
 		return allowed
@@ -1590,11 +1652,18 @@ func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 	if c.sessionIsRunningLocked(sessionID) {
 		return errors.New("cannot delete a session while its task is running")
 	}
+	if c.queueDraining[sessionID] {
+		return errors.New("cannot delete a session while queued work is starting")
+	}
 	// Save-based usage/settings updates must not recreate a session after its
 	// row has been deleted. The session row is removed last for retry safety.
 	c.usageMu.Lock()
 	defer c.usageMu.Unlock()
 	if _, err := c.GetSession(ctx, sessionID); err != nil {
+		return err
+	}
+	queuedTurns, err := c.sessions.QueuedTurns(ctx, sessionID)
+	if err != nil {
 		return err
 	}
 	parentID := c.runtime.checkpointID(sessionID)
@@ -1623,6 +1692,17 @@ func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 	if !deleted {
 		return fmt.Errorf("session %q does not exist in workspace", sessionID)
 	}
+	for _, queued := range queuedTurns {
+		if waiter := c.turnWaiters[queued.ExecutionID]; waiter != nil {
+			delete(c.turnWaiters, queued.ExecutionID)
+			waiter <- turnResult{err: errors.New("session was deleted before the turn started")}
+		}
+	}
+	if hub := c.eventHubs[sessionID]; hub != nil {
+		hub.close()
+	}
+	delete(c.interactiveSessions, sessionID)
+	delete(c.eventHubs, sessionID)
 	return nil
 }
 
@@ -1641,7 +1721,14 @@ func (c *Core) RewindSession(ctx context.Context, sessionID string, userTurns in
 	if c.sessionIsRunningLocked(sessionID) {
 		return 0, errors.New("cannot rewind a session while its task is running")
 	}
-	pending, err := c.HasPending(ctx, sessionID)
+	queued, err := c.sessions.QueuedTurns(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	if len(queued) > 0 {
+		return 0, errors.New("cannot rewind a session while turns are queued")
+	}
+	pending, err := c.hasPending(ctx, sessionID)
 	if err != nil {
 		return 0, err
 	}
@@ -1732,63 +1819,11 @@ func (c *Core) setSessionConversation(ctx context.Context, id string, transcript
 	return c.sessions.UpdateConversation(ctx, id, c.workspace, transcriptJSON, contextJSON, contextKeyToSave)
 }
 
-func (c *Core) HasPending(ctx context.Context, sessionID string) (bool, error) {
-	if sessionID == "" {
-		return false, errors.New("session id is required")
-	}
-	if c == nil || ctx == nil {
-		return false, errors.New("core and context are required")
+func (c *Core) hasPending(ctx context.Context, sessionID string) (bool, error) {
+	if c == nil || ctx == nil || sessionID == "" {
+		return false, errors.New("core, context, and session id are required")
 	}
 	return c.runtime.HasPendingFor(sessionID, ctx)
-}
-
-func (c *Core) PendingHistory(ctx context.Context, sessionID string) (json.RawMessage, error) {
-	if c == nil || ctx == nil || sessionID == "" {
-		return nil, errors.New("core, context, and session id are required")
-	}
-	history, err := c.runtime.PendingHistoryFor(ctx, sessionID)
-	if err != nil || history == nil {
-		return nil, err
-	}
-	return json.Marshal(history)
-}
-
-func (c *Core) PendingPlanMode(ctx context.Context, sessionID string) (bool, error) {
-	if c == nil || ctx == nil || sessionID == "" {
-		return false, errors.New("core, context, and session id are required")
-	}
-	return c.runtime.PendingPlanModeFor(ctx, sessionID)
-}
-
-func (c *Core) DiscardTask(ctx context.Context, sessionID string) (bool, error) {
-	if c == nil || ctx == nil || sessionID == "" {
-		return false, errors.New("core, context, and session id are required")
-	}
-	if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskRunning {
-		return false, errors.New("cannot discard a task while another task is running")
-	}
-	parentID := c.runtime.checkpointID(sessionID)
-	childCheckpoints, err := c.teamRuns.CheckpointIDs(parentID)
-	if err != nil {
-		return false, err
-	}
-	deleteErr := c.checkpoints.Delete(ctx, parentID)
-	deleted := deleteErr == nil
-	if deleteErr != nil && !errors.Is(deleteErr, checkpoint.ErrNotFound) {
-		return false, deleteErr
-	}
-	for _, childID := range childCheckpoints {
-		if err := c.checkpoints.Delete(ctx, childID); err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
-			return false, fmt.Errorf("delete team member checkpoint for session %q: %w", sessionID, err)
-		}
-	}
-	if err := c.teamRuns.DeleteParent(parentID); err != nil {
-		return false, err
-	}
-	if err := c.sessions.DeleteToolInvocationsForSession(ctx, sessionID); err != nil {
-		return false, err
-	}
-	return deleted || len(childCheckpoints) > 0, nil
 }
 
 func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
@@ -1842,7 +1877,7 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		ContextWindow: effective.ContextWindow, ReserveOutputTokens: effective.ReserveOutputTokens,
 		AutoCompact: effective.AutoCompact, AutoCompactThreshold: effective.AutoCompactThreshold,
 	}
-	taskID, err := c.beginTask(ctx, sessionID, false, settings, profile, profile.Model, compactOptions, saved.UpdatedAt, nil)
+	taskID, err := c.beginTask(ctx, sessionID, "", false, settings, profile, profile.Model, compactOptions, saved.UpdatedAt, nil)
 	if err != nil {
 		return 0, err
 	}

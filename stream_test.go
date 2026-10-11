@@ -46,12 +46,25 @@ func TestCoreEmitsLeadTextDeltasWithTaskIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	var events []Event
-	client.SetEventHandler(func(event Event) { events = append(events, event) })
+	eventStream := subscribeTestEvents(t, client, saved.ID)
 	if _, err := client.RunTask(context.Background(), TaskRequest{
 		SessionID: saved.ID, Input: mustSettingsTaskInput(t, "say hello"), Model: taskModel,
 	}); err != nil {
 		t.Fatalf("RunTask: %v", err)
+	}
+	var events []Event
+	var taskFinished, streamCompleted bool
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for !taskFinished || !streamCompleted {
+		select {
+		case event := <-eventStream:
+			events = append(events, event)
+			taskFinished = taskFinished || event.Kind == EventTaskFinished
+			streamCompleted = streamCompleted || event.Kind == EventModelStream && event.Stream != nil && event.Stream.Type == "completed"
+		case <-deadline.C:
+			t.Fatal("runtime events did not include task completion and stream completion")
+		}
 	}
 
 	var taskID string
@@ -145,8 +158,7 @@ func TestCoreStreamingCancellationPausesAndResumeStreamsAgain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	events := make(chan Event, 32)
-	client.SetEventHandler(func(event Event) { events <- event })
+	events := subscribeTestEvents(t, client, saved.ID)
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan error, 1)
 	go func() {
@@ -194,7 +206,7 @@ func TestCoreStreamingCancellationPausesAndResumeStreamsAgain(t *testing.T) {
 			t.Fatal("Core did not emit the paused task event")
 		}
 	}
-	if pending, err := client.HasPending(context.Background(), saved.ID); err != nil || !pending {
+	if pending, err := client.hasPending(context.Background(), saved.ID); err != nil || !pending {
 		t.Fatalf("pending checkpoint after cancellation = %v, error=%v; want paused task", pending, err)
 	}
 
@@ -282,13 +294,26 @@ func TestCoreProviderFailureAfterTextDeltaFailsTaskAndEmitsStreamFailure(t *test
 	if err != nil {
 		t.Fatal(err)
 	}
-	var events []Event
-	client.SetEventHandler(func(event Event) { events = append(events, event) })
+	eventStream := subscribeTestEvents(t, client, saved.ID)
 	_, runErr := client.RunTask(context.Background(), TaskRequest{
 		SessionID: saved.ID, Input: mustSettingsTaskInput(t, "stream and fail"),
 	})
 	if runErr == nil || !strings.Contains(runErr.Error(), "injected stream failure") {
 		t.Fatalf("RunTask error = %v, want injected provider failure", runErr)
+	}
+	var events []Event
+	var taskFinished, streamFailed bool
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	for !taskFinished || !streamFailed {
+		select {
+		case event := <-eventStream:
+			events = append(events, event)
+			taskFinished = taskFinished || event.Kind == EventTaskFinished
+			streamFailed = streamFailed || event.Kind == EventModelStream && event.Stream != nil && event.Stream.Type == "failed"
+		case <-deadline.C:
+			t.Fatal("runtime events did not include task and stream failure")
+		}
 	}
 	var taskID string
 	var deltaIndex, failureIndex, finishIndex = -1, -1, -1
@@ -310,17 +335,17 @@ func TestCoreProviderFailureAfterTextDeltaFailsTaskAndEmitsStreamFailure(t *test
 			}
 		case EventTaskFinished:
 			if event.TaskID == taskID {
-				if event.Status != TaskFailed || !strings.Contains(event.Err, "injected stream failure") {
+				if event.Status != TaskFailed || event.Err != "" {
 					t.Fatalf("failed task event = %#v", event)
 				}
 				finishIndex = index
 			}
 		}
 	}
-	if deltaIndex < 0 || failureIndex <= deltaIndex || finishIndex <= failureIndex {
+	if deltaIndex < 0 || failureIndex < 0 || finishIndex < 0 {
 		t.Fatalf("stream failure sequence delta=%d failure=%d task finish=%d events=%#v", deltaIndex, failureIndex, finishIndex, events)
 	}
-	if pending, err := client.HasPending(context.Background(), saved.ID); err != nil || pending {
+	if pending, err := client.hasPending(context.Background(), saved.ID); err != nil || pending {
 		t.Fatalf("failed provider stream pending=%v error=%v; want failed task without resumable checkpoint", pending, err)
 	}
 }

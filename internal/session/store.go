@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 3
+const currentSchemaVersion = 4
 
 // Snapshot is the persisted state for one workspace session. Data is owned by
 // the caller so the session package does not depend on the TUI or model layer.
@@ -121,6 +121,45 @@ func Open(path string) (*Store, error) {
 		_ = tx.Rollback()
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize tool invocation index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS queued_turn_inputs (
+		session_id TEXT NOT NULL,
+		queue_id TEXT NOT NULL,
+		position INTEGER NOT NULL,
+		execution_id TEXT NOT NULL,
+		request BLOB NOT NULL,
+		status TEXT NOT NULL,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		PRIMARY KEY (session_id, queue_id),
+		UNIQUE (session_id, position),
+		CHECK (status IN ('queued', 'active', 'paused'))
+	)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize queued turn input store: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS queued_turn_inputs_session_status_position
+		ON queued_turn_inputs(session_id, status, position)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize queued turn input index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS runtime_events (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id TEXT NOT NULL,
+		payload BLOB NOT NULL,
+		created_at INTEGER NOT NULL
+	)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize runtime event log: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS runtime_events_session_id
+		ON runtime_events(session_id, id)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize runtime event index: %w", err)
 	}
 	if version < currentSchemaVersion {
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
@@ -252,13 +291,30 @@ func (s *Store) Delete(ctx context.Context, id, workspace string) (bool, error) 
 	if id == "" || workspace == "" {
 		return false, errors.New("session id and workspace are required")
 	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND workspace = ?`, id, workspace)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin session deletion: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `DELETE FROM sessions WHERE id = ? AND workspace = ?`, id, workspace)
 	if err != nil {
 		return false, fmt.Errorf("delete session %q: %w", id, err)
 	}
 	deleted, err := result.RowsAffected()
 	if err != nil {
 		return false, fmt.Errorf("check session deletion: %w", err)
+	}
+	if deleted == 0 {
+		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ?`, id); err != nil {
+		return false, fmt.Errorf("delete queued turns for session %q: %w", id, err)
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM runtime_events WHERE session_id = ?`, id); err != nil {
+		return false, fmt.Errorf("delete runtime events for session %q: %w", id, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit session deletion: %w", err)
 	}
 	return deleted > 0, nil
 }

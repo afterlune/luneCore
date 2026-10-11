@@ -171,13 +171,7 @@ func TestCoreAcceptsHostProviderAndRegisteredTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var eventsMu sync.Mutex
-	var events []Event
-	client.SetEventHandler(func(event Event) {
-		eventsMu.Lock()
-		events = append(events, event)
-		eventsMu.Unlock()
-	})
+	eventStream := subscribeTestEvents(t, client, session.ID)
 	input, err := NewTaskInput("use the host tool")
 	if err != nil {
 		t.Fatal(err)
@@ -185,6 +179,14 @@ func TestCoreAcceptsHostProviderAndRegisteredTool(t *testing.T) {
 	response, err := client.RunTask(context.Background(), TaskRequest{SessionID: session.ID, Input: input})
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
+	}
+	var events []Event
+	for {
+		event := <-eventStream
+		events = append(events, event)
+		if event.Kind == EventTaskFinished {
+			break
+		}
 	}
 	var result publicmodel.ModelResponse
 	if err := json.Unmarshal(response, &result); err != nil {
@@ -203,8 +205,6 @@ func TestCoreAcceptsHostProviderAndRegisteredTool(t *testing.T) {
 	if !ok || state.Status != TaskCompleted {
 		t.Fatalf("session task state = %#v, found=%v", state, ok)
 	}
-	eventsMu.Lock()
-	defer eventsMu.Unlock()
 	var started, finished bool
 	for _, event := range events {
 		if event.SessionID != session.ID {
@@ -412,7 +412,17 @@ func TestUnknownToolOutcomeCanBeSkippedAndReplayedWithoutExecution(t *testing.T)
 	}); err != nil {
 		t.Fatalf("create pending checkpoint: %v", err)
 	}
-	requests, err := client.PendingToolRecoveries(context.Background(), saved.ID)
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pendingRequests, err := runtime.PendingRequests(context.Background())
+	var requests []ToolRecoveryRequest
+	for _, request := range pendingRequests {
+		if request.ToolRecovery != nil {
+			requests = append(requests, *request.ToolRecovery)
+		}
+	}
 	if err != nil || len(requests) != 2 {
 		t.Fatalf("PendingToolRecoveries = %#v, err=%v", requests, err)
 	}
@@ -423,8 +433,7 @@ func TestUnknownToolOutcomeCanBeSkippedAndReplayedWithoutExecution(t *testing.T)
 	if !seen[invocationID] || !seen[childInvocationID] {
 		t.Fatalf("pending recovery requests = %#v", requests)
 	}
-	events := make(chan Event, 2)
-	client.SetEventHandler(func(event Event) { events <- event })
+	events := subscribeTestEvents(t, client, saved.ID)
 	recoveryErr := client.checkToolRecovery(context.Background(), saved.ID, TaskState{TaskID: "resume-task", ExecutionID: executionID})
 	var required *ToolRecoveryRequiredError
 	if !errors.As(recoveryErr, &required) || required.InvocationID != invocationID {
@@ -436,10 +445,10 @@ func TestUnknownToolOutcomeCanBeSkippedAndReplayedWithoutExecution(t *testing.T)
 			t.Fatalf("recovery event = %#v", event)
 		}
 	}
-	if err := client.ResolveToolRecovery(context.Background(), saved.ID, invocationID, ToolRecoverySkip); err != nil {
+	if err := runtime.ResolveToolRecovery(context.Background(), invocationID, ToolRecoverySkip); err != nil {
 		t.Fatalf("ResolveToolRecovery: %v", err)
 	}
-	if err := client.ResolveToolRecovery(context.Background(), saved.ID, childInvocationID, ToolRecoverySkip); err != nil {
+	if err := runtime.ResolveToolRecovery(context.Background(), childInvocationID, ToolRecoverySkip); err != nil {
 		t.Fatalf("ResolveToolRecovery child: %v", err)
 	}
 	identity := publictool.CallIdentity{SessionID: saved.ID, TaskID: "resume-task", RunID: runID, ExecutionID: executionID, AgentID: "lead", InvocationID: invocationID}

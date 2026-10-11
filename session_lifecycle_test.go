@@ -182,7 +182,7 @@ func TestResumeRejectsCheckpointWithoutTaskSettingsSnapshot(t *testing.T) {
 	if state := client.State(); state.Status != TaskIdle {
 		t.Fatalf("task state after rejected resume = %#v, want idle", state)
 	}
-	if pending, err := client.HasPending(context.Background(), saved.ID); err != nil || !pending {
+	if pending, err := client.hasPending(context.Background(), saved.ID); err != nil || !pending {
 		t.Fatalf("checkpoint after rejected resume: pending=%v err=%v; want preserved", pending, err)
 	}
 	state, found, err := client.runtime.PendingStateFor(context.Background(), saved.ID)

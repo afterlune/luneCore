@@ -69,7 +69,31 @@ The workspace may supply `config.json` for model profiles and project runtime se
 }
 ```
 
-Core stores sessions, checkpoints, team runs, and tool invocation records under `StateDir` (default `.luneagent`). Enabled MCP-server state uses the same directory. Front ends receive runtime events through `SetEventHandler` and resolve tool approvals or user interactions through the matching Core methods.
+Core stores sessions, queued turns, the safe runtime event log, checkpoints, team runs, and tool invocation records under `StateDir` (default `.luneagent`). Enabled MCP-server state uses the same directory. Open a session-bound runtime for asynchronous control:
+
+```go
+runtime, err := client.OpenSessionRuntime(ctx, session.ID)
+if err != nil {
+	log.Fatal(err)
+}
+events, err := runtime.SubscribeEvents(ctx, 0)
+if err != nil {
+	log.Fatal(err)
+}
+go func() {
+	for event := range events {
+		// Handle durable lifecycle events and best-effort live model deltas.
+	}
+}()
+
+submission, err := runtime.SubmitTurn(ctx, core.TurnRequest{Input: input}, core.StartIfIdle)
+if err != nil {
+	log.Fatal(err)
+}
+// submission.ExecutionID can be passed to runtime.Interrupt.
+```
+
+`StartIfIdle` rejects work if the session is running, queued, or paused. `QueueInput` appends a durable FIFO turn. Queued work starts when a runtime event subscriber is attached, so it can pause safely for host decisions. The submission context controls admission only; accepted work continues until completion, failure, interruption, or pause. `RunTask` and `ResumeTask` remain blocking wrappers over this runtime path. The durable event log omits model deltas, tool arguments, approval arguments, interaction payloads, and free-form errors; full pending requests are available through `runtime.PendingRequests(ctx)` while the Core process is alive. A public event subscription also enables the host to resolve approval requests through `runtime.ResolveApproval`.
 
 Each `StateDir` is exclusively owned by one Core instance at a time, including across process boundaries. `New` returns an error matching `core.ErrStateDirInUse` if another Core already holds the directory lock. The lock is released by `Close` and automatically by the operating system when the process exits.
 
@@ -79,15 +103,15 @@ Hosts can provide a model catalog through `core.Config.ModelConfig`, custom impl
 
 Implement model providers with the public `model.Provider` interface and register tools with the public `tool.Tool` interface. Provider methods receive normalized request, response, and stream types; the runtime owns history, tool execution, and checkpointing. Provider implementations must support concurrent calls from different sessions. Every registered tool must declare a category, permission class, and JSON parameter schema.
 
-Hosts can set `core.Config.CommandExecutor` to run commands through their own sandbox or process manager. Direct local shell execution is disabled by default; set `AllowLocalCommand` only when the host intentionally permits it. The runtime still applies the selected permission mode and approval handler.
+Hosts can set `core.Config.CommandExecutor` to run commands through their own sandbox or process manager. Direct local shell execution is disabled by default; set `AllowLocalCommand` only when the host intentionally permits it. The runtime applies the selected permission mode and surfaces approval requests through `SessionRuntime`.
 
 ## Concurrent sessions and tool recovery
 
-A Core can run tasks for different sessions concurrently. It rejects a second task for a session that is already running. Use `StateForSession` for one session and `ActiveTasks` for the set of currently running tasks; `State` remains as a compatibility view of the most recently changed task.
+A Core can run tasks for different sessions concurrently. A session runtime serializes turns within its session. Use `runtime.State` to inspect the active task and durable queue; `ActiveTasks` reports currently running tasks across the Core.
 
-Cancel a task started by `RunTask` or `ResumeTask` with `CancelTask(sessionID)`. It returns `true` when cancellation was requested and `false` when that session has no cancellable task running. Cancellation is cooperative, so host providers and tools should honor their context. A canceled task with a saved checkpoint remains paused and can be continued with `ResumeTask`; use `DiscardTask` to abandon it. `Close` continues to return an error while any task is running. Cancel tasks and wait for their `RunTask` calls to return before closing the Core.
+Call `runtime.Interrupt(executionID)` to interrupt a running turn or remove it before it starts. Cancellation is cooperative, so host providers and tools should honor their context. A turn with a saved checkpoint remains paused and blocks later queue entries until `runtime.Recover` or `runtime.DiscardPaused`. `Close` waits for queued work to finish starting, and returns an error while a task is running.
 
-If the process stops while a tool may have caused a side effect, `ResumeTask` pauses and emits `EventToolRecoveryRequired`. The host can inspect one or more requests with `PendingToolRecovery` or `PendingToolRecoveries`, choose `ToolRecoveryRetry` or `ToolRecoverySkip` with `ResolveToolRecovery`, then call `ResumeTask` again. Completed tool results are replayed from the invocation ledger without running the tool again. Recovery covers parent and team-worker calls.
+If the process stops while a tool may have caused a side effect, recovery exposes a `PendingToolRecovery` request through `runtime.PendingRequests`. Choose `ToolRecoveryRetry` or `ToolRecoverySkip` with `runtime.ResolveToolRecovery`, then call `runtime.Recover`. Completed tool results are replayed from the invocation ledger without running the tool again. Recovery covers parent and team-worker calls. `runtime.SetUserInteractionAvailable(true)` enables MCP user interaction for that session while a runtime event subscriber is attached.
 
 Task concurrency is coordinated within each Core instance. The `StateDir` lock prevents another Core instance from opening the same directory concurrently.
 

@@ -95,8 +95,7 @@ func TestCancelTaskStopsProviderAndResumesSameExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	events := make(chan Event, 16)
-	client.SetEventHandler(func(event Event) { events <- event })
+	events := subscribeTestEvents(t, client, saved.ID)
 	input, err := NewTaskInput("wait for the provider")
 	if err != nil {
 		t.Fatal(err)
@@ -119,11 +118,14 @@ func TestCancelTaskStopsProviderAndResumesSameExecution(t *testing.T) {
 	if err := client.Close(); err == nil {
 		t.Fatal("Close succeeded while a task was running")
 	}
-	if !client.CancelTask(saved.ID) {
+	if !interruptTestTask(t, client, saved.ID) {
 		t.Fatal("CancelTask returned false for a running task")
 	}
-	if !client.CancelTask(saved.ID) {
-		t.Fatal("repeated CancelTask returned false before the task exited")
+	if !interruptTestTask(t, client, saved.ID) {
+		state, ok := client.StateForSession(saved.ID)
+		if !ok || state.Status != TaskPaused {
+			t.Fatalf("repeated interrupt returned false while task was still active: %#v", state)
+		}
 	}
 	select {
 	case err := <-done:
@@ -137,21 +139,19 @@ func TestCancelTaskStopsProviderAndResumesSameExecution(t *testing.T) {
 	if !ok || paused.Status != TaskPaused || paused.ExecutionID != started.ExecutionID {
 		t.Fatalf("task state after cancellation = %#v, want paused with execution %q", paused, started.ExecutionID)
 	}
-	if client.CancelTask(saved.ID) {
+	if interruptTestTask(t, client, saved.ID) {
 		t.Fatal("CancelTask returned true after the task exited")
 	}
-	foundPausedEvent := false
+	pausedEventTimer := time.NewTimer(5 * time.Second)
+	defer pausedEventTimer.Stop()
 	for {
 		select {
 		case event := <-events:
 			if event.Kind == EventTaskFinished && event.SessionID == saved.ID && event.Status == TaskPaused {
-				foundPausedEvent = true
+				goto resume
 			}
-		default:
-			if !foundPausedEvent {
-				t.Fatal("missing EventTaskFinished with paused status")
-			}
-			goto resume
+		case <-pausedEventTimer.C:
+			t.Fatal("missing EventTaskFinished with paused status")
 		}
 	}
 
@@ -199,7 +199,7 @@ func TestCancelTaskOnlyStopsSelectedSession(t *testing.T) {
 			t.Fatal("both tasks did not reach the provider")
 		}
 	}
-	if !client.CancelTask(first.ID) {
+	if !interruptTestTask(t, client, first.ID) {
 		t.Fatal("CancelTask returned false for the first session")
 	}
 	select {
@@ -237,28 +237,31 @@ func TestFinishingTaskDoesNotClearNextSessionTaskCancellation(t *testing.T) {
 	var firstTaskID string
 	secondStarted := make(chan struct{})
 	secondDone := make(chan error, 1)
-	client.SetEventHandler(func(event Event) {
-		eventMu.Lock()
-		if event.Kind == EventTaskStarted && firstTaskID == "" {
-			firstTaskID = event.TaskID
+	clientEvents := subscribeTestEvents(t, client, saved.ID)
+	go func() {
+		for event := range clientEvents {
+			eventMu.Lock()
+			if event.Kind == EventTaskStarted && firstTaskID == "" {
+				firstTaskID = event.TaskID
+			}
+			startSecond := event.Kind == EventTaskFinished && event.TaskID == firstTaskID
+			eventMu.Unlock()
+			if !startSecond {
+				continue
+			}
+			go func() {
+				input, _ := NewTaskInput("second task")
+				_, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: input})
+				secondDone <- err
+			}()
+			select {
+			case <-provider.entered:
+				close(secondStarted)
+			case <-time.After(5 * time.Second):
+				t.Error("second task did not reach the provider from the finish callback")
+			}
 		}
-		startSecond := event.Kind == EventTaskFinished && event.TaskID == firstTaskID
-		eventMu.Unlock()
-		if !startSecond {
-			return
-		}
-		go func() {
-			input, _ := NewTaskInput("second task")
-			_, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: input})
-			secondDone <- err
-		}()
-		select {
-		case <-provider.entered:
-			close(secondStarted)
-		case <-time.After(5 * time.Second):
-			t.Error("second task did not reach the provider from the finish callback")
-		}
-	})
+	}()
 
 	firstDone := make(chan error, 1)
 	input, _ := NewTaskInput("first task")
@@ -288,7 +291,7 @@ func TestFinishingTaskDoesNotClearNextSessionTaskCancellation(t *testing.T) {
 	if state, ok := client.StateForSession(saved.ID); !ok || state.Status != TaskRunning {
 		t.Fatalf("second task state after first returned = %#v, ok=%t", state, ok)
 	}
-	if !client.CancelTask(saved.ID) {
+	if !interruptTestTask(t, client, saved.ID) {
 		t.Fatal("first task cleanup removed the second task's cancellation handle")
 	}
 	select {
@@ -330,17 +333,23 @@ func TestCancelTaskPropagatesToHostTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	taskCtx, cancel := context.WithCancel(context.Background())
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	const executionID = "tool-execution"
+	taskCtx = publictool.WithCallIdentity(taskCtx, publictool.CallIdentity{SessionID: saved.ID, TaskID: "tool-task", ExecutionID: executionID})
 	client.mu.Lock()
-	client.activeTasks["tool-session"] = TaskState{Status: TaskRunning, SessionID: "tool-session"}
-	client.taskCancels["tool-session"] = cancel
+	client.activeTasks[saved.ID] = TaskState{Status: TaskRunning, SessionID: saved.ID, TaskID: "tool-task", ExecutionID: executionID}
+	client.taskCancels[saved.ID] = cancel
 	client.mu.Unlock()
 	defer func() {
 		cancel()
 		client.mu.Lock()
-		state := client.activeTasks["tool-session"]
+		state := client.activeTasks[saved.ID]
 		state.Status = TaskIdle
-		client.activeTasks["tool-session"] = state
-		delete(client.taskCancels, "tool-session")
+		client.activeTasks[saved.ID] = state
+		delete(client.taskCancels, saved.ID)
 		client.mu.Unlock()
 	}()
 	done := make(chan internaltool.Result, 1)
@@ -352,7 +361,7 @@ func TestCancelTaskPropagatesToHostTool(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("host tool did not start")
 	}
-	if !client.CancelTask("tool-session") {
+	if !interruptTestTask(t, client, saved.ID) {
 		t.Fatal("CancelTask returned false for the active host tool")
 	}
 	select {
@@ -367,26 +376,27 @@ func TestCancelTaskPropagatesToHostTool(t *testing.T) {
 }
 
 func TestCancelTaskCancelsPendingApproval(t *testing.T) {
-	client := &Core{
-		approvals:    make(map[string]chan bool),
-		interactions: make(map[string]chan userInteractionResult),
-		taskCancels:  make(map[string]context.CancelFunc),
-		activeTasks:  make(map[string]TaskState),
+	client := newProgrammaticCore(t, &scriptedHostProvider{})
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
 	}
 	taskCtx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	events := make(chan Event, 4)
+	events := subscribeTestEvents(t, client, saved.ID)
+	const executionID = "approval-execution"
+	identity := publictool.CallIdentity{SessionID: saved.ID, TaskID: "approval-task", ExecutionID: executionID, AgentID: "lead"}
+	taskCtx = publictool.WithCallIdentity(taskCtx, identity)
 	client.mu.Lock()
-	client.handler = func(event Event) { events <- event }
-	client.activeTasks["approval-session"] = TaskState{Status: TaskRunning, SessionID: "approval-session"}
-	client.taskCancels["approval-session"] = cancel
+	client.activeTasks[saved.ID] = TaskState{Status: TaskRunning, SessionID: saved.ID, TaskID: identity.TaskID, ExecutionID: executionID}
+	client.taskCancels[saved.ID] = cancel
 	client.mu.Unlock()
 	defer func() {
 		client.mu.Lock()
-		state := client.activeTasks["approval-session"]
+		state := client.activeTasks[saved.ID]
 		state.Status = TaskIdle
-		client.activeTasks["approval-session"] = state
-		delete(client.taskCancels, "approval-session")
+		client.activeTasks[saved.ID] = state
+		delete(client.taskCancels, saved.ID)
 		client.mu.Unlock()
 	}()
 	approvalDone := make(chan bool, 1)
@@ -403,7 +413,15 @@ func TestCancelTaskCancelsPendingApproval(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("approval request was not emitted")
 	}
-	if !client.CancelTask("approval-session") {
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pending, err := runtime.PendingRequests(context.Background())
+	if err != nil || len(pending) != 1 || pending[0].Approval == nil || pending[0].Approval.ID != approvalID {
+		t.Fatalf("pending approval snapshot = %#v, error=%v", pending, err)
+	}
+	if !interruptTestTask(t, client, saved.ID) {
 		t.Fatal("CancelTask returned false while approval was pending")
 	}
 	select {

@@ -10,7 +10,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,7 +17,9 @@ import (
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	projectconfig "github.com/afterlune/luneCore/internal/config"
 	"github.com/afterlune/luneCore/internal/model"
+	"github.com/afterlune/luneCore/internal/session"
 	"github.com/afterlune/luneCore/internal/tool"
+	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
 	"github.com/afterlune/luneGraph/checkpoint/memory"
 )
@@ -133,14 +134,13 @@ func TestTeamExecutorRunsPinnedProviderProfilesConcurrently(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer teamStore.Close()
-	core := &Core{active: TaskState{Status: TaskRunning}, approvals: make(map[string]chan bool)}
-	var eventsMu sync.Mutex
-	var events []Event
-	core.handler = func(event Event) {
-		eventsMu.Lock()
-		defer eventsMu.Unlock()
-		events = append(events, event)
+	eventStore, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer eventStore.Close()
+	core := &Core{active: TaskState{Status: TaskRunning}, approvals: make(map[string]pendingApproval), sessions: eventStore}
+	var events []Event
 	team := &teamExecutor{core: core, models: catalog, tools: registry, checkpoints: checkpoints, store: teamStore}
 	assignments := []agentgraph.TeamAssignment{
 		{ID: "reader", Model: "text", Task: "inspect package layout"},
@@ -148,8 +148,9 @@ func TestTeamExecutorRunsPinnedProviderProfilesConcurrently(t *testing.T) {
 	}
 	resultsCh := make(chan []agentgraph.TeamMemberResult, 1)
 	errCh := make(chan error, 1)
+	teamContext := publictool.WithCallIdentity(context.Background(), publictool.CallIdentity{SessionID: "team-session", TaskID: "parent-task", ExecutionID: "team-execution"})
 	go func() {
-		results, err := team.Run(context.Background(), "parent-task:team-call", assignments, agentgraph.TaskOptions{MaxToolRounds: 5})
+		results, err := team.Run(teamContext, "parent-task:team-call", assignments, agentgraph.TaskOptions{MaxToolRounds: 5})
 		resultsCh <- results
 		errCh <- err
 	}()
@@ -173,8 +174,17 @@ func TestTeamExecutorRunsPinnedProviderProfilesConcurrently(t *testing.T) {
 	if results[0].Model != "deepseek-worker" || results[1].Model != "claude-review" {
 		t.Fatalf("member models changed: %#v", results)
 	}
-	eventsMu.Lock()
-	defer eventsMu.Unlock()
+	storedEvents, err := eventStore.RuntimeEventsAfter(context.Background(), "team-session", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stored := range storedEvents {
+		var event Event
+		if err := json.Unmarshal(stored.Payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		events = append(events, event)
+	}
 	started, finished, usage, teamRuns := map[string]bool{}, map[string]bool{}, map[string]bool{}, map[string]bool{}
 	for _, event := range events {
 		switch event.Kind {
@@ -427,7 +437,7 @@ func TestTeamExecutorRejectsMemberCheckpointWithoutTaskSettingsSnapshot(t *testi
 	}
 	defer store.Close()
 	team := &teamExecutor{
-		core: &Core{approvals: make(map[string]chan bool)}, models: catalog, tools: registry,
+		core: &Core{approvals: make(map[string]pendingApproval)}, models: catalog, tools: registry,
 		checkpoints: checkpoints, store: store,
 	}
 	assignments := []agentgraph.TeamAssignment{{ID: "worker", Model: "worker", Task: "inspect the code"}}
@@ -498,7 +508,7 @@ func TestTeamExecutorResumesPausedMemberWithoutChangingItsModel(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	team := &teamExecutor{core: &Core{approvals: make(map[string]chan bool)}, models: catalog, tools: registry, checkpoints: checkpoints, store: store}
+	team := &teamExecutor{core: &Core{approvals: make(map[string]pendingApproval)}, models: catalog, tools: registry, checkpoints: checkpoints, store: store}
 	assignments := []agentgraph.TeamAssignment{{ID: "worker", Model: "worker", Task: "inspect the code"}}
 	ctx, cancel := context.WithCancel(context.Background())
 	firstDone := make(chan error, 1)

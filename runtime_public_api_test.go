@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/model"
@@ -77,7 +78,38 @@ func TestExternalGoPackageCanEmbedAndExtendCore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.RunTask(context.Background(), core.TaskRequest{SessionID: session.ID, Input: input}); err != nil {
-		t.Fatalf("RunTask: %v", err)
+	runtime, err := client.OpenSessionRuntime(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("OpenSessionRuntime: %v", err)
+	}
+	eventCtx, cancelEvents := context.WithCancel(context.Background())
+	events, err := runtime.SubscribeEvents(eventCtx, 0)
+	if err != nil {
+		t.Fatalf("SubscribeEvents: %v", err)
+	}
+	if _, err := runtime.SubmitTurn(context.Background(), core.TurnRequest{Input: input}, core.StartIfIdle); err != nil {
+		t.Fatalf("SubmitTurn: %v", err)
+	}
+	finished := false
+	for !finished {
+		select {
+		case event := <-events:
+			finished = event.Kind == core.EventTaskFinished
+		case <-time.After(5 * time.Second):
+			t.Fatal("asynchronous task did not finish")
+		}
+	}
+	cancelEvents()
+	for range events {
+	}
+	closeDeadline := time.Now().Add(5 * time.Second)
+	for {
+		if err := client.Close(); err == nil {
+			break
+		}
+		if time.Now().After(closeDeadline) {
+			t.Fatal("Core did not become idle for Close")
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
