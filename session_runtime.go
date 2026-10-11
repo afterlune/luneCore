@@ -114,38 +114,20 @@ type sessionEventHub struct {
 
 type eventSubscriber struct {
 	channel chan Event
-	control bool
 }
 
 func newSessionEventHub() *sessionEventHub {
 	return &sessionEventHub{changed: make(chan struct{}), live: make(map[uint64]eventSubscriber)}
 }
 
-func (h *sessionEventHub) subscribeLive(control bool) (<-chan Event, func()) {
+func (h *sessionEventHub) subscribeLive() (<-chan Event, func()) {
 	h.mu.Lock()
 	h.nextID++
 	id := h.nextID
 	channel := make(chan Event, 64)
-	h.live[id] = eventSubscriber{channel: channel, control: control}
+	h.live[id] = eventSubscriber{channel: channel}
 	h.mu.Unlock()
 	return channel, func() { h.mu.Lock(); delete(h.live, id); h.mu.Unlock() }
-}
-
-func (h *sessionEventHub) hasSubscribers() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	return len(h.live) > 0
-}
-
-func (h *sessionEventHub) hasControlSubscribers() bool {
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	for _, subscriber := range h.live {
-		if subscriber.control {
-			return true
-		}
-	}
-	return false
 }
 
 func (h *sessionEventHub) changeChannel() <-chan struct{} {
@@ -220,6 +202,7 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (*Sessi
 			return nil, err
 		}
 	}
+	c.scheduleQueueDrain(sessionID)
 	return &SessionRuntime{core: c, sessionID: sessionID}, nil
 }
 
@@ -256,8 +239,6 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 		return TurnResult{}, err
 	}
 	hub := r.core.eventHub(r.sessionID)
-	_, unsubscribe := hub.subscribeLive(false)
-	defer unsubscribe()
 	r.core.scheduleQueueDrain(r.sessionID)
 	for {
 		changed := hub.changeChannel()
@@ -304,10 +285,10 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 // SubscribeEvents replays durable events after afterCursor, then follows new
 // events. Model stream deltas are live-only and may be dropped if a consumer is slow.
 func (r *SessionRuntime) SubscribeEvents(ctx context.Context, afterCursor int64) (<-chan Event, error) {
-	return r.subscribeEvents(ctx, afterCursor, true, true)
+	return r.subscribeEvents(ctx, afterCursor, true)
 }
 
-func (r *SessionRuntime) subscribeEvents(ctx context.Context, afterCursor int64, schedule, control bool) (<-chan Event, error) {
+func (r *SessionRuntime) subscribeEvents(ctx context.Context, afterCursor int64, schedule bool) (<-chan Event, error) {
 	if r == nil || r.core == nil || ctx == nil || afterCursor < 0 {
 		return nil, errors.New("session runtime, context, and a non-negative event cursor are required")
 	}
@@ -315,7 +296,7 @@ func (r *SessionRuntime) subscribeEvents(ctx context.Context, afterCursor int64,
 		return nil, err
 	}
 	hub := r.core.eventHub(r.sessionID)
-	live, unsubscribe := hub.subscribeLive(control)
+	live, unsubscribe := hub.subscribeLive()
 	if _, err := r.core.GetSession(ctx, r.sessionID); err != nil {
 		unsubscribe()
 		return nil, err
@@ -1010,9 +991,8 @@ func (c *Core) rememberQueuedTaskStatus(sessionID, executionID, queueID string, 
 }
 
 func (c *Core) scheduleQueueDrain(sessionID string) {
-	hub := c.eventHub(sessionID)
 	c.mu.Lock()
-	if c.closed || c.queueDraining[sessionID] || !hub.hasSubscribers() {
+	if c.closed || c.queueDraining[sessionID] {
 		c.mu.Unlock()
 		return
 	}
@@ -1055,7 +1035,7 @@ func (c *Core) drainQueue(sessionID string) {
 		c.mu.RLock()
 		closed := c.closed
 		c.mu.RUnlock()
-		if closed || !c.eventHub(sessionID).hasSubscribers() {
+		if closed {
 			return
 		}
 		if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskRunning {
@@ -1359,7 +1339,7 @@ func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (json.Ra
 	}
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
-	events, err := runtime.subscribeEvents(streamCtx, cursor, false, false)
+	events, err := runtime.subscribeEvents(streamCtx, cursor, false)
 	if err != nil {
 		return nil, err
 	}

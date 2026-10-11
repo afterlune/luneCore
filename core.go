@@ -818,9 +818,8 @@ func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName s
 	identity := publictool.CallIdentityFromContext(ctx)
 	c.mu.RLock()
 	available := c.interactiveSessions[identity.SessionID]
-	hub := c.eventHubs[identity.SessionID]
 	c.mu.RUnlock()
-	if !available || hub == nil || !hub.hasControlSubscribers() {
+	if !available {
 		return nil, errors.New("this client cannot display MCP user interaction; use the TUI")
 	}
 	id, err := newID()
@@ -1138,7 +1137,7 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string) (json.RawMessag
 	}
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
-	events, err := runtime.subscribeEvents(streamCtx, cursor, false, false)
+	events, err := runtime.subscribeEvents(streamCtx, cursor, false)
 	if err != nil {
 		return nil, err
 	}
@@ -1561,8 +1560,7 @@ func (c *Core) requestApproval(ctx context.Context, request tool.PermissionReque
 	response := make(chan bool, 1)
 	identity := publictool.CallIdentityFromContext(ctx)
 	c.mu.Lock()
-	hub := c.eventHubs[identity.SessionID]
-	if c.closed || hub == nil || !hub.hasControlSubscribers() {
+	if c.closed {
 		c.mu.Unlock()
 		return false
 	}

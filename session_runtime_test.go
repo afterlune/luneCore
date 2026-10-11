@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/afterlune/luneCore/internal/session"
 	publicmodel "github.com/afterlune/luneCore/model"
 )
 
@@ -78,6 +79,94 @@ func TestSessionRuntimeQueueInputIsFIFOAndSubmissionContextOnlyControlsAdmission
 		if started[i] != want[i] {
 			t.Fatalf("started execution order = %v, want %v", started, want)
 		}
+	}
+}
+
+func TestSessionRuntimeDrainsFIFOWithoutEventSubscribers(t *testing.T) {
+	provider := &barrierHostProvider{entered: make(chan string, 2), release: make(chan struct{}, 2)}
+	client := newProgrammaticCore(t, provider)
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "first without listeners")}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = receiveProviderInput(t, provider.entered)
+	second, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "second without listeners")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.release <- struct{}{}
+	_ = receiveProviderInput(t, provider.entered)
+	provider.release <- struct{}{}
+	waitStoredTurnStatus(t, client, saved.ID, first.ExecutionID, TaskCompleted)
+	waitStoredTurnStatus(t, client, saved.ID, second.ExecutionID, TaskCompleted)
+
+	// A late observer replays lifecycle events; attaching it does not rerun either turn.
+	streamCtx, cancelStream := context.WithCancel(context.Background())
+	stream, err := runtime.SubscribeEvents(streamCtx, 0)
+	if err != nil {
+		cancelStream()
+		t.Fatal(err)
+	}
+	started := make(map[string]int)
+	finished := make(map[string]int)
+	deadline := time.After(5 * time.Second)
+	for len(finished) < 2 {
+		select {
+		case event := <-stream:
+			if event.Kind == EventTaskStarted {
+				started[event.ExecutionID]++
+			}
+			if event.Kind == EventTaskFinished {
+				finished[event.ExecutionID]++
+			}
+		case <-deadline:
+			cancelStream()
+			for range stream {
+			}
+			t.Fatalf("replayed events: started=%v finished=%v", started, finished)
+		}
+	}
+	cancelStream()
+	for range stream {
+	}
+	if started[first.ExecutionID] != 1 || started[second.ExecutionID] != 1 || finished[first.ExecutionID] != 1 || finished[second.ExecutionID] != 1 {
+		t.Fatalf("replayed lifecycle counts: started=%v finished=%v", started, finished)
+	}
+}
+
+func TestOpenSessionRuntimeStartsPersistedUnpausedQueue(t *testing.T) {
+	provider := &barrierHostProvider{entered: make(chan string, 1), release: make(chan struct{}, 1)}
+	client := newProgrammaticCore(t, provider)
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := json.Marshal(storedTurnRequest{Input: mustSettingsTaskInput(t, "start on open").Raw})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := client.sessions.EnqueueTurn(context.Background(), session.QueuedTurn{
+		SessionID: saved.ID, QueueID: "persisted-queue", ExecutionID: "persisted-execution", Request: request,
+	}, mustMarshalEvent(Event{Kind: EventTaskQueued, SessionID: saved.ID, QueueID: "persisted-queue", ExecutionID: "persisted-execution", Status: TaskQueued})); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = receiveProviderInput(t, provider.entered)
+	provider.release <- struct{}{}
+	waitStoredTurnStatus(t, client, saved.ID, "persisted-execution", TaskCompleted)
+	if state, err := runtime.State(context.Background()); err != nil || len(state.Queue) != 0 {
+		t.Fatalf("runtime state after persisted turn = %#v, error=%v", state, err)
 	}
 }
 
@@ -732,4 +821,18 @@ func waitQueueLength(t *testing.T, runtime *SessionRuntime, want int) {
 	}
 	state, err := runtime.State(context.Background())
 	t.Fatalf("runtime queue length = %d, error=%v; want %d (%#v)", len(state.Queue), err, want, state.Queue)
+}
+
+func waitStoredTurnStatus(t *testing.T, client *Core, sessionID, executionID string, want TaskStatus) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		result, found, err := client.sessions.TurnResult(context.Background(), sessionID, executionID)
+		if err == nil && found && TaskStatus(result.Status) == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	result, found, err := client.sessions.TurnResult(context.Background(), sessionID, executionID)
+	t.Fatalf("stored turn result = %#v found=%t error=%v; want status %q", result, found, err, want)
 }
