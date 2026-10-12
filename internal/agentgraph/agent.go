@@ -3,8 +3,6 @@ package agentgraph
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,13 +18,19 @@ import (
 )
 
 const (
-	modelNode = "model_request"
-	toolNode  = "execute_tool"
-	machineID = "lune-agent-v1"
+	modelNode          = "model_request"
+	toolNode           = "execute_tool"
+	teamModelNode      = "team_model_request"
+	teamToolNode       = "team_execute_tool"
+	teamJoinNode       = "team_join"
+	teamBranchJoinNode = "team_branch_join"
+	machineID          = "lune-agent-v2"
 )
 
+const UserQuestionContinuation = "user_question"
+
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
-const CurrentTaskSettingsVersion = 3
+const CurrentTaskSettingsVersion = 4
 
 // Requester sends one Responses API request without managing history or tools.
 type Requester interface {
@@ -54,7 +58,8 @@ type TeamMemberResult struct {
 type TeamExecutor interface {
 	Profiles() map[string]model.ModelProfile
 	MaxParallelAgents() int
-	Run(context.Context, string, []TeamAssignment, TaskOptions) ([]TeamMemberResult, error)
+	PrepareBranch(context.Context, State, TeamAssignment, TaskOptions) (State, error)
+	Requester(context.Context, State) (Requester, error)
 }
 
 type AgentOptions struct {
@@ -67,8 +72,10 @@ type AgentOptions struct {
 	SupportsInputAudio bool
 	Model              string
 	Team               TeamExecutor
-	// AskUser is provided only to the lead agent. It blocks until the host answers.
-	AskUser            func(context.Context, string, []string) (string, error)
+	AskUser            bool
+	StreamObserverFor  func(State, model.ModelStreamEvent)
+	OnBranchStarted    func(context.Context, State)
+	OnBranchFinished   func(context.Context, State, error)
 	StreamObserver     func(model.ModelStreamEvent)
 	CompactionObserver func(ContextCompactionEvent)
 }
@@ -113,12 +120,25 @@ type State struct {
 	SelectedCategory         string                     `json:"selected_category,omitempty"`
 	PendingCalls             []model.OutputFunctionCall `json:"pending_calls,omitempty"`
 	PendingIndex             int                        `json:"pending_index,omitempty"`
-	PendingInvocationID      string                     `json:"pending_invocation_id,omitempty"`
 	VisibleTools             []string                   `json:"visible_tools,omitempty"`
 	ToolRounds               int                        `json:"tool_rounds,omitempty"`
 	MaxToolRounds            int                        `json:"max_tool_rounds,omitempty"`
 	TaskError                string                     `json:"task_error,omitempty"`
 	FinalResponse            *model.Response            `json:"final_response,omitempty"`
+	TeamBranch               bool                       `json:"team_branch,omitempty"`
+	TeamTaskID               string                     `json:"team_task_id,omitempty"`
+	TeamModel                string                     `json:"team_model,omitempty"`
+	TeamProvider             string                     `json:"team_provider,omitempty"`
+	TeamText                 string                     `json:"team_text,omitempty"`
+	TeamError                string                     `json:"team_error,omitempty"`
+	TeamStarted              bool                       `json:"team_started,omitempty"`
+	TeamRunID                string                     `json:"team_run_id,omitempty"`
+	TeamDispatchID           string                     `json:"team_dispatch_id,omitempty"`
+	TeamAssignments          []TeamAssignment           `json:"team_assignments,omitempty"`
+	UserQuestion             string                     `json:"user_question,omitempty"`
+	UserQuestionOptions      []string                   `json:"user_question_options,omitempty"`
+	UserAnswer               string                     `json:"user_answer,omitempty"`
+	UserAnswerReady          bool                       `json:"user_answer_ready,omitempty"`
 }
 
 // TaskOptions configures one user task. A zero tool-round limit is unlimited.
@@ -184,11 +204,29 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	}
 
 	workflow := graph.New[State](modelNode)
-	if err := workflow.AddNode(graph.NodeSpec[State]{Name: modelNode, Run: agent.requestModel}); err != nil {
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: modelNode, Run: agent.requestLead, OnError: graph.FailExecution}); err != nil {
 		return nil, fmt.Errorf("add model node: %w", err)
 	}
-	if err := workflow.AddNode(graph.NodeSpec[State]{Name: toolNode, Run: agent.executeTool}); err != nil {
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: toolNode, Run: agent.executeLeadTool, OnError: graph.FailExecution}); err != nil {
 		return nil, fmt.Errorf("add tool node: %w", err)
+	}
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: teamModelNode, Run: agent.requestTeam, OnError: graph.FailInvocation}); err != nil {
+		return nil, fmt.Errorf("add team model node: %w", err)
+	}
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: teamToolNode, Run: agent.executeTeamTool, OnError: graph.FailInvocation}); err != nil {
+		return nil, fmt.Errorf("add team tool node: %w", err)
+	}
+	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamJoinNode, From: toolNode, Merge: agent.mergeTeam, OnError: graph.FailExecution}); err != nil {
+		return nil, fmt.Errorf("add team join: %w", err)
+	}
+	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamBranchJoinNode, From: teamToolNode, Merge: agent.mergeTeam, OnError: graph.FailInvocation}); err != nil {
+		return nil, fmt.Errorf("add team branch join: %w", err)
+	}
+	if err := graph.RegisterJSONContinuation[State, string](workflow, UserQuestionContinuation, func(_ context.Context, _ graph.CallInfo, state State, answer string) (State, error) {
+		state.UserAnswer, state.UserAnswerReady = answer, true
+		return state, nil
+	}); err != nil {
+		return nil, fmt.Errorf("register user question continuation: %w", err)
 	}
 	if err := workflow.AddEdge(modelNode, toolNode); err != nil {
 		return nil, fmt.Errorf("add model-to-tool edge: %w", err)
@@ -199,6 +237,14 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	if err := workflow.AddEdge(toolNode, modelNode); err != nil {
 		return nil, fmt.Errorf("add tool-to-model edge: %w", err)
 	}
+	for _, edge := range [][2]string{
+		{toolNode, teamModelNode}, {teamModelNode, teamToolNode}, {teamToolNode, teamToolNode}, {teamToolNode, teamModelNode},
+		{teamJoinNode, toolNode}, {teamBranchJoinNode, teamToolNode},
+	} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			return nil, fmt.Errorf("add %s-to-%s edge: %w", edge[0], edge[1], err)
+		}
+	}
 	runner, err := workflow.Compile(graph.Config[State]{MachineID: machineID, Clone: graph.JSONClone[State]})
 	if err != nil {
 		return nil, fmt.Errorf("compile agent graph: %w", err)
@@ -207,20 +253,20 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	return agent, nil
 }
 
-func (a *Agent) Start(ctx context.Context, runID string, history, input *model.ResponseInput, taskOptions TaskOptions, options graph.Options[State]) (graph.Result[State], error) {
-	return a.StartWithTranscript(ctx, runID, history, history, input, taskOptions, options)
+func (a *Agent) Start(ctx context.Context, runID string, history, input *model.ResponseInput, taskOptions TaskOptions, store graph.Store[State], options graph.Options) (*graph.Execution[State], graph.Result[State], error) {
+	return a.StartWithTranscript(ctx, runID, history, history, input, taskOptions, store, options)
 }
 
 // StartWithTranscript starts an agent with a provider-specific request context
 // and a portable conversation transcript kept separately for display and
 // rebuilding context after a provider change.
-func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, transcript, input *model.ResponseInput, taskOptions TaskOptions, options graph.Options[State]) (graph.Result[State], error) {
+func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, transcript, input *model.ResponseInput, taskOptions TaskOptions, store graph.Store[State], options graph.Options) (*graph.Execution[State], graph.Result[State], error) {
 	if taskOptions.MaxToolRounds < 0 {
-		return graph.Result[State]{Status: graph.StatusFailed}, errors.New("MaxToolRounds must not be negative")
+		return nil, graph.Result[State]{Status: graph.StatusFailed}, errors.New("MaxToolRounds must not be negative")
 	}
 	state, err := initialState(history, transcript, input)
 	if err != nil {
-		return graph.Result[State]{Status: graph.StatusFailed}, err
+		return nil, graph.Result[State]{Status: graph.StatusFailed}, err
 	}
 	state.RunID = runID
 	state.ExecutionID = taskOptions.ExecutionID
@@ -245,15 +291,22 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.ReserveOutputTokens = taskOptions.ReserveOutputTokens
 	state.AutoCompact = taskOptions.AutoCompact
 	state.AutoCompactThreshold = taskOptions.AutoCompactThreshold
-	return a.runner.Start(ctx, runID, state, options)
+	return a.runner.Start(ctx, runID, state, store, options)
 }
 
-func (a *Agent) Resume(ctx context.Context, checkpoint graph.Checkpoint[State], inputs []graph.ResumeInput, options graph.Options[State]) (graph.Result[State], error) {
-	return a.runner.Resume(ctx, checkpoint, inputs, options)
+func (a *Agent) Resume(ctx context.Context, checkpoint graph.Checkpoint[State], inputs []graph.ResumeInput, store graph.Store[State], options graph.Options) (*graph.Execution[State], graph.Result[State], error) {
+	return a.runner.Resume(ctx, checkpoint, inputs, store, options)
 }
 
-func (a *Agent) Recover(ctx context.Context, runID string, inputs []graph.ResumeInput, options graph.Options[State]) (graph.Result[State], error) {
-	return a.runner.Recover(ctx, runID, inputs, options)
+func (a *Agent) Recover(ctx context.Context, runID string, inputs []graph.ResumeInput, store graph.Store[State], options graph.Options) (*graph.Execution[State], graph.Result[State], error) {
+	return a.runner.Recover(ctx, runID, inputs, store, options)
+}
+
+func (a *Agent) MaxConcurrency() int {
+	if a == nil || a.options.Team == nil {
+		return 0
+	}
+	return a.options.Team.MaxParallelAgents()
 }
 
 func initialState(history, transcript, input *model.ResponseInput) (State, error) {
@@ -315,25 +368,51 @@ func responseInputItems(input *model.ResponseInput) ([]model.InputItem, error) {
 	return append([]model.InputItem(nil), input.Items...), nil
 }
 
+func (a *Agent) requestLead(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
+	return a.requestModel(ctx, call, state)
+}
+
+func (a *Agent) requestTeam(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
+	return a.requestModel(ctx, call, state)
+}
+
 func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State) (graph.Transition[State], error) {
 	ensureTranscript(&state)
-	if state.ModelProfile != "" && state.ModelProfile != a.options.Profile {
-		return failTask(state, fmt.Errorf("model profile changed from %q to %q; the paused task remains pinned to its original profile", state.ModelProfile, a.options.Profile))
-	}
-	if state.Provider != "" && state.Provider != a.options.Provider || state.Model != "" && state.Model != a.options.Model {
-		return failTask(state, errors.New("provider/model changed; the paused task remains pinned to its original profile"))
-	}
-	if state.Protocol == "" {
-		state.Protocol = a.options.Protocol
-		state.ServerCompaction = a.options.ServerCompaction
-		state.SupportsInputAudio = a.options.SupportsInputAudio
-	} else if state.Protocol != a.options.Protocol || state.ServerCompaction != a.options.ServerCompaction || state.SupportsInputAudio != a.options.SupportsInputAudio {
-		return failTask(state, errors.New("provider protocol or compaction capability changed; the paused task remains pinned to its original configuration"))
+	requester := a.requester
+	if state.TeamBranch {
+		if !state.TeamStarted {
+			state.TeamStarted = true
+			if a.options.OnBranchStarted != nil {
+				a.options.OnBranchStarted(ctx, state)
+			}
+		}
+		if a.options.Team == nil {
+			return failTask(state, errors.New("team executor is unavailable"))
+		}
+		var err error
+		requester, err = a.options.Team.Requester(ctx, state)
+		if err != nil {
+			return failTask(state, err)
+		}
+	} else {
+		if state.ModelProfile != "" && state.ModelProfile != a.options.Profile {
+			return failTask(state, fmt.Errorf("model profile changed from %q to %q; the paused task remains pinned to its original profile", state.ModelProfile, a.options.Profile))
+		}
+		if state.Provider != "" && state.Provider != a.options.Provider || state.Model != "" && state.Model != a.options.Model {
+			return failTask(state, errors.New("provider/model changed; the paused task remains pinned to its original profile"))
+		}
+		if state.Protocol == "" {
+			state.Protocol = a.options.Protocol
+			state.ServerCompaction = a.options.ServerCompaction
+			state.SupportsInputAudio = a.options.SupportsInputAudio
+		} else if state.Protocol != a.options.Protocol || state.ServerCompaction != a.options.ServerCompaction || state.SupportsInputAudio != a.options.SupportsInputAudio {
+			return failTask(state, errors.New("provider protocol or compaction capability changed; the paused task remains pinned to its original configuration"))
+		}
 	}
 	if state.Transcript.Items == nil && state.Transcript.Text == nil {
 		state.Transcript = *model.NewResponseInputItems(state.History.Items...)
 	}
-	visibleTools, visibleNames, err := a.visibleTools(state.SelectedCategory, state.PlanMode)
+	visibleTools, visibleNames, err := a.visibleTools(state, state.SelectedCategory, state.PlanMode)
 	if err != nil {
 		return failTask(state, err)
 	}
@@ -407,15 +486,17 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		"visible_tools", visibleNames,
 	)
 	sendRequest := func(request model.ModelRequest) (*model.ModelResponse, error) {
-		if streaming, ok := a.requester.(StreamingRequester); ok {
+		if streaming, ok := requester.(StreamingRequester); ok {
 			return streaming.StreamResponse(ctx, request, func(event model.ModelStreamEvent) error {
-				if a.options.StreamObserver != nil {
+				if a.options.StreamObserverFor != nil {
+					a.options.StreamObserverFor(state, event)
+				} else if a.options.StreamObserver != nil {
 					a.options.StreamObserver(event)
 				}
 				return nil
 			})
 		}
-		return a.requester.CreateResponse(ctx, request)
+		return requester.CreateResponse(ctx, request)
 	}
 	var response *model.Response
 	response, responseErr := sendRequest(request)
@@ -510,7 +591,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	calls := responseFunctionCalls(response.Output)
 	if len(calls) == 0 {
 		state.FinalResponse = response
-		return graph.EndExecution(state), nil
+		return finishAgent(state), nil
 	}
 	if state.MaxToolRounds > 0 && state.ToolRounds >= state.MaxToolRounds {
 		for _, call := range calls {
@@ -523,12 +604,14 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		}
 		state.FinalResponse = response
 		state.TaskError = fmt.Sprintf("%v: %d", model.ErrToolCallLimit, state.MaxToolRounds)
-		return graph.EndExecution(state), nil
+		return finishAgent(state), nil
 	}
 	state.PendingCalls = calls
 	state.PendingIndex = 0
-	state.PendingInvocationID = pendingToolInvocationID(state.ExecutionID, state.RunID, state.AgentID, state.ToolRounds, state.PendingIndex, calls[0].CallID)
 	state.VisibleTools = visibleNames
+	if state.TeamBranch {
+		return graph.To(state, teamToolNode), nil
+	}
 	return graph.To(state, toolNode), nil
 }
 
@@ -547,41 +630,89 @@ func taskInstructions(goal string, planMode bool) string {
 
 func failTask(state State, err error) (graph.Transition[State], error) {
 	state.TaskError = err.Error()
+	if state.TeamBranch {
+		state.TeamError = err.Error()
+		return graph.CompleteBranch(state), nil
+	}
 	return graph.EndExecution(state), nil
 }
 
-func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) (graph.Transition[State], error) {
+func (a *Agent) executeLeadTool(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
+	return a.executeTool(ctx, call, state)
+}
+
+func (a *Agent) executeTeamTool(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
+	return a.executeTool(ctx, call, state)
+}
+
+func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state State) (graph.Transition[State], error) {
 	ensureTranscript(&state)
+	if state.UserAnswerReady {
+		call := state.PendingCalls[state.PendingIndex]
+		output := model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("User's answer: " + state.UserAnswer)}
+		state.UserQuestion, state.UserQuestionOptions = "", nil
+		state.UserAnswer, state.UserAnswerReady = "", false
+		state = appendToolOutput(state, output)
+		return a.nextToolTransition(state), nil
+	}
+	if state.PendingIndex == len(state.PendingCalls) && len(state.PendingCalls) > 0 {
+		state.ToolRounds++
+		state.PendingCalls = nil
+		state.PendingIndex = 0
+		state.VisibleTools = nil
+		return a.nextModelTransition(state), nil
+	}
 	if state.PendingIndex < 0 || state.PendingIndex >= len(state.PendingCalls) {
 		return graph.Transition[State]{}, errors.New("pending tool-call index is out of range")
 	}
 	call := state.PendingCalls[state.PendingIndex]
 	var output model.InputFunctionCallOutput
 	switch {
-	case call.Name == askUserToolName && a.options.AskUser != nil:
+	case call.Name == askUserToolName && a.options.AskUser && !state.TeamBranch:
 		question, options, err := parseUserQuestion(call.Arguments)
 		if err != nil {
 			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Question request rejected: " + err.Error())}
 		} else {
-			answer, err := a.options.AskUser(ctx, question, options)
-			if err != nil {
-				return graph.Transition[State]{}, err
-			}
-			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("User's answer: " + answer)}
+			state.UserQuestion, state.UserQuestionOptions = question, append([]string(nil), options...)
+			return graph.Wait(state, UserQuestionContinuation, toolNode), nil
 		}
 	case call.Name == teamDispatchToolName && a.options.Team != nil:
 		assignments, err := parseTeamAssignments(call.Arguments, a.options.Team)
 		if err != nil {
 			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Team request rejected: " + err.Error())}
 		} else {
-			results, err := a.options.Team.Run(ctx, state.RunID+":"+state.ExecutionID+":"+call.CallID, assignments, TaskOptions{
+			state.TeamAssignments = append([]TeamAssignment(nil), assignments...)
+			state.TeamDispatchID = state.RunID + ":" + state.ExecutionID + ":" + info.CallID
+			branches := make([]graph.Branch[State], 0, len(assignments))
+			taskOptions := TaskOptions{
 				ExecutionID: state.ExecutionID, MaxToolRounds: state.MaxToolRounds,
 				PlanMode: state.PlanMode, ReasoningEffort: state.ReasoningEffort,
-			})
-			if err != nil {
-				return graph.Transition[State]{}, err
 			}
-			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(formatTeamResults(results))}
+			for _, assignment := range assignments {
+				input, inputErr := model.NewResponseInput(assignment.Task)
+				if inputErr != nil {
+					return graph.Transition[State]{}, inputErr
+				}
+				branch, branchErr := initialState(nil, nil, input)
+				if branchErr != nil {
+					return graph.Transition[State]{}, branchErr
+				}
+				branch.RunID, branch.ExecutionID = state.RunID, state.ExecutionID
+				branch.AgentID = state.AgentID + "/" + assignment.ID
+				branch.AgentName, branch.TeamTaskID = assignment.ID, assignment.ID
+				branch.TeamModel = assignment.Model
+				branch.TeamBranch = true
+				branch.TeamRunID, branch.TeamDispatchID = state.TeamDispatchID, ""
+				branch.TaskSettingsVersion = CurrentTaskSettingsVersion
+				branch.MaxToolRounds, branch.PlanMode = state.MaxToolRounds, state.PlanMode
+				branch.ReasoningEffort = state.ReasoningEffort
+				branch, branchErr = a.options.Team.PrepareBranch(ctx, branch, assignment, taskOptions)
+				if branchErr != nil {
+					return graph.Transition[State]{}, branchErr
+				}
+				branches = append(branches, graph.Branch[State]{Target: teamModelNode, State: branch})
+			}
+			return graph.FanOut(state, branches...), nil
 		}
 	case a.categorized != nil && call.Name == model.CategorySelectorName:
 		categories := a.categories
@@ -625,7 +756,7 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 		identity.RunID = state.RunID
 		identity.ExecutionID = state.ExecutionID
 		identity.AgentID = state.AgentID
-		identity.InvocationID = state.PendingInvocationID
+		identity.InvocationID = info.CallID
 		toolContext = publictool.WithCallIdentity(toolContext, identity)
 		if recoverable, ok := a.tools.(interface {
 			ExecuteCallRecoverable(context.Context, model.OutputFunctionCall) (model.InputFunctionCallOutput, error)
@@ -640,6 +771,11 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 		}
 	}
 
+	state = appendToolOutput(state, output)
+	return a.nextToolTransition(state), nil
+}
+
+func appendToolOutput(state State, output model.InputFunctionCallOutput) State {
 	transcriptOnly := output.TranscriptOnly
 	output.TranscriptOnly = nil
 	state.History.Items = append(state.History.Items, output)
@@ -650,22 +786,85 @@ func (a *Agent) executeTool(ctx context.Context, _ graph.CallInfo, state State) 
 		})
 	}
 	state.PendingIndex++
+	return state
+}
+
+func (a *Agent) nextToolTransition(state State) graph.Transition[State] {
 	if state.PendingIndex < len(state.PendingCalls) {
-		state.PendingInvocationID = pendingToolInvocationID(state.ExecutionID, state.RunID, state.AgentID, state.ToolRounds, state.PendingIndex, state.PendingCalls[state.PendingIndex].CallID)
-		return graph.To(state, toolNode), nil
+		if state.TeamBranch {
+			return graph.To(state, teamToolNode)
+		}
+		return graph.To(state, toolNode)
 	}
 	state.ToolRounds++
 	state.PendingCalls = nil
 	state.PendingIndex = 0
-	state.PendingInvocationID = ""
 	state.VisibleTools = nil
-	return graph.To(state, modelNode), nil
+	return a.nextModelTransition(state)
 }
 
-func pendingToolInvocationID(executionID, runID, agentID string, toolRound, pendingIndex int, callID string) string {
-	identity := fmt.Sprintf("%s\x00%s\x00%s\x00%d\x00%d\x00%s", executionID, runID, agentID, toolRound, pendingIndex, callID)
-	digest := sha256.Sum256([]byte(identity))
-	return "tool_" + hex.EncodeToString(digest[:])
+func (a *Agent) nextModelTransition(state State) graph.Transition[State] {
+	if state.TeamBranch {
+		return graph.To(state, teamModelNode)
+	}
+	return graph.To(state, modelNode)
+}
+
+func finishAgent(state State) graph.Transition[State] {
+	if !state.TeamBranch {
+		return graph.EndExecution(state)
+	}
+	state.TeamText = responseText(state.FinalResponse.Output)
+	if state.TaskError != "" {
+		state.TeamError = state.TaskError
+	}
+	return graph.CompleteBranch(state)
+}
+
+func (a *Agent) mergeTeam(ctx context.Context, _ graph.CallInfo, parent State, branches []graph.BranchResult[State]) (State, error) {
+	results := make([]TeamMemberResult, len(branches))
+	for index, branch := range branches {
+		assignment := TeamAssignment{}
+		if index < len(parent.TeamAssignments) {
+			assignment = parent.TeamAssignments[index]
+		}
+		member := TeamMemberResult{ID: assignment.ID, Model: assignment.Model}
+		if branch.OK() {
+			member = TeamMemberResult{ID: branch.State.TeamTaskID, Model: branch.State.TeamModel, Provider: branch.State.TeamProvider, Text: branch.State.TeamText, Error: branch.State.TeamError}
+			if a.options.OnBranchFinished != nil {
+				var branchErr error
+				if member.Error != "" {
+					branchErr = errors.New(member.Error)
+				}
+				a.options.OnBranchFinished(ctx, branch.State, branchErr)
+			}
+		} else {
+			member.Error = branch.Error
+			if member.Error == "" {
+				member.Error = "team branch ended without a result"
+			}
+			if profile, ok := a.options.Team.Profiles()[assignment.Model]; ok {
+				member.Provider = profile.Provider
+				member.Model = profile.Model
+			}
+			if a.options.OnBranchFinished != nil {
+				failed := State{
+					RunID: parent.RunID, ExecutionID: parent.ExecutionID, AgentID: parent.AgentID + "/" + assignment.ID,
+					AgentName: assignment.ID, TeamTaskID: assignment.ID, TeamBranch: true, TeamStarted: true, TeamRunID: parent.TeamDispatchID,
+					TeamModel: member.Model, TeamProvider: member.Provider, Model: member.Model, ModelProfile: assignment.Model,
+				}
+				a.options.OnBranchFinished(ctx, failed, errors.New(member.Error))
+			}
+		}
+		results[index] = member
+	}
+	if parent.PendingIndex < 0 || parent.PendingIndex >= len(parent.PendingCalls) {
+		return State{}, errors.New("team join lost its originating tool call")
+	}
+	call := parent.PendingCalls[parent.PendingIndex]
+	parent = appendToolOutput(parent, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(formatTeamResults(results))})
+	parent.TeamAssignments, parent.TeamDispatchID = nil, ""
+	return parent, nil
 }
 
 func ensureTranscript(state *State) {
@@ -679,12 +878,12 @@ func ensureTranscript(state *State) {
 	state.Transcript = *model.NewResponseInputItems(state.History.Items...)
 }
 
-func (a *Agent) visibleTools(category string, planMode bool) ([]model.ResponseTool, []string, error) {
+func (a *Agent) visibleTools(state State, category string, planMode bool) ([]model.ResponseTool, []string, error) {
 	addRuntimeTools := func(definitions []model.ResponseTool) []model.ResponseTool {
 		if a.options.Team != nil && len(a.options.Team.Profiles()) > 0 && a.options.Team.MaxParallelAgents() > 0 {
 			definitions = append(definitions, teamDispatchDefinition(a.options.Team))
 		}
-		if a.options.AskUser != nil {
+		if a.options.AskUser && !state.TeamBranch {
 			definitions = append(definitions, askUserDefinition())
 		}
 		return definitions

@@ -39,13 +39,13 @@ func TestAutomaticCompactionClearsOldToolOutputAndKeepsTranscript(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.StartWithTranscript(context.Background(), "auto-compact-clear-tool-output", history, history, input,
+	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-clear-tool-output", history, history, input,
 		TaskOptions{ContextWindow: 1000, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
-		graph.Options[State]{Store: store})
+		store, graph.Options{})
 	if err != nil {
 		t.Fatalf("StartWithTranscript: %v", err)
 	}
-	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(requester.requests) != 1 {
@@ -77,7 +77,7 @@ func TestAutomaticCompactionClearsOldToolOutputAndKeepsTranscript(t *testing.T) 
 	if !strings.Contains(string(requestJSON), "data:image/png;base64,AA==") {
 		t.Fatal("tool-result compaction removed a non-text image part")
 	}
-	transcriptJSON, err := json.Marshal(result.Checkpoint.Final.Transcript)
+	transcriptJSON, err := json.Marshal(result.Final.Transcript)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,13 +112,13 @@ func TestAutomaticCompactionSummarizesOlderHistoryWhenToolClearingIsInsufficient
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.StartWithTranscript(context.Background(), "auto-compact-summary", history, history, input,
+	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-summary", history, history, input,
 		TaskOptions{ContextWindow: 1000, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
-		graph.Options[State]{Store: store})
+		store, graph.Options{})
 	if err != nil {
 		t.Fatalf("StartWithTranscript: %v", err)
 	}
-	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(requester.requests) != 2 {
@@ -127,14 +127,14 @@ func TestAutomaticCompactionSummarizesOlderHistoryWhenToolClearingIsInsufficient
 	if !strings.Contains(requester.requests[0].Instructions, "key code facts") {
 		t.Fatalf("summary instructions = %q", requester.requests[0].Instructions)
 	}
-	contextJSON, err := json.Marshal(result.Checkpoint.Final.History)
+	contextJSON, err := json.Marshal(result.Final.History)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if strings.Contains(string(contextJSON), older) || !strings.Contains(string(contextJSON), "established project task") {
 		t.Fatalf("model context was not summarized correctly: %s", contextJSON)
 	}
-	transcriptJSON, err := json.Marshal(result.Checkpoint.Final.Transcript)
+	transcriptJSON, err := json.Marshal(result.Final.Transcript)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -168,23 +168,23 @@ func TestResponsesServerCompactionKeepsOpaqueStateOutOfTranscript(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.StartWithTranscript(context.Background(), "auto-compact-server", history, history, input,
+	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-server", history, history, input,
 		TaskOptions{ContextWindow: 2100, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
-		graph.Options[State]{Store: store})
+		store, graph.Options{})
 	if err != nil {
 		t.Fatalf("StartWithTranscript: %v", err)
 	}
-	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(requester.requests) != 1 || len(requester.requests[0].ContextManagement) != 1 || requester.requests[0].ContextManagement[0].CompactThreshold != 1600 {
 		t.Fatalf("server compaction request = %#v", requester.requests)
 	}
-	modelContext, err := json.Marshal(result.Checkpoint.Final.History)
+	modelContext, err := json.Marshal(result.Final.History)
 	if err != nil {
 		t.Fatal(err)
 	}
-	transcript, err := json.Marshal(result.Checkpoint.Final.Transcript)
+	transcript, err := json.Marshal(result.Final.Transcript)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,17 +253,17 @@ func TestResponsesServerCompactionFallsBackWhenThresholdIsBelowEndpointMinimum(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.StartWithTranscript(context.Background(), "auto-compact-small-threshold", nil, nil,
+	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-small-threshold", nil, nil,
 		model.NewResponseInputText("short task"),
 		TaskOptions{ContextWindow: 1200, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
-		graph.Options[State]{Store: store})
-	if err != nil || result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+		store, graph.Options{})
+	if err != nil || result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("StartWithTranscript result=%#v error=%v", result, err)
 	}
 	if len(requester.requests) != 1 || len(requester.requests[0].ContextManagement) != 0 {
 		t.Fatalf("server compaction request = %#v, want local fallback", requester.requests)
 	}
-	if !result.Checkpoint.Final.ServerCompactionFallback {
+	if !result.Final.ServerCompactionFallback {
 		t.Fatal("task did not retain local fallback for an unsupported server threshold")
 	}
 	if len(events) == 0 || events[0].Stage != "fallback" || events[0].Threshold != 880 {
@@ -311,19 +311,19 @@ func TestResponsesServerCompactionFallsBackOnlyWhenEndpointRejectsCapability(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.StartWithTranscript(context.Background(), "auto-compact-fallback", history, history, input,
+	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-fallback", history, history, input,
 		TaskOptions{ContextWindow: 1700, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
-		graph.Options[State]{Store: store})
+		store, graph.Options{})
 	if err != nil {
 		t.Fatalf("StartWithTranscript: %v", err)
 	}
-	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(requester.requests) != 3 || len(requester.requests[0].ContextManagement) != 1 || len(requester.requests[1].ContextManagement) != 0 || len(requester.requests[2].ContextManagement) != 0 {
 		t.Fatalf("requests after capability fallback = %#v", requester.requests)
 	}
-	if !result.Checkpoint.Final.ServerCompactionFallback {
+	if !result.Final.ServerCompactionFallback {
 		t.Fatal("task did not retain endpoint fallback for later model requests")
 	}
 }
@@ -366,16 +366,16 @@ func TestAutomaticCompactionFailureLeavesBothHistoriesUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.StartWithTranscript(context.Background(), "auto-compact-failure", history, history, input,
+	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-failure", history, history, input,
 		TaskOptions{ContextWindow: 1000, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
-		graph.Options[State]{Store: store})
+		store, graph.Options{})
 	if err != nil {
 		t.Fatalf("StartWithTranscript: %v", err)
 	}
-	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v", result)
 	}
-	final := result.Checkpoint.Final
+	final := result.Final
 	if final.TaskError == "" || !strings.Contains(final.TaskError, "summary provider unavailable") {
 		t.Fatalf("task error = %q", final.TaskError)
 	}
@@ -406,8 +406,8 @@ func TestAutomaticCompactionWithoutContextWindowSkipsAndSignalsOnce(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.StartWithTranscript(context.Background(), "auto-compact-unknown-window", nil, nil, input,
-		TaskOptions{AutoCompact: true, AutoCompactThreshold: 0.8}, graph.Options[State]{Store: store})
+	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-unknown-window", nil, nil, input,
+		TaskOptions{AutoCompact: true, AutoCompactThreshold: 0.8}, store, graph.Options{})
 	if err != nil || result.Status != graph.StatusCompleted {
 		t.Fatalf("StartWithTranscript result=%#v error=%v", result, err)
 	}
@@ -443,15 +443,16 @@ func TestAutomaticCompactionCancellationLeavesResumableUnmodifiedContext(t *test
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	type runResult struct {
-		result graph.Result[State]
-		err    error
+		execution *graph.Execution[State]
+		result    graph.Result[State]
+		err       error
 	}
 	finished := make(chan runResult, 1)
 	go func() {
-		result, err := agent.StartWithTranscript(ctx, "auto-compact-cancel", history, history, input,
+		execution, result, err := agent.StartWithTranscript(ctx, "auto-compact-cancel", history, history, input,
 			TaskOptions{ContextWindow: 1000, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
-			graph.Options[State]{Store: store})
-		finished <- runResult{result: result, err: err}
+			store, graph.Options{})
+		finished <- runResult{execution: execution, result: result, err: err}
 	}()
 	<-requester.started
 	cancel()
@@ -461,8 +462,12 @@ func TestAutomaticCompactionCancellationLeavesResumableUnmodifiedContext(t *test
 	}
 	var state State
 	found := false
-	for index := len(completed.result.Checkpoint.Invocations) - 1; index >= 0; index-- {
-		invocation := completed.result.Checkpoint.Invocations[index]
+	checkpoint, err := completed.execution.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := len(checkpoint.Invocations) - 1; index >= 0; index-- {
+		invocation := checkpoint.Invocations[index]
 		if invocation.Status == graph.InvocationEnded || invocation.Status == graph.InvocationFailed || invocation.Status == graph.InvocationJoined {
 			continue
 		}
@@ -470,7 +475,7 @@ func TestAutomaticCompactionCancellationLeavesResumableUnmodifiedContext(t *test
 		break
 	}
 	if !found {
-		t.Fatalf("canceled result has no pending invocation: %#v", completed.result.Checkpoint)
+		t.Fatalf("canceled result has no pending invocation: %#v", checkpoint)
 	}
 	if !strings.Contains(string(mustMarshal(t, state.History)), old) || strings.Contains(string(mustMarshal(t, state.History)), "Earlier conversation summary") {
 		t.Fatal("cancelled compaction partially replaced the model context")

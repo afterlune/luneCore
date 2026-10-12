@@ -6,6 +6,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -166,7 +168,7 @@ func TestResumeRejectsCheckpointWithoutTaskSettingsSnapshot(t *testing.T) {
 	if err := client.checkpoints.Create(context.Background(), graph.Checkpoint[agentgraph.State]{
 		FormatVersion: graph.CheckpointFormatVersion,
 		RunID:         runID,
-		MachineID:     "lune-agent-v1",
+		MachineID:     "lune-agent-v2",
 		Revision:      1,
 		NextID:        2,
 		Invocations: []graph.Invocation[agentgraph.State]{
@@ -188,6 +190,34 @@ func TestResumeRejectsCheckpointWithoutTaskSettingsSnapshot(t *testing.T) {
 	state, found, err := client.runtime.PendingStateFor(context.Background(), saved.ID)
 	if err != nil || !found || state.TaskSettingsVersion != 0 {
 		t.Fatalf("old checkpoint after rejection: found=%v state=%#v err=%v", found, state, err)
+	}
+}
+
+func TestCoreUsesV7CheckpointFileAndLeavesLegacyFilesUntouched(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	writeSettingsConfig(t, workspace, server.URL)
+	legacyCheckpoint := []byte("legacy-v6-checkpoint-file")
+	legacyTeamRuns := []byte("legacy-team-run-file")
+	if err := os.WriteFile(filepath.Join(stateDir, "checkpoints.db"), legacyCheckpoint, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(stateDir, "team_runs.db"), legacyTeamRuns, 0600); err != nil {
+		t.Fatal(err)
+	}
+	client := openSettingsCore(t, workspace, stateDir)
+	if err := client.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for name, want := range map[string][]byte{"checkpoints.db": legacyCheckpoint, "team_runs.db": legacyTeamRuns} {
+		got, err := os.ReadFile(filepath.Join(stateDir, name))
+		if err != nil || string(got) != string(want) {
+			t.Fatalf("legacy file %q changed: %q, error=%v", name, got, err)
+		}
+	}
+	if info, err := os.Stat(filepath.Join(stateDir, "checkpoints-v7.db")); err != nil || info.IsDir() {
+		t.Fatalf("v7 checkpoint file missing: info=%v error=%v", info, err)
 	}
 }
 
@@ -249,7 +279,7 @@ func TestRewindSessionPreservesWholeTurnsAndRejectsPausedTasks(t *testing.T) {
 	}
 }
 
-func TestDeleteSessionCascadesPendingTeamCheckpoints(t *testing.T) {
+func TestDeleteSessionDeletesItsGraphCheckpoint(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 	workspace, stateDir := t.TempDir(), t.TempDir()
@@ -261,15 +291,6 @@ func TestDeleteSessionCascadesPendingTeamCheckpoints(t *testing.T) {
 	}
 	parentID := client.runtime.checkpointID(saved.ID)
 	createBareTestCheckpoint(t, client, parentID)
-	teamRun, _, err := client.teamRuns.GetOrCreate(parentID, "call-1", []agentgraph.TeamAssignment{{
-		ID: "worker", Model: "primary", Task: "inspect",
-	}}, client.models.Profiles())
-	if err != nil {
-		t.Fatal(err)
-	}
-	memberCheckpointID := teamRun.ID + ":worker"
-	createBareTestCheckpoint(t, client, memberCheckpointID)
-
 	client.mu.Lock()
 	client.active = TaskState{Status: TaskRunning, SessionID: saved.ID}
 	client.mu.Unlock()
@@ -286,13 +307,8 @@ func TestDeleteSessionCascadesPendingTeamCheckpoints(t *testing.T) {
 	if _, err := client.GetSession(context.Background(), saved.ID); err == nil {
 		t.Fatal("deleted session still exists")
 	}
-	for _, id := range []string{parentID, memberCheckpointID} {
-		if _, err := client.checkpoints.Load(context.Background(), id); !errors.Is(err, checkpoint.ErrNotFound) {
-			t.Fatalf("checkpoint %q after delete: %v", id, err)
-		}
-	}
-	if _, err := client.teamRuns.Member(teamRun.ID, "worker"); err == nil {
-		t.Fatal("team run remains after deleting its session")
+	if _, err := client.checkpoints.Load(context.Background(), parentID); !errors.Is(err, checkpoint.ErrNotFound) {
+		t.Fatalf("checkpoint %q after delete: %v", parentID, err)
 	}
 	if err := client.DeleteSession(context.Background(), saved.ID); err == nil {
 		t.Fatal("repeat DeleteSession should report the missing session")
@@ -304,7 +320,7 @@ func createBareTestCheckpoint(t *testing.T, client *Core, runID string) {
 	if err := client.checkpoints.Create(context.Background(), graph.Checkpoint[agentgraph.State]{
 		FormatVersion: graph.CheckpointFormatVersion,
 		RunID:         runID,
-		MachineID:     "lune-agent-v1",
+		MachineID:     "lune-agent-v2",
 		Revision:      1,
 	}); err != nil {
 		t.Fatalf("create checkpoint %q: %v", runID, err)

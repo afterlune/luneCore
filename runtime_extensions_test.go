@@ -200,7 +200,7 @@ func TestCoreAcceptsHostProviderAndRegisteredTool(t *testing.T) {
 	hostTool.mu.Lock()
 	calls, invocationID := hostTool.calls, hostTool.invocationID
 	hostTool.mu.Unlock()
-	if calls != 1 || len(invocationID) < len("tool_") || invocationID[:len("tool_")] != "tool_" {
+	if calls != 1 || invocationID == "" {
 		t.Fatalf("host tool calls=%d invocationID=%q", calls, invocationID)
 	}
 	state, ok := client.StateForSession(session.ID)
@@ -266,7 +266,7 @@ func TestCoreRoutesCommandsThroughInjectedExecutor(t *testing.T) {
 	if _, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: input}); err != nil {
 		t.Fatalf("RunTask: %v", err)
 	}
-	if received.Command != "echo safe" || received.Workspace != client.Workspace() || !strings.HasPrefix(received.InvocationID, "tool_") {
+	if received.Command != "echo safe" || received.Workspace != client.Workspace() || received.InvocationID == "" {
 		t.Fatalf("command request = %#v", received)
 	}
 }
@@ -405,10 +405,10 @@ func TestUnknownToolOutcomeCanBeSkippedAndReplayedWithoutExecution(t *testing.T)
 		t.Fatalf("StartToolInvocation for child: %v", err)
 	}
 	if err := client.checkpoints.Create(context.Background(), graph.Checkpoint[agentgraph.State]{
-		FormatVersion: graph.CheckpointFormatVersion, RunID: runID, MachineID: "lune-agent-v1", Revision: 1, NextID: 2,
+		FormatVersion: graph.CheckpointFormatVersion, RunID: runID, MachineID: "lune-agent-v2", Revision: 1, NextID: 2,
 		Invocations: []graph.Invocation[agentgraph.State]{{
 			ID: "active-tool", Node: "execute_tool", Status: graph.InvocationReady,
-			State: agentgraph.State{RunID: runID, ExecutionID: executionID, PendingInvocationID: invocationID, PendingIndex: 0,
+			State: agentgraph.State{RunID: runID, ExecutionID: executionID, PendingIndex: 0,
 				PendingCalls: []model.OutputFunctionCall{call}},
 		}},
 	}); err != nil {

@@ -18,7 +18,7 @@ import (
 
 var (
 	ErrSessionBusy  = errors.New("session already has active or queued work")
-	ErrTaskPaused   = errors.New("session has a paused task; recover or discard it first")
+	ErrTaskPaused   = errors.New("session task is paused; resolve its pending request, recover, or discard it")
 	ErrTurnNotFound = errors.New("execution id does not exist in this session")
 )
 
@@ -457,12 +457,6 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 			requests = append(requests, PendingRequest{Kind: PendingApproval, Approval: &copy})
 		}
 	}
-	for _, pending := range c.userQuestions {
-		if pending.sessionID == r.sessionID {
-			copy := cloneUserQuestion(pending.request)
-			requests = append(requests, PendingRequest{Kind: PendingUserQuestion, UserQuestion: &copy})
-		}
-	}
 	for _, pending := range c.interactions {
 		if pending.sessionID == r.sessionID {
 			copy := cloneInteraction(pending.request)
@@ -470,6 +464,13 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 		}
 	}
 	c.mu.RUnlock()
+	question, hasQuestion, err := c.runtime.PendingUserQuestion(ctx, r.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if hasQuestion {
+		requests = append(requests, PendingRequest{Kind: PendingUserQuestion, UserQuestion: &question})
+	}
 	recoveries, err := c.pendingToolRecoveries(ctx, r.sessionID)
 	if err != nil {
 		return nil, err
@@ -516,12 +517,12 @@ func (r *SessionRuntime) ResolveApproval(id string, allowed bool) error {
 	return r.core.resolveApproval(r.sessionID, id, allowed)
 }
 
-// ResolveUserQuestion sends the host's choice or free-text answer back to the lead agent.
-func (r *SessionRuntime) ResolveUserQuestion(id, answer string) error {
-	if r == nil || r.core == nil || id == "" {
-		return errors.New("session runtime and user question id are required")
+// ResolveUserQuestion stores an answer and resumes the exact graph continuation.
+func (r *SessionRuntime) ResolveUserQuestion(ctx context.Context, answer UserQuestionAnswer) error {
+	if r == nil || r.core == nil || ctx == nil {
+		return errors.New("session runtime and context are required")
 	}
-	return r.core.resolveUserQuestion(r.sessionID, id, answer)
+	return r.core.resolveUserQuestion(ctx, r.sessionID, answer)
 }
 
 func (r *SessionRuntime) ResolveUserInteraction(id string, response json.RawMessage) error {
@@ -920,7 +921,7 @@ func (c *Core) completeQueuedTurnFromCheckpoint(ctx context.Context, queued sess
 		if err != nil {
 			return true, nil, fmt.Errorf("encode completed model context: %w", err)
 		}
-		if state.FinalResponse != nil && state.TaskError == "" && cp.Failure == nil && !cp.HadLocalFailures {
+		if state.FinalResponse != nil && state.TaskError == "" && cp.Failure == nil {
 			response, err = json.Marshal(state.FinalResponse)
 			if err != nil {
 				return true, nil, fmt.Errorf("encode completed turn response: %w", err)
@@ -998,11 +999,6 @@ func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, 
 	}
 	if err := c.runtime.DeleteCompletedRunForSession(queued.SessionID); err != nil {
 		slog.Warn("delete completed graph checkpoint", "error", err)
-	}
-	if c.teamRuns != nil {
-		if err := c.teamRuns.DeleteParent(c.runtime.checkpointID(queued.SessionID)); err != nil {
-			slog.Warn("delete completed team runs", "error", err)
-		}
 	}
 	if err := c.sessions.DeleteToolInvocationsForSession(context.Background(), queued.SessionID); err != nil {
 		slog.Warn("delete completed tool invocation records", "error", err)
@@ -1140,15 +1136,34 @@ func (c *Core) drainQueue(sessionID string) {
 			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: errors.New("core is closing")})
 			return
 		}
+		resumeQueued := false
 		if current, exists, lookupErr := c.sessions.QueuedTurnByExecutionID(ctx, sessionID, queued.ExecutionID); lookupErr == nil && exists {
 			state, ok := c.StateForSession(sessionID)
 			if ok && state.Status == TaskPaused {
-				if current.Status != session.QueuedTurnPaused {
+				if current.Status != session.QueuedTurnPaused && current.Status != session.QueuedTurnQueued {
 					event := Event{Kind: EventTaskFinished, SessionID: sessionID, TaskID: state.TaskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskPaused, Err: errorString(runErr)}
 					if persistErr := c.persistQueuedEvent(ctx, event, func(payload json.RawMessage) (int64, error) {
 						return c.sessions.PauseQueuedTurn(ctx, sessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), payload)
 					}); persistErr != nil {
 						slog.Warn("restore paused queued turn", "error", persistErr)
+					}
+				}
+				if current.Status == session.QueuedTurnQueued {
+					var request storedTurnRequest
+					resumeQueued = json.Unmarshal(current.Request, &request) == nil && request.Resume
+				} else {
+					// The host may answer as soon as the wait event is emitted, while
+					// this drain still owns the run. Queue that answer once the wait
+					// checkpoint has committed, then continue this drain in place.
+					inputs, inputErr := c.graphResumeInputs(ctx, sessionID, c.runtime.checkpointID(sessionID))
+					if inputErr != nil {
+						slog.Warn("inspect answered graph wait", "error", inputErr)
+					} else if len(inputs) > 0 {
+						if _, _, recoverErr := c.recoverSession(ctx, sessionID, false); recoverErr == nil {
+							resumeQueued = true
+						} else if !errors.Is(recoverErr, ErrSessionBusy) {
+							slog.Warn("queue answer received while graph was pausing", "error", recoverErr)
+						}
 					}
 				}
 			} else {
@@ -1169,6 +1184,9 @@ func (c *Core) drainQueue(sessionID string) {
 		}
 		c.resolveTurnWaiter(queued.ExecutionID, turnResult{response: response, err: runErr})
 		if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskPaused {
+			if resumeQueued {
+				continue
+			}
 			return
 		}
 	}
@@ -1281,25 +1299,17 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 		}
 	}
 	parentID := c.runtime.checkpointID(sessionID)
-	childCheckpoints, err := c.teamRuns.CheckpointIDs(parentID)
-	if err != nil {
-		return false, err
-	}
+	delete(c.liveExecutions, parentID)
 	deletedCheckpoint := false
 	if err := c.checkpoints.Delete(ctx, parentID); err == nil {
 		deletedCheckpoint = true
 	} else if !errors.Is(err, checkpoint.ErrNotFound) {
 		return false, err
 	}
-	for _, childID := range childCheckpoints {
-		if err := c.checkpoints.Delete(ctx, childID); err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
-			return false, fmt.Errorf("delete team member checkpoint for session %q: %w", sessionID, err)
-		}
-	}
-	if err := c.teamRuns.DeleteParent(parentID); err != nil {
+	if err := c.sessions.DeleteToolInvocationsForSession(ctx, sessionID); err != nil {
 		return false, err
 	}
-	if err := c.sessions.DeleteToolInvocationsForSession(ctx, sessionID); err != nil {
+	if err := c.sessions.DeleteGraphResumeInputs(ctx, sessionID, parentID); err != nil {
 		return false, err
 	}
 	deletedQueue := false
@@ -1314,7 +1324,7 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 				hub.notifyDurable()
 			}
 		}
-	} else if deletedCheckpoint || len(childCheckpoints) > 0 {
+	} else if deletedCheckpoint {
 		event := Event{Kind: EventTaskDiscarded, SessionID: sessionID, Status: TaskIdle}
 		if _, err := c.sessions.AppendRuntimeEvent(ctx, sessionID, mustMarshalEvent(event)); err != nil {
 			return false, err
@@ -1323,14 +1333,14 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 			hub.notifyDurable()
 		}
 	}
-	if state, ok := c.activeTasks[sessionID]; ok && state.Status == TaskPaused && (deletedCheckpoint || deletedQueue || len(childCheckpoints) > 0) {
+	if state, ok := c.activeTasks[sessionID]; ok && state.Status == TaskPaused && (deletedCheckpoint || deletedQueue) {
 		state.Status, state.QueueID = TaskIdle, ""
 		c.activeTasks[sessionID] = state
 		if c.active.SessionID == sessionID {
 			c.active = state
 		}
 	}
-	return deletedCheckpoint || deletedQueue || len(childCheckpoints) > 0, nil
+	return deletedCheckpoint || deletedQueue, nil
 }
 
 func (c *Core) waitForTurn(ctx context.Context, runtime *SessionRuntime, executionID string, waiter <-chan turnResult) (json.RawMessage, error) {

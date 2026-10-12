@@ -28,6 +28,7 @@ import (
 	"github.com/afterlune/luneCore/internal/tool"
 	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
+	graph "github.com/afterlune/luneGraph"
 	"github.com/afterlune/luneGraph/checkpoint"
 	"github.com/afterlune/luneGraph/checkpoint/sqlite"
 )
@@ -82,7 +83,6 @@ const (
 	EventApprovalRequired         EventKind = "approval_required"
 	EventApprovalCancelled        EventKind = "approval_cancelled"
 	EventUserQuestionRequired     EventKind = "user_question_required"
-	EventUserQuestionCancelled    EventKind = "user_question_cancelled"
 	EventUserInteractionRequired  EventKind = "user_interaction_required"
 	EventUserInteractionCancelled EventKind = "user_interaction_cancelled"
 	EventAgentStarted             EventKind = "agent_started"
@@ -115,7 +115,6 @@ type Event struct {
 	Approval             *ApprovalRequest
 	ApprovalID           string
 	UserQuestion         *UserQuestionRequest
-	UserQuestionID       string
 	Interaction          *UserInteractionRequest
 	InteractionID        string
 	Err                  string
@@ -201,24 +200,29 @@ type UserInteractionRequest struct {
 	Request    json.RawMessage
 }
 
-// UserQuestionRequest is a transient clarification requested by the lead agent.
-// The full question is available through SessionRuntime.PendingRequests.
+// UserQuestionRequest identifies a durable wait for a lead-agent clarification.
 type UserQuestionRequest struct {
-	ID          string
-	AgentID     string
-	ExecutionID string
-	Question    string
-	Options     []string
+	ID           string
+	AgentID      string
+	RunID        string
+	InvocationID string
+	CallID       string
+	ExecutionID  string
+	Question     string
+	Options      []string
+}
+
+// UserQuestionAnswer resumes exactly one persisted clarification wait.
+type UserQuestionAnswer struct {
+	RunID        string
+	InvocationID string
+	CallID       string
+	Answer       string
 }
 
 type userInteractionResult struct {
 	Response json.RawMessage
 	Err      error
-}
-
-type userQuestionResult struct {
-	Answer string
-	Err    error
 }
 
 type pendingApproval struct {
@@ -232,14 +236,6 @@ type pendingApproval struct {
 type pendingInteraction struct {
 	response    chan userInteractionResult
 	request     UserInteractionRequest
-	sessionID   string
-	taskID      string
-	executionID string
-}
-
-type pendingUserQuestion struct {
-	response    chan userQuestionResult
-	request     UserQuestionRequest
 	sessionID   string
 	taskID      string
 	executionID string
@@ -441,13 +437,15 @@ type Core struct {
 	models           *model.ProviderCatalog
 	taskDefaults     taskSettings
 	attachmentLimits projectconfig.AttachmentLimits
-	teamRuns         *teamStore
 	team             *teamExecutor
 	runtime          *graphResponder
 	mcpManager       *mcp.Manager
 	checkpoints      *sqlite.Store[agentgraph.State]
 	sessions         *session.Store
-	stateDirLock     *stateDirectoryLock
+	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
+	// the recovery source after process restart.
+	liveExecutions map[string]*graph.Execution[agentgraph.State]
+	stateDirLock   *stateDirectoryLock
 
 	mu                  sync.RWMutex
 	runtimeConfigMu     sync.RWMutex
@@ -456,7 +454,6 @@ type Core struct {
 	activeTasks         map[string]TaskState
 	taskCancels         map[string]context.CancelFunc
 	approvals           map[string]pendingApproval
-	userQuestions       map[string]pendingUserQuestion
 	interactions        map[string]pendingInteraction
 	interactiveSessions map[string]bool
 	eventHubs           map[string]*sessionEventHub
@@ -527,7 +524,7 @@ func New(config Config) (_ *Core, err error) {
 	if err != nil {
 		return nil, err
 	}
-	checkpoints, err := sqlite.Open[agentgraph.State](context.Background(), filepath.Join(stateDir, "checkpoints.db"), checkpoint.JSON[agentgraph.State]{})
+	checkpoints, err := sqlite.Open[agentgraph.State](context.Background(), filepath.Join(stateDir, "checkpoints-v7.db"), checkpoint.JSON[agentgraph.State]{})
 	if err != nil {
 		return nil, fmt.Errorf("open task checkpoints: %w", err)
 	}
@@ -547,16 +544,6 @@ func New(config Config) (_ *Core, err error) {
 			_ = sessions.Close()
 		}
 	}()
-	teamRuns, err := openTeamStore(filepath.Join(stateDir, "team_runs.db"))
-	if err != nil {
-		return nil, err
-	}
-	closeTeamRuns := true
-	defer func() {
-		if closeTeamRuns {
-			_ = teamRuns.Close()
-		}
-	}()
 	c := &Core{
 		workspace:        workspace,
 		registry:         registry,
@@ -566,14 +553,13 @@ func New(config Config) (_ *Core, err error) {
 			ContextWindow: projectConfig.ContextWindow, ReserveOutputTokens: projectConfig.ReserveOutputTokens,
 			AutoCompact: projectConfig.AutoCompact, AutoCompactThreshold: projectConfig.AutoCompactThreshold,
 		},
-		teamRuns:            teamRuns,
 		checkpoints:         checkpoints,
 		sessions:            sessions,
+		liveExecutions:      make(map[string]*graph.Execution[agentgraph.State]),
 		active:              TaskState{Status: TaskIdle},
 		activeTasks:         make(map[string]TaskState),
 		taskCancels:         make(map[string]context.CancelFunc),
 		approvals:           make(map[string]pendingApproval),
-		userQuestions:       make(map[string]pendingUserQuestion),
 		interactions:        make(map[string]pendingInteraction),
 		interactiveSessions: make(map[string]bool),
 		eventHubs:           make(map[string]*sessionEventHub),
@@ -602,7 +588,7 @@ func New(config Config) (_ *Core, err error) {
 	for _, restoreErr := range mcpManager.RestoreEnabled() {
 		slog.Warn("could not restore enabled MCP server", "error_type", fmt.Sprintf("%T", restoreErr))
 	}
-	team := &teamExecutor{core: c, models: models, tools: registry, checkpoints: checkpoints, store: teamRuns}
+	team := &teamExecutor{core: c, models: models, tools: registry}
 	c.team = team
 	c.runtime = &graphResponder{store: checkpoints}
 	registry.SetToolEventObserver(c.onToolEvent)
@@ -611,7 +597,7 @@ func New(config Config) (_ *Core, err error) {
 	if err := c.migrateLegacySession(context.Background()); err != nil {
 		return nil, err
 	}
-	closeCheckpoints, closeSessions, closeTeamRuns, closeRegistry, closeMCPManager = false, false, false, false, false
+	closeCheckpoints, closeSessions, closeRegistry, closeMCPManager = false, false, false, false
 	keepStateLock = true
 	return c, nil
 }
@@ -633,29 +619,51 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		inner: client, agentID: "lead", profile: profileID,
 		providerName: profile.Provider, modelName: profile.Model,
 	}
-	requester.SetContextAgentUsageObserver(func(ctx context.Context, usage model.ResponseUsage, agentID, profileName, providerName, modelID string, estimated int64) {
-		c.onAgentUsageForTask(taskState, usage, agentID, profileName, providerName, modelID, estimated)
-	})
+	requester.SetContextAgentUsageObserver(c.onAgentUsageContext)
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		SupportsInputAudio: profile.SupportsInputAudio,
 		Team:               c.team,
-		AskUser:            c.requestUserQuestion,
-		StreamObserver: func(event model.ModelStreamEvent) {
-			activeModel := taskState.Model
-			if activeModel == "" {
-				activeModel = profile.Model
+		AskUser:            true,
+		StreamObserverFor: func(state agentgraph.State, event model.ModelStreamEvent) {
+			currentTask := taskState
+			if current, ok := c.StateForSession(taskState.SessionID); ok {
+				currentTask = current
 			}
-			c.onModelStreamForTask(taskState, "lead", "Lead", profileID, profile.Provider, activeModel, event)
+			activeModel := state.Model
+			if state.ModelOverride != "" {
+				activeModel = state.ModelOverride
+			}
+			c.onModelStreamForTask(currentTask, state.AgentID, state.AgentName, state.ModelProfile, state.Provider, activeModel, event)
+		},
+		OnBranchStarted: func(ctx context.Context, state agentgraph.State) {
+			identity := publictool.CallIdentityFromContext(ctx)
+			c.emit(Event{Kind: EventAgentStarted, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
+				AgentID: state.AgentID, AgentName: state.AgentName, AgentRole: "worker", TeamRunID: state.TeamRunID,
+				ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model, Status: TaskRunning})
+		},
+		OnBranchFinished: func(ctx context.Context, state agentgraph.State, branchErr error) {
+			identity := publictool.CallIdentityFromContext(ctx)
+			status := TaskCompleted
+			if branchErr != nil {
+				status = TaskFailed
+			}
+			c.emit(Event{Kind: EventAgentFinished, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
+				AgentID: state.AgentID, AgentName: state.AgentName, AgentRole: "worker", TeamRunID: state.TeamRunID,
+				ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model, Status: status, Err: errorString(branchErr)})
 		},
 		CompactionObserver: func(event agentgraph.ContextCompactionEvent) {
+			currentTask := taskState
+			if current, ok := c.StateForSession(taskState.SessionID); ok {
+				currentTask = current
+			}
 			details := &ContextCompactionDetails{
 				Stage: event.Stage, Mode: event.Mode, BeforeTokens: event.BeforeTokens,
 				AfterTokens: event.AfterTokens, Threshold: event.Threshold, Err: errorString(event.Error),
 			}
-			c.emit(Event{Kind: EventContextCompaction, TaskID: taskState.TaskID, ExecutionID: taskState.ExecutionID, SessionID: taskState.SessionID,
-				Provider: profile.Provider, ModelProfile: profileID, Model: taskState.Model, Err: errorString(event.Error), Compaction: details})
+			c.emit(Event{Kind: EventContextCompaction, TaskID: currentTask.TaskID, ExecutionID: currentTask.ExecutionID, SessionID: currentTask.SessionID,
+				Provider: profile.Provider, ModelProfile: profileID, Model: currentTask.Model, Err: errorString(event.Error), Compaction: details})
 		},
 	})
 	if err != nil {
@@ -741,13 +749,6 @@ func (c *Core) Close() error {
 		default:
 		}
 	}
-	for id, pending := range c.userQuestions {
-		delete(c.userQuestions, id)
-		select {
-		case pending.response <- userQuestionResult{Err: errors.New("core is closing")}:
-		default:
-		}
-	}
 	for id, pending := range c.interactions {
 		delete(c.interactions, id)
 		select {
@@ -760,7 +761,7 @@ func (c *Core) Close() error {
 	if c.mcpManager != nil {
 		closeMCP = c.mcpManager.Close()
 	}
-	return errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.teamRuns.Close(), c.registry.Close(), c.stateDirLock.Close())
+	return errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.stateDirLock.Close())
 }
 
 func (c *Core) MCPServers() []MCPServerStatus {
@@ -901,79 +902,6 @@ func (c *Core) resolveUserInteraction(sessionID, id string, response json.RawMes
 	return nil
 }
 
-func (c *Core) requestUserQuestion(ctx context.Context, question string, options []string) (string, error) {
-	if c == nil || ctx == nil {
-		return "", errors.New("core and context are required")
-	}
-	if err := ctx.Err(); err != nil {
-		return "", err
-	}
-	identity := publictool.CallIdentityFromContext(ctx)
-	if identity.AgentID != "lead" {
-		return "", errors.New("only the lead agent can ask the user a question")
-	}
-	question = strings.TrimSpace(question)
-	if question == "" {
-		return "", errors.New("question must not be empty")
-	}
-	id, err := newID()
-	if err != nil {
-		return "", fmt.Errorf("create user question ID: %w", err)
-	}
-	channel := make(chan userQuestionResult, 1)
-	request := UserQuestionRequest{
-		ID: id, AgentID: "lead", ExecutionID: identity.ExecutionID, Question: question, Options: append([]string(nil), options...),
-	}
-	c.mu.Lock()
-	if c.closed {
-		c.mu.Unlock()
-		return "", errors.New("core is closed")
-	}
-	c.userQuestions[id] = pendingUserQuestion{
-		response: channel, request: request, sessionID: identity.SessionID, taskID: identity.TaskID, executionID: identity.ExecutionID,
-	}
-	c.mu.Unlock()
-	c.emit(Event{Kind: EventUserQuestionRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, UserQuestion: &request})
-	select {
-	case result := <-channel:
-		return result.Answer, result.Err
-	case <-ctx.Done():
-		c.mu.Lock()
-		_, stillPending := c.userQuestions[id]
-		if stillPending {
-			delete(c.userQuestions, id)
-		}
-		c.mu.Unlock()
-		if stillPending {
-			c.emit(Event{Kind: EventUserQuestionCancelled, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, UserQuestionID: id})
-			return "", ctx.Err()
-		}
-		// A host response raced with cancellation; prefer the delivered answer.
-		select {
-		case result := <-channel:
-			return result.Answer, result.Err
-		default:
-			return "", ctx.Err()
-		}
-	}
-}
-
-func (c *Core) resolveUserQuestion(sessionID, id, answer string) error {
-	c.mu.Lock()
-	pending, ok := c.userQuestions[id]
-	if ok && pending.sessionID == sessionID {
-		delete(c.userQuestions, id)
-		pending.response <- userQuestionResult{Answer: answer}
-	} else {
-		ok = false
-	}
-	c.mu.Unlock()
-	if !ok {
-		return fmt.Errorf("user question %q is no longer pending in this session", id)
-	}
-	return nil
-}
-
 // State returns the state last changed by any session. Use StateForSession or
 // ActiveTasks when a Core is running multiple sessions concurrently.
 func (c *Core) State() TaskState {
@@ -994,6 +922,44 @@ func (c *Core) StateForSession(sessionID string) (TaskState, bool) {
 	defer c.mu.RUnlock()
 	state, ok := c.activeTasks[sessionID]
 	return state, ok
+}
+
+func (c *Core) resolveUserQuestion(ctx context.Context, sessionID string, answer UserQuestionAnswer) error {
+	if c == nil || ctx == nil || sessionID == "" || answer.RunID == "" || answer.InvocationID == "" || answer.CallID == "" {
+		return errors.New("session runtime and exact user question wait identity are required")
+	}
+	question, pending, err := c.runtime.PendingUserQuestion(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("inspect pending user question: %w", err)
+	}
+	input := session.GraphResumeInput{RunID: answer.RunID, InvocationID: answer.InvocationID, CallID: answer.CallID}
+	payload, err := json.Marshal(answer.Answer)
+	if err != nil {
+		return err
+	}
+	input.Payload = payload
+	inserted, err := c.sessions.PutGraphResumeInput(ctx, sessionID, input)
+	if err != nil {
+		return err
+	}
+	matches := pending && question.RunID == answer.RunID && question.InvocationID == answer.InvocationID && question.CallID == answer.CallID
+	if !matches {
+		if inserted {
+			_ = c.sessions.DeleteGraphResumeInput(ctx, sessionID, input)
+			return fmt.Errorf("user question %q is stale or no longer pending in this session", answer.CallID)
+		}
+		return nil
+	}
+	if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskRunning && state.ExecutionID == question.ExecutionID {
+		return nil
+	}
+	if _, _, err := c.recoverSession(ctx, sessionID, false); err != nil {
+		if errors.Is(err, ErrSessionBusy) {
+			return nil
+		}
+		return fmt.Errorf("resume answered user question: %w", err)
+	}
+	return nil
 }
 
 // ActiveTasks returns currently running tasks in stable session ID order.
@@ -1431,11 +1397,33 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	})
 	defer taskRuntime.SetHistorySaver(nil)
 	taskRuntime.DeferCompletedCleanup(queueID != "")
+	if resume {
+		c.mu.RLock()
+		taskRuntime.execution = c.liveExecutions[taskRuntime.runID()]
+		c.mu.RUnlock()
+	}
 	var response *model.Response
 	if resume {
-		response, err = taskRuntime.Resume(ctx)
+		var inputs []graph.ResumeInput
+		inputs, err = c.graphResumeInputs(ctx, sessionID, taskRuntime.runID())
+		if err == nil {
+			response, err = taskRuntime.Resume(ctx, inputs)
+		}
+		if reconcileErr := c.reconcileGraphResumeInputs(ctx, sessionID, taskRuntime.runID()); reconcileErr != nil {
+			err = errors.Join(err, reconcileErr)
+		}
 	} else {
 		response, err = taskRuntime.Respond(ctx, input)
+	}
+	pausedByGraph := errors.Is(err, ErrTaskPaused)
+	if pausedByGraph {
+		if question, found, questionErr := taskRuntime.PendingUserQuestion(ctx, sessionID); questionErr != nil {
+			err = errors.Join(err, questionErr)
+		} else if found {
+			task, _ := c.StateForSession(sessionID)
+			c.emit(Event{Kind: EventUserQuestionRequired, SessionID: sessionID, TaskID: task.TaskID, ExecutionID: question.ExecutionID,
+				UserQuestion: &question})
+		}
 	}
 	if response != nil && queueID == "" {
 		_ = c.saveHistoryUsage(ctx, sessionID, taskRuntime)
@@ -1449,7 +1437,10 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		}
 	}
 	status := TaskCompleted
-	if err != nil {
+	taskErr := err
+	if pausedByGraph {
+		status, taskErr = TaskPaused, nil
+	} else if err != nil {
 		status = TaskFailed
 		if ctx.Err() != nil {
 			status = TaskPaused
@@ -1461,18 +1452,28 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	if status == TaskCompleted && response == nil {
 		status = TaskFailed
 		err = errors.Join(err, errors.New("agent task completed without a response"))
+		taskErr = err
 	}
+	c.mu.Lock()
+	if taskRuntime.execution != nil && queueID != "" {
+		if c.liveExecutions == nil {
+			c.liveExecutions = make(map[string]*graph.Execution[agentgraph.State])
+		}
+		if status == TaskPaused {
+			c.liveExecutions[taskRuntime.runID()] = taskRuntime.execution
+		} else {
+			delete(c.liveExecutions, taskRuntime.runID())
+		}
+	}
+	c.mu.Unlock()
 	if queueID != "" && status != TaskPaused {
 		queued := session.QueuedTurn{SessionID: sessionID, QueueID: queueID, ExecutionID: executionID}
 		if persistErr := c.completeQueuedTurnFromRuntime(ctx, queued, status, encoded, taskRuntime); persistErr != nil {
 			err = errors.Join(err, fmt.Errorf("persist completed turn: %w", persistErr))
 		}
 	}
-	c.finishTaskState(sessionID, status, err)
-	if queueID == "" && status != TaskPaused && c.teamRuns != nil {
-		if cleanupErr := c.teamRuns.DeleteParent(taskRuntime.runID()); cleanupErr != nil {
-			slog.Warn("delete completed team runs", "error", cleanupErr)
-		}
+	c.finishTaskState(sessionID, status, taskErr)
+	if queueID == "" && status != TaskPaused {
 		if cleanupErr := c.sessions.DeleteToolInvocationsForSession(context.Background(), sessionID); cleanupErr != nil {
 			slog.Warn("delete completed tool invocation records", "error", cleanupErr)
 		}
@@ -1481,6 +1482,53 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		return nil, err
 	}
 	return encoded, err
+}
+
+func (c *Core) graphResumeInputs(ctx context.Context, sessionID, runID string) ([]graph.ResumeInput, error) {
+	stored, err := c.sessions.GraphResumeInputs(ctx, sessionID, runID)
+	if err != nil || len(stored) == 0 {
+		return nil, err
+	}
+	cp, err := c.runtime.CheckpointForSession(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	var inputs []graph.ResumeInput
+	for _, input := range stored {
+		for _, invocation := range cp.Invocations {
+			if invocation.Status == graph.InvocationWaiting && invocation.Continuation == agentgraph.UserQuestionContinuation && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
+				inputs = append(inputs, graph.ResumeInput{InvocationID: input.InvocationID, CallID: input.CallID, Payload: append([]byte(nil), input.Payload...)})
+				break
+			}
+		}
+	}
+	return inputs, nil
+}
+
+func (c *Core) reconcileGraphResumeInputs(ctx context.Context, sessionID, runID string) error {
+	stored, err := c.sessions.GraphResumeInputs(ctx, sessionID, runID)
+	if err != nil || len(stored) == 0 {
+		return err
+	}
+	cp, err := c.runtime.CheckpointForSession(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	for _, input := range stored {
+		stillPending := false
+		for _, invocation := range cp.Invocations {
+			if invocation.Status == graph.InvocationWaiting && invocation.Continuation == agentgraph.UserQuestionContinuation && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
+				stillPending = true
+				break
+			}
+		}
+		if !stillPending {
+			if err := c.sessions.MarkGraphResumeInputConsumed(ctx, sessionID, input); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, planMode bool, settings SessionSettings, profile model.ModelProfile, modelName string, taskOptions agentgraph.TaskOptions, expectedUpdatedAt time.Time, cancel context.CancelFunc) (string, error) {
@@ -1817,22 +1865,14 @@ func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 		return err
 	}
 	parentID := c.runtime.checkpointID(sessionID)
-	childCheckpoints, err := c.teamRuns.CheckpointIDs(parentID)
-	if err != nil {
-		return fmt.Errorf("list team checkpoints for session %q: %w", sessionID, err)
-	}
+	delete(c.liveExecutions, parentID)
 	if err := c.checkpoints.Delete(ctx, parentID); err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
 		return fmt.Errorf("delete task checkpoint for session %q: %w", sessionID, err)
 	}
-	for _, childID := range childCheckpoints {
-		if err := c.checkpoints.Delete(ctx, childID); err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
-			return fmt.Errorf("delete team member checkpoint for session %q: %w", sessionID, err)
-		}
-	}
-	if err := c.teamRuns.DeleteParent(parentID); err != nil {
+	if err := c.sessions.DeleteToolInvocationsForSession(ctx, sessionID); err != nil {
 		return err
 	}
-	if err := c.sessions.DeleteToolInvocationsForSession(ctx, sessionID); err != nil {
+	if err := c.sessions.DeleteGraphResumeInputs(ctx, sessionID, parentID); err != nil {
 		return err
 	}
 	deleted, err := c.sessions.Delete(ctx, sessionID, c.workspace)

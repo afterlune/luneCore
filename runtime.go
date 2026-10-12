@@ -22,6 +22,7 @@ const (
 type graphResponder struct {
 	agent                 *agentgraph.Agent
 	store                 graph.Store[agentgraph.State]
+	execution             *graph.Execution[agentgraph.State]
 	requester             *usageTrackingRequester
 	historyMu             sync.RWMutex
 	history               *model.ResponseInput // provider-specific model context
@@ -145,6 +146,60 @@ func (r *graphResponder) PendingStateForRunID(ctx context.Context, runID string)
 	return pendingStateForRunID(ctx, r.store, runID)
 }
 
+func (r *graphResponder) PendingUserQuestion(ctx context.Context, sessionID string) (UserQuestionRequest, bool, error) {
+	if ctx == nil {
+		return UserQuestionRequest{}, false, errors.New("context is nil")
+	}
+	var cp graph.Checkpoint[agentgraph.State]
+	var pending []graph.PendingInvocation
+	if r.execution != nil && r.runID() == r.checkpointID(sessionID) {
+		pending = r.execution.Pending()
+		var err error
+		cp, err = r.execution.Checkpoint()
+		if err != nil {
+			return UserQuestionRequest{}, false, err
+		}
+	} else {
+		var err error
+		cp, err = r.store.Load(ctx, r.checkpointID(sessionID))
+		if err != nil {
+			if errors.Is(err, checkpoint.ErrNotFound) {
+				return UserQuestionRequest{}, false, nil
+			}
+			return UserQuestionRequest{}, false, err
+		}
+		for _, invocation := range cp.Invocations {
+			if invocation.Status == graph.InvocationWaiting {
+				pending = append(pending, graph.PendingInvocation{
+					InvocationID: invocation.ID, CallID: invocation.CallID, Node: invocation.Node, Continuation: invocation.Continuation,
+				})
+			}
+		}
+	}
+	for _, wait := range pending {
+		if wait.Continuation != agentgraph.UserQuestionContinuation {
+			continue
+		}
+		var state *agentgraph.State
+		for index := range cp.Invocations {
+			invocation := &cp.Invocations[index]
+			if invocation.ID == wait.InvocationID && invocation.CallID == wait.CallID {
+				state = &invocation.State
+				break
+			}
+		}
+		if state == nil || state.UserQuestion == "" {
+			continue
+		}
+		return UserQuestionRequest{
+			ID: wait.CallID, AgentID: state.AgentID, RunID: cp.RunID,
+			InvocationID: wait.InvocationID, CallID: wait.CallID, ExecutionID: state.ExecutionID,
+			Question: state.UserQuestion, Options: append([]string(nil), state.UserQuestionOptions...),
+		}, true, nil
+	}
+	return UserQuestionRequest{}, false, nil
+}
+
 // CheckpointForSession uses luneGraph's durable completion contract: Store.Load
 // returns Completed, Final, Failure, and HadLocalFailures, and Store.Delete
 // removes the checkpoint after the session transaction commits.
@@ -170,6 +225,11 @@ func pendingStateForRunID(ctx context.Context, store graph.Store[agentgraph.Stat
 	}
 	if checkpoint.Completed {
 		return agentgraph.State{}, false, nil
+	}
+	for _, invocation := range checkpoint.Invocations {
+		if invocation.ID == "i1" && invocation.Status != graph.InvocationEnded && invocation.Status != graph.InvocationFailed && invocation.Status != graph.InvocationJoined {
+			return invocation.State, true, nil
+		}
 	}
 	for index := len(checkpoint.Invocations) - 1; index >= 0; index-- {
 		invocation := checkpoint.Invocations[index]
@@ -305,13 +365,20 @@ func (r *graphResponder) Respond(ctx context.Context, input *model.ResponseInput
 	runID := r.runID()
 	transcript := r.SessionHistory()
 	modelContext := r.ModelContextHistory()
-	result, err := r.agent.StartWithTranscript(ctx, runID, modelContext, transcript, input, r.taskOptions, r.options())
+	execution, result, err := r.agent.StartWithTranscript(ctx, runID, modelContext, transcript, input, r.taskOptions, r.store, r.options())
+	r.execution = execution
 	return r.finish(result, err)
 }
 
-func (r *graphResponder) Resume(ctx context.Context) (*model.Response, error) {
+func (r *graphResponder) Resume(ctx context.Context, inputs []graph.ResumeInput) (*model.Response, error) {
 	runID := r.runID()
-	result, err := r.agent.Recover(ctx, runID, nil, r.options())
+	var result graph.Result[agentgraph.State]
+	var err error
+	if r.execution != nil {
+		result, err = r.execution.Advance(ctx, inputs, r.options())
+	} else {
+		r.execution, result, err = r.agent.Recover(ctx, runID, inputs, r.store, r.options())
+	}
 	return r.finish(result, err)
 }
 
@@ -431,11 +498,8 @@ func assistantResponseText(response *model.Response) string {
 	return strings.TrimSpace(output.String())
 }
 
-func (r *graphResponder) options() graph.Options[agentgraph.State] {
-	return graph.Options[agentgraph.State]{
-		Store:    r.store,
-		Observer: graph.ObserverFunc(logGraphEvent),
-	}
+func (r *graphResponder) options() graph.Options {
+	return graph.Options{Observer: graph.ObserverFunc(logGraphEvent), MaxConcurrency: r.agent.MaxConcurrency()}
 }
 
 func logGraphEvent(ctx context.Context, event graph.Event) {
@@ -463,8 +527,8 @@ func logGraphEvent(ctx context.Context, event graph.Event) {
 }
 
 func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr error) (*model.Response, error) {
-	if result.Status == graph.StatusCompleted {
-		if result.Checkpoint.Final == nil {
+	if result.Status == graph.StatusCompleted || result.Status == graph.StatusCompletedWithFailures {
+		if result.Final == nil {
 			if !r.deferCompletedCleanup {
 				if err := r.deleteCompletedRun(); err != nil {
 					runErr = errors.Join(runErr, err)
@@ -472,7 +536,7 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 			}
 			return nil, errors.Join(runErr, errors.New("agent graph completed without a final state"))
 		}
-		state := result.Checkpoint.Final
+		state := result.Final
 		r.historyMu.Lock()
 		r.history = model.NewResponseInputItems(state.History.Items...)
 		transcript := state.Transcript
@@ -508,24 +572,12 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 		}
 		return response, runErr
 	}
-	if result.Status == graph.StatusCompletedWithFailures {
-		if !r.deferCompletedCleanup {
-			if err := r.deleteCompletedRun(); err != nil {
-				runErr = errors.Join(runErr, err)
-			}
-		}
-		if runErr == nil {
-			runErr = errors.New("agent graph completed with callback failures")
-		}
-		return nil, runErr
-	}
-
 	if result.Status == graph.StatusFailed {
 		// Only remove a persisted graph failure. Store conflicts, ledger errors,
 		// and unresolved tool outcomes can leave a valid checkpoint to recover.
 		var recoveryRequired *ToolRecoveryRequiredError
 		preserveCheckpoint := errors.Is(runErr, graph.ErrConflict) || errors.Is(runErr, ErrToolInvocationPersistence) || errors.As(runErr, &recoveryRequired)
-		if result.Checkpoint.Failure != nil && !preserveCheckpoint && !r.deferCompletedCleanup {
+		if result.Header.Failure != nil && !preserveCheckpoint && !r.deferCompletedCleanup {
 			if err := r.deleteCompletedRun(); err != nil {
 				runErr = errors.Join(runErr, err)
 			}
@@ -536,6 +588,9 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 	}
 	if result.Status == graph.StatusCancelled || result.Status == graph.StatusBudget || result.Status == graph.StatusWaiting {
 		slog.Warn("agent task remains resumable", "run_id", r.runID(), "status", result.Status)
+		if result.Status == graph.StatusWaiting || result.Status == graph.StatusBudget {
+			return nil, ErrTaskPaused
+		}
 	}
 	return nil, runErr
 }

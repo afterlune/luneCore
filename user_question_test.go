@@ -8,10 +8,9 @@ import (
 	"time"
 
 	publicmodel "github.com/afterlune/luneCore/model"
-	publictool "github.com/afterlune/luneCore/tool"
 )
 
-func TestSessionRuntimeAskUserReturnsAnswerToModel(t *testing.T) {
+func TestSessionRuntimeResumesDurableUserQuestion(t *testing.T) {
 	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
 		askUserToolCallResponse("QUESTION-SECRET-7381", []string{"OPTION-LOCAL-7381", "OPTION-STAGING-7381"}),
 		hostTextResponse("I will use the target you chose."),
@@ -25,12 +24,11 @@ func TestSessionRuntimeAskUserReturnsAnswerToModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resultCh := waitTurnAsync(runtime, submission.ExecutionID)
 	question := waitPendingUserQuestion(t, runtime, submission.ExecutionID)
-	if question.AgentID != "lead" || question.Question != "QUESTION-SECRET-7381" || len(question.Options) != 2 || question.Options[0] != "OPTION-LOCAL-7381" || question.Options[1] != "OPTION-STAGING-7381" {
+	if question.AgentID != "lead" || question.RunID == "" || question.InvocationID == "" || question.CallID == "" ||
+		question.Question != "QUESTION-SECRET-7381" || len(question.Options) != 2 || question.Options[0] != "OPTION-LOCAL-7381" || question.Options[1] != "OPTION-STAGING-7381" {
 		t.Fatalf("pending question = %#v", question)
 	}
-
 	streamCtx, cancelStream := context.WithCancel(context.Background())
 	events, err := runtime.SubscribeEvents(streamCtx, 0)
 	if err != nil {
@@ -57,13 +55,31 @@ func TestSessionRuntimeAskUserReturnsAnswerToModel(t *testing.T) {
 	if requestEvent.UserQuestion == nil || requestEvent.UserQuestion.ID != question.ID || requestEvent.UserQuestion.Question != "" || len(requestEvent.UserQuestion.Options) != 0 {
 		t.Fatalf("durable user question event leaked its payload or lost its ID: %#v", requestEvent)
 	}
+
 	answer := "ANSWER-PRIVATE-7381"
-	if err := runtime.ResolveUserQuestion(question.ID, answer); err != nil {
+	if err := runtime.ResolveUserQuestion(context.Background(), UserQuestionAnswer{
+		RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: answer,
+	}); err != nil {
 		t.Fatal(err)
 	}
-	result := waitTurnResult(t, resultCh)
-	if result.err != nil || result.result.Status != TaskCompleted || len(result.result.Response) == 0 {
-		t.Fatalf("WaitTurn = %#v, error=%v", result.result, result.err)
+	completed := waitTurnResult(t, waitTurnAsync(runtime, submission.ExecutionID))
+	if completed.err == nil && completed.result.Status == TaskPaused {
+		completed = waitTurnResult(t, waitTurnAsync(runtime, submission.ExecutionID))
+	}
+	if completed.err != nil || completed.result.Status != TaskCompleted || len(completed.result.Response) == 0 {
+		t.Fatalf("WaitTurn after answer = %#v, error=%v", completed.result, completed.err)
+	}
+	answerInput := UserQuestionAnswer{RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: answer}
+	if err := runtime.ResolveUserQuestion(context.Background(), answerInput); err != nil {
+		t.Fatalf("identical answer retry: %v", err)
+	}
+	answerInput.Answer = "different answer"
+	if err := runtime.ResolveUserQuestion(context.Background(), answerInput); err == nil {
+		t.Fatal("conflicting answer retry was accepted")
+	}
+	answerInput = UserQuestionAnswer{RunID: question.RunID, InvocationID: "stale-invocation", CallID: question.CallID, Answer: answer}
+	if err := runtime.ResolveUserQuestion(context.Background(), answerInput); err == nil {
+		t.Fatal("stale wait identity was accepted")
 	}
 	provider.mu.Lock()
 	seenRequests := append([]publicmodel.ModelRequest(nil), provider.seenRequests...)
@@ -91,7 +107,7 @@ func TestSessionRuntimeAskUserReturnsAnswerToModel(t *testing.T) {
 	}
 }
 
-func TestUserQuestionIsReaskedAfterCoreRestartRecovery(t *testing.T) {
+func TestUserQuestionAnswerResumesAfterCoreRestart(t *testing.T) {
 	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
 		askUserToolCallResponse("Which environment?", []string{"local", "staging"}),
 		hostTextResponse("Deployment plan ready."),
@@ -114,37 +130,17 @@ func TestUserQuestionIsReaskedAfterCoreRestartRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstWait := waitTurnAsync(runtime, submission.ExecutionID)
+	pausedWait := waitTurnAsync(runtime, submission.ExecutionID)
 	firstQuestion := waitPendingUserQuestion(t, runtime, submission.ExecutionID)
-	if !runtime.Interrupt(submission.ExecutionID) {
-		t.Fatal("Interrupt returned false while a user question was pending")
-	}
-	paused := waitTurnResult(t, firstWait)
+	paused := waitTurnResult(t, pausedWait)
 	if paused.err != nil || paused.result.Status != TaskPaused {
-		t.Fatalf("WaitTurn after interrupt = %#v, error=%v", paused.result, paused.err)
+		t.Fatalf("WaitTurn while waiting for clarification = %#v, error=%v", paused.result, paused.err)
 	}
-	events, err := client.sessions.RuntimeEventsAfter(context.Background(), saved.ID, 0, 100)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var sawQuestion, sawCancellation bool
-	for _, stored := range events {
-		var event Event
-		if err := json.Unmarshal(stored.Payload, &event); err != nil {
-			t.Fatal(err)
-		}
-		if event.Kind == EventUserQuestionRequired && event.UserQuestion != nil && event.UserQuestion.ID == firstQuestion.ID {
-			sawQuestion = true
-		}
-		if event.Kind == EventUserQuestionCancelled && event.UserQuestionID == firstQuestion.ID {
-			sawCancellation = true
-		}
-	}
-	if !sawQuestion || !sawCancellation {
-		t.Fatalf("question lifecycle events missing: requested=%t cancelled=%t", sawQuestion, sawCancellation)
-	}
-	if pending, err := runtime.PendingRequests(context.Background()); err != nil || len(pending) != 0 {
-		t.Fatalf("pending questions after interrupt = %#v, error=%v", pending, err)
+	client.mu.RLock()
+	liveExecution := client.liveExecutions[client.runtime.checkpointID(saved.ID)]
+	client.mu.RUnlock()
+	if liveExecution == nil {
+		t.Fatal("paused task did not retain its live Graph execution")
 	}
 	if err := client.Close(); err != nil {
 		t.Fatalf("close paused Core: %v", err)
@@ -163,41 +159,29 @@ func TestUserQuestionIsReaskedAfterCoreRestartRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if pending, err := runtime.PendingRequests(context.Background()); err != nil || len(pending) != 0 {
-		t.Fatalf("question survived Core process restart: %#v, error=%v", pending, err)
+	if len(reopened.liveExecutions) != 0 {
+		t.Fatal("new Core unexpectedly retained a live Graph execution")
 	}
-	if _, err := runtime.Recover(context.Background()); err != nil {
-		t.Fatalf("Recover: %v", err)
-	}
-	resumedWait := waitTurnAsync(runtime, submission.ExecutionID)
 	secondQuestion := waitPendingUserQuestion(t, runtime, submission.ExecutionID)
-	if secondQuestion.ID == firstQuestion.ID || secondQuestion.Question != firstQuestion.Question || strings.Join(secondQuestion.Options, "\x00") != strings.Join(firstQuestion.Options, "\x00") {
-		t.Fatalf("recovered user question = %#v, original = %#v", secondQuestion, firstQuestion)
+	if secondQuestion.ID != firstQuestion.ID || secondQuestion.RunID != firstQuestion.RunID ||
+		secondQuestion.InvocationID != firstQuestion.InvocationID || secondQuestion.CallID != firstQuestion.CallID ||
+		secondQuestion.Question != firstQuestion.Question || strings.Join(secondQuestion.Options, "\x00") != strings.Join(firstQuestion.Options, "\x00") {
+		t.Fatalf("question after restart = %#v, before restart = %#v", secondQuestion, firstQuestion)
 	}
-	if err := runtime.ResolveUserQuestion(secondQuestion.ID, "staging"); err != nil {
+	if err := runtime.ResolveUserQuestion(context.Background(), UserQuestionAnswer{
+		RunID: secondQuestion.RunID, InvocationID: secondQuestion.InvocationID, CallID: secondQuestion.CallID, Answer: "staging",
+	}); err != nil {
 		t.Fatal(err)
 	}
-	completed := waitTurnResult(t, resumedWait)
+	completed := waitTurnResult(t, waitTurnAsync(runtime, submission.ExecutionID))
 	if completed.err != nil || completed.result.Status != TaskCompleted || completed.result.ExecutionID != submission.ExecutionID {
-		t.Fatalf("WaitTurn after Recover = %#v, error=%v", completed.result, completed.err)
+		t.Fatalf("WaitTurn after recovery = %#v, error=%v", completed.result, completed.err)
 	}
 	provider.mu.Lock()
 	requests := provider.requests
 	provider.mu.Unlock()
 	if requests != 2 {
 		t.Fatalf("model requests after recovery = %d, want original request and final synthesis", requests)
-	}
-}
-
-func TestCoreRejectsUserQuestionFromSubagent(t *testing.T) {
-	client := newProgrammaticCore(t, &scriptedHostProvider{})
-	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx := publictool.WithCallIdentity(context.Background(), publictool.CallIdentity{SessionID: saved.ID, AgentID: "worker"})
-	if _, err := client.requestUserQuestion(ctx, "Need clarification?", nil); err == nil || !strings.Contains(err.Error(), "lead agent") {
-		t.Fatalf("subagent question error = %v, want lead-only error", err)
 	}
 }
 

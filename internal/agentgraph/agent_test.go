@@ -5,14 +5,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/tool"
+	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
 	"github.com/afterlune/luneGraph/checkpoint"
 	"github.com/afterlune/luneGraph/checkpoint/memory"
@@ -32,15 +35,35 @@ type scriptedTeamExecutor struct {
 	options     []TaskOptions
 }
 
+type scriptedBranchRequester struct {
+	text string
+	err  error
+}
+
+func (r scriptedBranchRequester) CreateResponse(context.Context, model.ModelRequest) (*model.ModelResponse, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return &model.ModelResponse{Status: "completed", Output: []model.ResponseOutputItem{
+		model.OutputMessage{Role: model.RoleAssistant, Content: []model.OutputContentPart{model.OutputText{Text: r.text}}},
+	}}, nil
+}
+
 func (t *scriptedTeamExecutor) Profiles() map[string]model.ModelProfile { return t.profiles }
 func (t *scriptedTeamExecutor) MaxParallelAgents() int                  { return t.limit }
-func (t *scriptedTeamExecutor) Run(_ context.Context, _ string, assignments []TeamAssignment, options TaskOptions) ([]TeamMemberResult, error) {
-	t.assignments = append([]TeamAssignment(nil), assignments...)
+func (t *scriptedTeamExecutor) PrepareBranch(_ context.Context, state State, assignment TeamAssignment, options TaskOptions) (State, error) {
+	t.assignments = append(t.assignments, assignment)
 	t.options = append(t.options, options)
-	return []TeamMemberResult{
-		{ID: "research", Model: "claude-test", Provider: model.ProviderAnthropic, Text: "Found the relevant behavior."},
-		{ID: "review", Model: "deepseek-test", Provider: model.ProviderDeepSeek, Error: "review provider unavailable"},
-	}, nil
+	profile := t.profiles[assignment.Model]
+	state.ModelProfile, state.Model, state.Provider = assignment.Model, profile.Model, profile.Provider
+	state.Protocol, state.TeamModel, state.TeamProvider = model.ProtocolResponses, profile.Model, profile.Provider
+	return state, nil
+}
+func (t *scriptedTeamExecutor) Requester(_ context.Context, state State) (Requester, error) {
+	if state.TeamTaskID == "research" {
+		return scriptedBranchRequester{text: "Found the relevant behavior."}, nil
+	}
+	return scriptedBranchRequester{err: errors.New("review provider unavailable")}, nil
 }
 
 func (r *scriptedRequester) CreateResponse(_ context.Context, request model.ResponseRequest) (*model.Response, error) {
@@ -150,7 +173,7 @@ func TestPlanModeUsesRegisteredReadOnlyMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	definitions, _, err := agent.visibleTools("", true)
+	definitions, _, err := agent.visibleTools(State{AgentID: "lead"}, "", true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,9 +215,9 @@ func TestTaskGoalIsAppliedWithoutWeakeningPlanInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Start(context.Background(), "goal-plan-instructions", nil, input, TaskOptions{
+	_, result, err := agent.Start(context.Background(), "goal-plan-instructions", nil, input, TaskOptions{
 		Goal: "Map the public API and summarize its dependencies.", PlanMode: true,
-	}, graph.Options[State]{Store: store})
+	}, store, graph.Options{})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -244,11 +267,11 @@ func TestAgentGraphExecutesMultipleToolCallsFromOneResponse(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Start(context.Background(), "multiple-tools", nil, input, TaskOptions{}, graph.Options[State]{Store: store})
+	_, result, err := agent.Start(context.Background(), "multiple-tools", nil, input, TaskOptions{}, store, graph.Options{})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v, want a completed task", result)
 	}
 	if readFile.calls != 1 || writeFile.calls != 1 {
@@ -279,11 +302,11 @@ func TestToolAudienceRoutingKeepsUserOnlyTextOutOfModelHistory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Start(context.Background(), "audience-routing", nil, input, TaskOptions{}, graph.Options[State]{Store: store})
+	_, result, err := agent.Start(context.Background(), "audience-routing", nil, input, TaskOptions{}, store, graph.Options{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v", result)
 	}
 	requestHistory, err := json.Marshal(requester.requests[1].Input)
@@ -293,7 +316,7 @@ func TestToolAudienceRoutingKeepsUserOnlyTextOutOfModelHistory(t *testing.T) {
 	if strings.Contains(string(requestHistory), "visible only to the user") || !strings.Contains(string(requestHistory), "visible to the model") {
 		t.Fatalf("model history audience routing = %s", requestHistory)
 	}
-	transcript, err := json.Marshal(result.Checkpoint.Final.Transcript)
+	transcript, err := json.Marshal(result.Final.Transcript)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -339,24 +362,28 @@ func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	options := graph.Options[State]{Store: store, MaxSteps: 1}
-	paused, err := agent.Start(context.Background(), "agent-poc", nil, input, TaskOptions{Model: "override-model"}, options)
+	options := graph.Options{MaxSteps: 1}
+	execution, paused, err := agent.Start(context.Background(), "agent-poc", nil, input, TaskOptions{Model: "override-model"}, store, options)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if paused.Status != graph.StatusBudget || len(paused.Checkpoint.Invocations) != 1 || paused.Checkpoint.Invocations[0].Node != toolNode {
+	checkpoint, checkpointErr := execution.Checkpoint()
+	if checkpointErr != nil {
+		t.Fatal(checkpointErr)
+	}
+	if paused.Status != graph.StatusBudget || len(checkpoint.Invocations) != 1 || checkpoint.Invocations[0].Node != toolNode {
 		t.Fatalf("paused result = %#v, want a checkpoint at the tool node", paused)
 	}
 
 	options.MaxSteps = 100
-	completed, err := agent.Recover(context.Background(), "agent-poc", nil, options)
+	_, completed, err := agent.Recover(context.Background(), "agent-poc", nil, store, options)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
-	if completed.Status != graph.StatusCompleted || completed.Checkpoint.Final == nil {
+	if completed.Status != graph.StatusCompleted || completed.Final == nil {
 		t.Fatalf("completed result = %#v, want a completed checkpoint", completed)
 	}
-	if completed.Checkpoint.Final.FinalResponse == nil {
+	if completed.Final.FinalResponse == nil {
 		t.Fatal("final response was not retained in graph state")
 	}
 	if readFile.calls != 1 {
@@ -370,8 +397,8 @@ func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 			t.Errorf("request %d model = %q, want persisted override", index+1, request.Model)
 		}
 	}
-	if completed.Checkpoint.Final.ModelOverride != "override-model" {
-		t.Errorf("recovered model override = %q, want persisted override", completed.Checkpoint.Final.ModelOverride)
+	if completed.Final.ModelOverride != "override-model" {
+		t.Errorf("recovered model override = %q, want persisted override", completed.Final.ModelOverride)
 	}
 	if len(requester.requests[0].Tools) != 1 {
 		t.Fatalf("initial tools = %#v, want only category selector", requester.requests[0].Tools)
@@ -423,25 +450,27 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Start(context.Background(), "team-agent-run", nil, input, TaskOptions{
+	_, result, err := agent.Start(context.Background(), "team-agent-run", nil, input, TaskOptions{
 		PlanMode: true, MaxToolRounds: 7, ReasoningEffort: model.ReasoningEffortHigh,
 		Goal: "parent goal", ContextWindow: 64000, ReserveOutputTokens: 2048,
 		AutoCompact: true, AutoCompactThreshold: 0.75,
-	}, graph.Options[State]{Store: store})
+	}, store, graph.Options{})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v", result)
 	}
 	if len(team.assignments) != 2 || team.assignments[0].Model != "research" || team.assignments[1].Model != "lead" {
 		t.Fatalf("team assignments = %#v", team.assignments)
 	}
-	if len(team.options) != 1 || !team.options[0].PlanMode || team.options[0].MaxToolRounds != 7 || team.options[0].ReasoningEffort != model.ReasoningEffortHigh {
+	if len(team.options) != 2 || !team.options[0].PlanMode || team.options[0].MaxToolRounds != 7 || team.options[0].ReasoningEffort != model.ReasoningEffortHigh {
 		t.Fatalf("worker options = %#v", team.options)
 	}
-	if team.options[0].Goal != "" || team.options[0].ContextWindow != 0 || team.options[0].ReserveOutputTokens != 0 || team.options[0].AutoCompact || team.options[0].AutoCompactThreshold != 0 {
-		t.Fatalf("new task settings unexpectedly inherited by team member: %#v", team.options[0])
+	for _, options := range team.options {
+		if options.Goal != "" || options.ContextWindow != 0 || options.ReserveOutputTokens != 0 || options.AutoCompact || options.AutoCompactThreshold != 0 {
+			t.Fatalf("new task settings unexpectedly inherited by team member: %#v", options)
+		}
 	}
 	if len(requester.requests) != 2 {
 		t.Fatalf("model requests = %d, want dispatch plus synthesis", len(requester.requests))
@@ -481,14 +510,9 @@ func TestAgentCanAskUserDuringPlanMode(t *testing.T) {
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"ask-1","name":"ask_user","arguments":"{\"question\":\"Which environment?\",\"options\":[\"local\",\"staging\"]}"}]}`),
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will use staging."}]}]}`),
 	}}
-	var askedQuestion string
-	var askedOptions []string
 	agent, err := NewWithOptions(requester, registry, AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "main", Provider: model.ProviderDeepSeek, Model: "test-model",
-		AskUser: func(_ context.Context, question string, options []string) (string, error) {
-			askedQuestion, askedOptions = question, append([]string(nil), options...)
-			return "staging", nil
-		},
+		AskUser: true,
 	})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
@@ -501,12 +525,36 @@ func TestAgentCanAskUserDuringPlanMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Start(context.Background(), "ask-user-plan", nil, input, TaskOptions{PlanMode: true}, graph.Options[State]{Store: store})
-	if err != nil || result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
-		t.Fatalf("Start = status %q, error %v", result.Status, err)
+	execution, waiting, err := agent.Start(context.Background(), "ask-user-plan", nil, input, TaskOptions{PlanMode: true}, store, graph.Options{})
+	if err != nil || waiting.Status != graph.StatusWaiting {
+		t.Fatalf("Start = status %q, error %v", waiting.Status, err)
 	}
-	if askedQuestion != "Which environment?" || len(askedOptions) != 2 || askedOptions[0] != "local" || askedOptions[1] != "staging" {
-		t.Fatalf("ask_user callback question=%q options=%v", askedQuestion, askedOptions)
+	pending := execution.Pending()
+	if len(pending) != 1 || pending[0].Continuation != UserQuestionContinuation {
+		t.Fatalf("pending user question = %#v", pending)
+	}
+	checkpoint, err := execution.Checkpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var question State
+	for _, invocation := range checkpoint.Invocations {
+		if invocation.ID == pending[0].InvocationID {
+			question = invocation.State
+		}
+	}
+	if question.UserQuestion != "Which environment?" || len(question.UserQuestionOptions) != 2 || question.UserQuestionOptions[1] != "staging" {
+		t.Fatalf("persisted user question = %#v", question)
+	}
+	answer, err := json.Marshal("staging")
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := execution.Advance(context.Background(), []graph.ResumeInput{{
+		InvocationID: pending[0].InvocationID, CallID: pending[0].CallID, Payload: answer,
+	}}, graph.Options{})
+	if err != nil || completed.Status != graph.StatusCompleted || completed.Final == nil {
+		t.Fatalf("Advance = status %q, error %v", completed.Status, err)
 	}
 	var foundAskUser bool
 	for _, definition := range requester.requests[0].Tools {
@@ -523,6 +571,96 @@ func TestAgentCanAskUserDuringPlanMode(t *testing.T) {
 	}
 	if !bytes.Contains(encodedInput, []byte("User's answer: staging")) {
 		t.Fatalf("user answer was not returned to the model: %s", encodedInput)
+	}
+}
+
+type nestedTeamExecutor struct {
+	profiles   map[string]model.ModelProfile
+	requesters map[string]Requester
+}
+
+func (t *nestedTeamExecutor) Profiles() map[string]model.ModelProfile { return t.profiles }
+func (t *nestedTeamExecutor) MaxParallelAgents() int                  { return 3 }
+func (t *nestedTeamExecutor) PrepareBranch(_ context.Context, state State, assignment TeamAssignment, _ TaskOptions) (State, error) {
+	profile := t.profiles[assignment.Model]
+	state.ModelProfile, state.Provider, state.Model = assignment.Model, profile.Provider, profile.Model
+	state.Protocol = model.ProtocolResponses
+	state.TeamModel, state.TeamProvider = profile.Model, profile.Provider
+	return state, nil
+}
+func (t *nestedTeamExecutor) Requester(_ context.Context, state State) (Requester, error) {
+	requester := t.requesters[state.AgentID]
+	if requester == nil {
+		return nil, fmt.Errorf("no requester for team branch %q", state.AgentID)
+	}
+	return requester, nil
+}
+
+func TestAgentGraphJoinsNestedTeamBranches(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profiles := map[string]model.ModelProfile{
+		"worker": {Provider: model.ProviderDeepSeek, Model: "worker-model"},
+	}
+	team := &nestedTeamExecutor{profiles: profiles, requesters: map[string]Requester{
+		"lead/outer-a": &scriptedRequester{responses: []*model.Response{
+			mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"nested-team","name":"delegate_team","arguments":"{\"tasks\":[{\"id\":\"inner\",\"model\":\"worker\",\"task\":\"inspect a focused detail\"}]}"}]}`),
+			mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"outer-a completed"}]}]}`),
+		}},
+		"lead/outer-b": &scriptedRequester{responses: []*model.Response{
+			mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"outer-b completed"}]}]}`),
+		}},
+		"lead/outer-a/inner": &scriptedRequester{responses: []*model.Response{
+			mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"inner completed"}]}]}`),
+		}},
+	}}
+	lead := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"outer-team","name":"delegate_team","arguments":"{\"tasks\":[{\"id\":\"outer-a\",\"model\":\"worker\",\"task\":\"perform a nested workflow\"},{\"id\":\"outer-b\",\"model\":\"worker\",\"task\":\"perform independent work\"}]}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"final synthesis"}]}]}`),
+	}}
+	agent, err := NewWithOptions(lead, registry, AgentOptions{
+		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek, Model: "lead-model", Team: team,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("root request must stay out of worker history")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "nested-team-run", nil, input, TaskOptions{}, store, graph.Options{MaxConcurrency: 3})
+	if err != nil || result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("nested team run = status %q, error %v", result.Status, err)
+	}
+	encodedHistory, err := json.Marshal(result.Final.History)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"outer-a completed", "outer-b completed", "Team results:"} {
+		if !strings.Contains(string(encodedHistory), expected) {
+			t.Errorf("nested team history is missing %q: %s", expected, encodedHistory)
+		}
+	}
+	outerA := team.requesters["lead/outer-a"].(*scriptedRequester)
+	workerInput, err := json.Marshal(outerA.requests[0].Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(workerInput), "perform a nested workflow") || strings.Contains(string(workerInput), "root request must stay out of worker history") {
+		t.Fatalf("team branch did not have isolated input history: %s", workerInput)
+	}
+	outerAResume, err := json.Marshal(outerA.requests[1].Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(outerAResume), "inner completed") {
+		t.Fatalf("nested result did not return to its parent branch: %s", outerAResume)
 	}
 }
 
@@ -555,23 +693,25 @@ func TestAgentGraphRecoversSelectedCategoryAfterSQLiteStoreReopen(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	paused, err := agent.Start(context.Background(), "category-recovery", nil, input, TaskOptions{}, graph.Options[State]{
-		Store: store, MaxSteps: 2,
-	})
+	execution, paused, err := agent.Start(context.Background(), "category-recovery", nil, input, TaskOptions{}, store, graph.Options{MaxSteps: 2})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	if paused.Status != graph.StatusBudget {
 		t.Fatalf("paused status = %q, want budget checkpoint", paused.Status)
 	}
+	cp, checkpointErr := execution.Checkpoint()
+	if checkpointErr != nil {
+		t.Fatal(checkpointErr)
+	}
 	selectedCategoryPersisted := false
-	for _, invocation := range paused.Checkpoint.Invocations {
+	for _, invocation := range cp.Invocations {
 		if invocation.State.SelectedCategory == "files" {
 			selectedCategoryPersisted = true
 		}
 	}
 	if !selectedCategoryPersisted {
-		t.Fatalf("checkpoint did not retain selected category: %#v", paused.Checkpoint.Invocations)
+		t.Fatalf("checkpoint did not retain selected category: %#v", cp.Invocations)
 	}
 	if err := store.Close(); err != nil {
 		t.Fatalf("close first store: %v", err)
@@ -586,13 +726,11 @@ func TestAgentGraphRecoversSelectedCategoryAfterSQLiteStoreReopen(t *testing.T) 
 	if err != nil {
 		t.Fatalf("New after reopen: %v", err)
 	}
-	completed, err := recoveredAgent.Recover(context.Background(), "category-recovery", nil, graph.Options[State]{
-		Store: reopened, MaxSteps: 100,
-	})
+	_, completed, err := recoveredAgent.Recover(context.Background(), "category-recovery", nil, reopened, graph.Options{MaxSteps: 100})
 	if err != nil {
 		t.Fatalf("Recover after reopen: %v", err)
 	}
-	if completed.Status != graph.StatusCompleted || completed.Checkpoint.Final == nil {
+	if completed.Status != graph.StatusCompleted || completed.Final == nil {
 		t.Fatalf("recovered result = %#v, want completed task", completed)
 	}
 	if readFile.calls != 1 || len(requester.requests) != 3 {
@@ -643,7 +781,7 @@ func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Start(context.Background(), "hidden-tool-category", nil, input, TaskOptions{ReasoningEffort: model.ReasoningEffortHigh}, graph.Options[State]{Store: store})
+	_, result, err := agent.Start(context.Background(), "hidden-tool-category", nil, input, TaskOptions{ReasoningEffort: model.ReasoningEffortHigh}, store, graph.Options{})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -712,14 +850,14 @@ func TestAgentGraphRecoversAfterCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	options := graph.Options[State]{Store: store}
+	options := graph.Options{}
 	ctx, cancel := context.WithCancel(context.Background())
 	resultCh := make(chan struct {
 		result graph.Result[State]
 		err    error
 	}, 1)
 	go func() {
-		result, err := agent.Start(ctx, "cancel-poc", nil, input, TaskOptions{}, options)
+		_, result, err := agent.Start(ctx, "cancel-poc", nil, input, TaskOptions{}, store, options)
 		resultCh <- struct {
 			result graph.Result[State]
 			err    error
@@ -732,12 +870,93 @@ func TestAgentGraphRecoversAfterCancellation(t *testing.T) {
 		t.Fatalf("interrupted result = %#v, error = %v", interrupted.result, interrupted.err)
 	}
 
-	recovered, err := agent.Recover(context.Background(), "cancel-poc", nil, options)
+	_, recovered, err := agent.Recover(context.Background(), "cancel-poc", nil, store, options)
 	if err != nil {
 		t.Fatalf("Recover: %v", err)
 	}
 	if recovered.Status != graph.StatusCompleted || requester.calls != 2 {
 		t.Fatalf("recovered status=%q requests=%d, want completed after replay", recovered.Status, requester.calls)
+	}
+}
+
+func TestToolInvocationUsesStableGraphCallIDAcrossReplay(t *testing.T) {
+	registered := &namedRecordingTool{name: "replay_tool"}
+	registry, err := tool.NewRegistry(toolRegistration(registered, model.ToolCategory{}, model.ToolPermissionWorkspaceRead, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(tool.PermissionModeFullAccess); err != nil {
+		t.Fatal(err)
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"model-tool-call","name":"replay_tool","arguments":"{}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
+	}}
+	agent, err := New(requester, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	var mu sync.Mutex
+	var toolCallIDs, graphCallIDs []string
+	controllerCalls := 0
+	registry.SetToolCallController(func(ctx context.Context, _ model.OutputFunctionCall, execute tool.ToolCallExecution) (model.InputFunctionCallOutput, error) {
+		mu.Lock()
+		toolCallIDs = append(toolCallIDs, publictool.InvocationID(ctx))
+		controllerCalls++
+		call := controllerCalls
+		mu.Unlock()
+		if call == 1 {
+			close(started)
+			<-ctx.Done()
+			return model.InputFunctionCallOutput{}, ctx.Err()
+		}
+		return execute(), nil
+	})
+	observer := graph.ObserverFunc(func(_ context.Context, event graph.Event) {
+		if event.Operation == graph.OperationNode && event.Node == toolNode && event.Phase == graph.PhaseStarted {
+			mu.Lock()
+			graphCallIDs = append(graphCallIDs, event.CallID)
+			mu.Unlock()
+		}
+	})
+	input := model.NewResponseInputText("run and replay a tool")
+	ctx, cancel := context.WithCancel(context.Background())
+	resultCh := make(chan struct {
+		result graph.Result[State]
+		err    error
+	}, 1)
+	go func() {
+		_, result, runErr := agent.Start(ctx, "stable-tool-call-id", nil, input, TaskOptions{}, store, graph.Options{Observer: observer})
+		resultCh <- struct {
+			result graph.Result[State]
+			err    error
+		}{result: result, err: runErr}
+	}()
+	<-started
+	cancel()
+	interrupted := <-resultCh
+	if !errors.Is(interrupted.err, context.Canceled) || interrupted.result.Status != graph.StatusCancelled {
+		t.Fatalf("interrupted tool run = %#v, error=%v", interrupted.result, interrupted.err)
+	}
+	_, completed, err := agent.Recover(context.Background(), "stable-tool-call-id", nil, store, graph.Options{Observer: observer})
+	if err != nil || completed.Status != graph.StatusCompleted {
+		t.Fatalf("recovered tool run = %#v, error=%v", completed, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(toolCallIDs) != 2 || toolCallIDs[0] == "" || toolCallIDs[0] != toolCallIDs[1] {
+		t.Fatalf("tool invocation identities across replay = %v", toolCallIDs)
+	}
+	if len(graphCallIDs) != 2 || graphCallIDs[0] != graphCallIDs[1] || toolCallIDs[0] != graphCallIDs[0] {
+		t.Fatalf("graph callback identities=%v, tool identities=%v", graphCallIDs, toolCallIDs)
+	}
+	if registered.calls != 1 {
+		t.Fatalf("tool side effects = %d, want one after callback replay", registered.calls)
 	}
 }
 
@@ -771,7 +990,7 @@ func TestAgentGraphRecoversAfterSQLiteStoreReopen(t *testing.T) {
 		err    error
 	}, 1)
 	go func() {
-		result, runErr := agent.Start(ctx, "sqlite-cancel", nil, input, TaskOptions{}, graph.Options[State]{Store: store})
+		_, result, runErr := agent.Start(ctx, "sqlite-cancel", nil, input, TaskOptions{}, store, graph.Options{})
 		resultCh <- struct {
 			result graph.Result[State]
 			err    error
@@ -796,17 +1015,17 @@ func TestAgentGraphRecoversAfterSQLiteStoreReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New after reopen: %v", err)
 	}
-	recovered, err := recoveredAgent.Recover(context.Background(), "sqlite-cancel", nil, graph.Options[State]{Store: reopened})
+	_, recovered, err := recoveredAgent.Recover(context.Background(), "sqlite-cancel", nil, reopened, graph.Options{})
 	if err != nil {
 		t.Fatalf("Recover after reopen: %v", err)
 	}
-	if recovered.Status != graph.StatusCompleted || recovered.Checkpoint.Final == nil || recovered.Checkpoint.Final.FinalResponse == nil {
+	if recovered.Status != graph.StatusCompleted || recovered.Final == nil || recovered.Final.FinalResponse == nil {
 		t.Fatalf("recovered result = %#v, want completed final state", recovered)
 	}
 	if requester.calls != 2 {
 		t.Fatalf("model requests = %d, want original call plus replay", requester.calls)
 	}
-	encoded, err := json.Marshal(recovered.Checkpoint.Final.History)
+	encoded, err := json.Marshal(recovered.Final.History)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -835,7 +1054,7 @@ func TestAgentGraphPreservesHistoryAndEnforcesPerTaskToolRoundLimit(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	options := graph.Options[State]{Store: store}
+	options := graph.Options{}
 	history, err := model.NewResponseInput([]map[string]any{{
 		"type": "message", "role": "user", "content": []map[string]any{{"type": "input_text", "text": "previous turn"}},
 	}})
@@ -846,14 +1065,14 @@ func TestAgentGraphPreservesHistoryAndEnforcesPerTaskToolRoundLimit(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Start(context.Background(), "round-limit", history, input, TaskOptions{MaxToolRounds: 1}, options)
+	_, result, err := agent.Start(context.Background(), "round-limit", history, input, TaskOptions{MaxToolRounds: 1}, store, options)
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	if result.Status != graph.StatusCompleted || result.Checkpoint.Final == nil {
+	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v, want completed final state", result)
 	}
-	final := result.Checkpoint.Final
+	final := result.Final
 	if final.TaskError == "" || !strings.Contains(final.TaskError, model.ErrToolCallLimit.Error()) {
 		t.Fatalf("task error = %q, want tool-call limit error", final.TaskError)
 	}
@@ -919,7 +1138,7 @@ func TestPlanModeExposesExplorationToolsAndBlocksWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := agent.Start(context.Background(), "plan-exploration-tools", nil, input, TaskOptions{PlanMode: true}, graph.Options[State]{Store: store})
+	_, result, err := agent.Start(context.Background(), "plan-exploration-tools", nil, input, TaskOptions{PlanMode: true}, store, graph.Options{})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}

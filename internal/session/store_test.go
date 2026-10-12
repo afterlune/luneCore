@@ -117,8 +117,8 @@ func TestOpenMigratesVersionThreeDatabaseToRuntimeTables(t *testing.T) {
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 5 {
-		t.Fatalf("user_version = %d, want 5", version)
+	if version != 6 {
+		t.Fatalf("user_version = %d, want 6", version)
 	}
 	if _, err := store.Get(context.Background(), "old", "workspace"); err != nil {
 		t.Fatalf("old session was not preserved: %v", err)
@@ -174,8 +174,8 @@ func TestOpenMigratesVersionFourDatabaseWithoutBackfillingTurnResults(t *testing
 	if err := store.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
 		t.Fatal(err)
 	}
-	if version != 5 {
-		t.Fatalf("user_version = %d, want 5", version)
+	if version != 6 {
+		t.Fatalf("user_version = %d, want 6", version)
 	}
 	var count int
 	if err := store.db.QueryRow(`SELECT count(*) FROM turn_results`).Scan(&count); err != nil {
