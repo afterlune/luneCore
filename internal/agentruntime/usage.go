@@ -21,7 +21,7 @@ type UsageTrackingRequester struct {
 
 func (r *UsageTrackingRequester) CreateResponse(ctx context.Context, request model.ModelRequest) (*model.ModelResponse, error) {
 	response, err := r.inner.CreateResponse(ctx, request)
-	if response != nil {
+	if response != nil && (err == nil || response.Usage != (model.ResponseUsage{})) {
 		r.mu.RLock()
 		observer := r.observer
 		contextObserver := r.contextObserver
@@ -32,13 +32,13 @@ func (r *UsageTrackingRequester) CreateResponse(ctx context.Context, request mod
 		}
 		if contextObserver != nil {
 			estimatedInputTokens := int64(0)
-			if response.Usage.InputTokens <= 0 {
+			if err == nil && response.Usage.InputTokens <= 0 {
 				estimatedInputTokens = model.EstimateInputTokens(request)
 			}
 			contextObserver(ctx, response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
 		} else if observer != nil {
 			estimatedInputTokens := int64(0)
-			if response.Usage.InputTokens <= 0 {
+			if err == nil && response.Usage.InputTokens <= 0 {
 				estimatedInputTokens = model.EstimateInputTokens(request)
 			}
 			observer(response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
@@ -53,7 +53,7 @@ func (r *UsageTrackingRequester) StreamResponse(ctx context.Context, request mod
 		return r.CreateResponse(ctx, request)
 	}
 	response, err := streaming.StreamResponse(ctx, request, emit)
-	if response != nil {
+	if response != nil && (err == nil || response.Usage != (model.ResponseUsage{})) {
 		r.mu.RLock()
 		observer := r.observer
 		contextObserver := r.contextObserver
@@ -64,13 +64,13 @@ func (r *UsageTrackingRequester) StreamResponse(ctx context.Context, request mod
 		}
 		if contextObserver != nil {
 			estimatedInputTokens := int64(0)
-			if response.Usage.InputTokens <= 0 {
+			if err == nil && response.Usage.InputTokens <= 0 {
 				estimatedInputTokens = model.EstimateInputTokens(request)
 			}
 			contextObserver(ctx, response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
 		} else if observer != nil {
 			estimatedInputTokens := int64(0)
-			if response.Usage.InputTokens <= 0 {
+			if err == nil && response.Usage.InputTokens <= 0 {
 				estimatedInputTokens = model.EstimateInputTokens(request)
 			}
 			observer(response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)

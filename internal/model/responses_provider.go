@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 )
 
@@ -45,6 +46,9 @@ func (p *responsesProvider) CreateResponse(ctx context.Context, request ModelReq
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return nil, fmt.Errorf("decode %s Responses response: %w", p.providerID, err)
 	}
+	if decoded.Status == "failed" && decoded.Error != nil {
+		return &decoded, annotateRequestError(response, ResponseFailure(decoded.Error))
+	}
 	return &decoded, nil
 }
 
@@ -72,6 +76,7 @@ func (p *responsesProvider) StreamResponse(ctx context.Context, request ModelReq
 	}
 	defer response.Body.Close()
 	var final *Response
+	terminal := false
 	err = scanSSE(ctx, response.Body, func(_ string, data string) error {
 		if data == "[DONE]" {
 			return nil
@@ -79,6 +84,12 @@ func (p *responsesProvider) StreamResponse(ctx context.Context, request ModelReq
 		var event ResponseStreamEvent
 		if err := decodeSSEJSON(data, &event); err != nil {
 			return err
+		}
+		if event.Type == EventResponseCompleted || event.Type == EventResponseIncomplete {
+			terminal = true
+		}
+		if event.Type == "error" {
+			return providerPayloadError(0, []byte(data))
 		}
 		if event.Response != nil {
 			final = event.Response
@@ -89,15 +100,15 @@ func (p *responsesProvider) StreamResponse(ctx context.Context, request ModelReq
 			}
 		}
 		if event.Type == EventResponseFailed && event.Response != nil && event.Response.Error != nil {
-			return fmt.Errorf("%s response failed (%s): %s", p.providerID, event.Response.Error.Code, event.Response.Error.Message)
+			return ResponseFailure(event.Response.Error)
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return final, annotateRequestError(response, err)
 	}
-	if final == nil {
-		return nil, fmt.Errorf("%s stream ended without a final response", p.providerID)
+	if final == nil || !terminal {
+		return final, annotateRequestError(response, transportError(io.ErrUnexpectedEOF))
 	}
 	return final, nil
 }

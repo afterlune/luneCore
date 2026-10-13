@@ -10,6 +10,7 @@ import (
 	"github.com/afterlune/luneCore/internal/agentruntime"
 	projectconfig "github.com/afterlune/luneCore/internal/config"
 	"github.com/afterlune/luneCore/internal/session"
+	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
@@ -73,6 +74,9 @@ const (
 	EventUserInteractionCancelled EventKind = "user_interaction_cancelled"
 	EventAgentStarted             EventKind = "agent_started"
 	EventAgentFinished            EventKind = "agent_finished"
+	EventModelRetry               EventKind = "model_retry"
+	EventModelRecoveryRequired    EventKind = "model_recovery_required"
+	EventModelRecoveryResumed     EventKind = "model_recovery_resumed"
 	EventModelStream              EventKind = "model_stream"
 	EventContextCompaction        EventKind = "context_compaction"
 	EventToolRecoveryRequired     EventKind = "tool_recovery_required"
@@ -91,7 +95,8 @@ const (
 // Event is a structured runtime notification. Arguments and response payloads
 // are transient; clients should not persist or log them without sanitizing.
 type Event struct {
-	Kind EventKind
+	Kind         EventKind
+	ModelFailure *publicmodel.Failure
 	// Cursor is non-zero for events written to the durable runtime event log.
 	// Model stream deltas are live-only and have a zero cursor.
 	Cursor int64
@@ -437,6 +442,8 @@ type TaskState struct {
 // values become host defaults; task request values override only non-zero fields.
 // Recovery options replace the saved set, so zero restores runtime defaults.
 type ExecutionOptions struct {
+	// ModelMaxAttempts includes the first request; zero defaults to three, one disables retry.
+	ModelMaxAttempts int           `json:"model_max_attempts,omitempty"`
 	MaxSteps         int           `json:"max_steps,omitempty"`
 	MaxInvocations   int           `json:"max_invocations,omitempty"`
 	MaxConcurrency   int           `json:"max_concurrency,omitempty"`

@@ -14,7 +14,7 @@ func (c *Core) acceptanceArtifacts(ctx context.Context, sessionID string) ([]jso
 	if err != nil || !found {
 		return nil, err
 	}
-	values := make([]json.RawMessage, 3)
+	values := make([]json.RawMessage, 4)
 	if len(state.AcceptanceReports) > 0 {
 		values[0], err = json.Marshal(state.AcceptanceReports)
 	}
@@ -27,7 +27,10 @@ func (c *Core) acceptanceArtifacts(ctx context.Context, sessionID string) ([]jso
 	if err != nil {
 		return nil, err
 	}
-	return values, nil
+	if state.ModelFailure != nil {
+		values[3], err = json.Marshal(state.ModelFailure)
+	}
+	return values, err
 }
 
 func (c *Core) resolveAcceptance(ctx context.Context, sessionID string, resolution AcceptanceResolution) error {

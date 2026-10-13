@@ -185,3 +185,37 @@ Disconnected MCP stdio calls are not automatically replayed. Reconnection refres
 Task concurrency is coordinated within each Core instance. The `StateDir` lock prevents another Core instance from opening the same directory concurrently.
 
 Public consumers should import the root `core` package plus `model` and `tool` only when implementing host extensions. The `internal` packages remain implementation details.
+
+### Model request recovery
+
+`ExecutionOptions.ModelMaxAttempts` limits attempts for each model request, including
+its first attempt. Zero defaults to three; one disables automatic retry. Host
+providers should disable their own retries and return `model.RequestError` for
+classified failures. Unclassified errors, invalid requests, authentication failures
+and quota exhaustion are not automatically retried.
+
+Transient rate limits, service failures, transport failures and timeouts use
+exponential backoff (1–8 seconds plus up to 250 ms of jitter), honoring
+`Retry-After`. Requests and waits share the model node deadline. A wait exceeding
+30 seconds or the remaining deadline requires explicit recovery. Once a stream
+event is delivered, a later failure also requires recovery; partial tool calls
+are never executed.
+
+The lead agent pauses with `TaskResult.ModelFailure` and a `PendingModelRecovery`
+request. Check `runtime.PendingModelRecovery(ctx)` for the saved wait and
+`Failure.RetryNotBefore`, then call `runtime.Recover(ctx)` or `Core.ResumeTask`.
+Early recovery returns `ErrModelRetryNotReady` without queueing a request. Recovery
+starts a fresh attempt cycle with the same ExecutionID, permissions, checkpoint
+and completed tool receipts, and a new TaskID for stream consumers. A paused turn
+blocks the session queue until recovered or discarded with `DiscardPaused`.
+
+Worker failures remain branch failures. An acceptance model failure preserves the
+host verifier's authority when one is configured; otherwise it pauses for model
+recovery without spending acceptance correction attempts. Memory extraction
+failures leave accepted tasks completed. Manual compaction retries and returns an
+error when attempts are exhausted.
+
+`model_retry`, `model_recovery_required` and `model_recovery_resumed` events contain
+safe failure metadata, never provider error bodies or causes. Task checkpoints
+use settings version 8; older execution checkpoints must be discarded. Existing
+session histories and completed results remain readable.

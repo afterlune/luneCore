@@ -52,14 +52,15 @@ func (p hostProvider) CreateResponse(ctx context.Context, request ModelRequest, 
 		return nil, fmt.Errorf("copy request for host provider: %w", err)
 	}
 	response, err := p.inner.CreateResponse(ctx, hostRequest, profile)
-	if err != nil || response == nil {
+	if response == nil {
 		return nil, err
 	}
+	requestErr := err
 	responseCopy, err := cloneForHost(response)
 	if err != nil {
 		return nil, fmt.Errorf("copy response from host provider: %w", err)
 	}
-	return responseCopy, nil
+	return responseCopy, requestErr
 }
 
 func (p hostProvider) StreamResponse(ctx context.Context, request ModelRequest, profile ModelProfile, emit func(ModelStreamEvent) error) (*ModelResponse, error) {
@@ -77,14 +78,15 @@ func (p hostProvider) StreamResponse(ctx context.Context, request ModelRequest, 
 		}
 		return emit(copiedEvent)
 	})
-	if err != nil || response == nil {
+	if response == nil {
 		return nil, err
 	}
+	requestErr := err
 	responseCopy, err := cloneForHost(response)
 	if err != nil {
 		return nil, fmt.Errorf("copy response from host provider: %w", err)
 	}
-	return responseCopy, nil
+	return responseCopy, requestErr
 }
 
 func cloneForHost[T any](value T) (T, error) {

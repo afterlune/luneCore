@@ -13,6 +13,7 @@ import (
 	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/memory"
+	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
 )
@@ -31,11 +32,12 @@ const (
 )
 
 const UserQuestionContinuation = "user_question"
+const ModelRecoveryContinuation = "model_recovery"
 const AcceptanceContinuation = "acceptance_resolution"
 const ExecutionBlockerContinuation = "execution_blocker"
 
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
-const CurrentTaskSettingsVersion = 7
+const CurrentTaskSettingsVersion = 8
 
 // Requester sends one Responses API request without managing history or tools.
 type Requester interface {
@@ -71,6 +73,8 @@ type AgentOptions struct {
 	ID                         string
 	Name                       string
 	Logger                     *slog.Logger
+	ModelObserver              func(State, string, publicmodel.Failure)
+	retry                      *retryTiming
 	Profile                    string
 	Provider                   string
 	Protocol                   string
@@ -115,7 +119,8 @@ type ContextCompactionEvent struct {
 // custom JSON decoder so typed and unknown multimodal input items survive clone
 // and checkpoint round trips.
 type State struct {
-	RunID string `json:"run_id,omitempty"`
+	ModelFailure *publicmodel.Failure `json:"model_failure,omitempty"`
+	RunID        string               `json:"run_id,omitempty"`
 	// ExecutionID is stable across resume attempts and namespaces tool calls.
 	ExecutionID               string                       `json:"execution_id,omitempty"`
 	AgentID                   string                       `json:"agent_id,omitempty"`
@@ -215,6 +220,8 @@ type TaskOptions struct {
 // ExecutionOptions contains the small set of controls that affect one Agent run.
 // Zero values retain luneGraph's default or unlimited behavior.
 type ExecutionOptions struct {
+	// ModelMaxAttempts includes the first request; zero defaults to three, one disables retry.
+	ModelMaxAttempts int           `json:"model_max_attempts,omitempty"`
 	MaxSteps         int           `json:"max_steps,omitempty"`
 	MaxInvocations   int           `json:"max_invocations,omitempty"`
 	MaxConcurrency   int           `json:"max_concurrency,omitempty"`
@@ -245,6 +252,9 @@ func New(requester Requester, tools model.ToolExecutor) (*Agent, error) {
 }
 
 func NewWithOptions(requester Requester, tools model.ToolExecutor, options AgentOptions) (*Agent, error) {
+	if options.Execution.ModelMaxAttempts < 0 {
+		return nil, errors.New("model maximum attempts must not be negative")
+	}
 	if requester == nil {
 		return nil, errors.New("requester is required")
 	}
@@ -321,6 +331,18 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	}); err != nil {
 		return nil, fmt.Errorf("register acceptance continuation: %w", err)
 	}
+	if err := graph.RegisterJSONContinuation[State, string](workflow, ModelRecoveryContinuation, func(_ context.Context, _ graph.CallInfo, state State, _ string) (State, error) {
+		if state.ModelFailure != nil && time.Now().Before(state.ModelFailure.RetryNotBefore) {
+			return state, errors.New("model retry is not ready")
+		}
+		if options.ModelObserver != nil && state.ModelFailure != nil {
+			options.ModelObserver(state, "resumed", *state.ModelFailure)
+		}
+		state.ModelFailure = nil
+		return state, nil
+	}); err != nil {
+		return nil, err
+	}
 	if err := graph.RegisterJSONContinuation[State, string](workflow, ExecutionBlockerContinuation, func(_ context.Context, _ graph.CallInfo, state State, _ string) (State, error) {
 		return state, errors.New("an execution blocker requires an updated plan")
 	}); err != nil {
@@ -329,7 +351,7 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	if err := workflow.AddEdge(criteriaNode, toolNode); err != nil {
 		return nil, fmt.Errorf("add criteria-to-tool edge: %w", err)
 	}
-	for _, edge := range [][2]string{{criteriaNode, modelNode}, {criteriaNode, criteriaNode}, {criteriaNode, acceptanceNode}, {modelNode, acceptanceNode}, {toolNode, criteriaNode}, {toolNode, acceptanceNode}, {toolNode, memoryNode}, {acceptanceNode, modelNode}, {acceptanceNode, criteriaNode}, {acceptanceNode, acceptanceNode}, {acceptanceNode, memoryNode}} {
+	for _, edge := range [][2]string{{modelNode, modelNode}, {criteriaNode, modelNode}, {criteriaNode, criteriaNode}, {criteriaNode, acceptanceNode}, {modelNode, acceptanceNode}, {toolNode, criteriaNode}, {toolNode, acceptanceNode}, {toolNode, memoryNode}, {acceptanceNode, modelNode}, {acceptanceNode, criteriaNode}, {acceptanceNode, acceptanceNode}, {acceptanceNode, memoryNode}} {
 		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
 			return nil, fmt.Errorf("add %s-to-%s edge: %w", edge[0], edge[1], err)
 		}

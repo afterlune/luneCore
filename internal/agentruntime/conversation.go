@@ -48,7 +48,13 @@ func (r *Responder) Compact(ctx context.Context) (int, error) {
 	if r.reasoningEffort != "" {
 		request.Reasoning = &model.ReasoningConfig{Effort: r.reasoningEffort}
 	}
-	response, err := r.requester.CreateResponse(ctx, request)
+	var response *model.ModelResponse
+	var err error
+	if r.agent != nil {
+		response, err = r.agent.RetryResponse(ctx, r.requester, request)
+	} else {
+		response, err = r.requester.CreateResponse(ctx, request)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("summarize conversation: %w", err)
 	}

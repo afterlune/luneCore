@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
@@ -173,6 +174,16 @@ func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool, 
 	if pending.TaskSettingsVersion != agentgraph.CurrentTaskSettingsVersion {
 		c.mu.Unlock()
 		return TurnSubmission{}, nil, checkpointSettingsVersionError(pending.TaskSettingsVersion)
+	}
+	if pending.ModelFailure != nil && time.Now().Before(pending.ModelFailure.RetryNotBefore) {
+		c.mu.Unlock()
+		return TurnSubmission{}, nil, ErrModelRetryNotReady
+	}
+	if pending.ModelFailure != nil {
+		if err := c.admitModelRecovery(ctx, sessionID); err != nil {
+			c.mu.Unlock()
+			return TurnSubmission{}, nil, err
+		}
 	}
 	if pending.AcceptancePaused {
 		accepted, decisionErr := c.hasAcceptanceResolutionInput(ctx, sessionID)

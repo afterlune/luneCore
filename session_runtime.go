@@ -78,9 +78,10 @@ type RuntimeState struct {
 
 // TaskResult is the shared synchronous and asynchronous outcome shape.
 type TaskResult struct {
-	ExecutionID string
-	Status      TaskStatus
-	Response    json.RawMessage
+	ModelFailure *ModelFailure
+	ExecutionID  string
+	Status       TaskStatus
+	Response     json.RawMessage
 	// ProposedPlan is set only for a completed response containing one complete
 	// proposed-plan block. Hosts can offer handoff choices when it is non-nil.
 	ProposedPlan       *ProposedPlan
@@ -96,7 +97,8 @@ type TurnResult = TaskResult
 type PendingRequestKind string
 
 const (
-	PendingApproval PendingRequestKind = "approval"
+	PendingModelRecoveryRequest PendingRequestKind = "model_recovery"
+	PendingApproval             PendingRequestKind = "approval"
 	// PendingUserQuestion is a lead-agent clarification waiting for the host.
 	PendingUserQuestion      PendingRequestKind = "user_question"
 	PendingUserInteraction   PendingRequestKind = "user_interaction"
@@ -106,13 +108,14 @@ const (
 )
 
 type PendingRequest struct {
-	Kind         PendingRequestKind
-	Approval     *ApprovalRequest
-	UserQuestion *UserQuestionRequest
-	Interaction  *UserInteractionRequest
-	ToolRecovery *ToolRecoveryRequest
-	Acceptance   *PendingAcceptance
-	Blocker      *ExecutionBlocker
+	Kind          PendingRequestKind
+	ModelRecovery *PendingModelRecovery
+	Approval      *ApprovalRequest
+	UserQuestion  *UserQuestionRequest
+	Interaction   *UserInteractionRequest
+	ToolRecovery  *ToolRecoveryRequest
+	Acceptance    *PendingAcceptance
+	Blocker       *ExecutionBlocker
 }
 
 // SessionRuntime is a handle to one session's turns, event log and pending
@@ -244,12 +247,18 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 					return TurnResult{}, fmt.Errorf("decode acceptance evidence: %w", err)
 				}
 			}
+			var failure *ModelFailure
+			if len(stored.ModelFailure) > 0 {
+				if err := json.Unmarshal(stored.ModelFailure, &failure); err != nil {
+					return TurnResult{}, fmt.Errorf("decode model failure: %w", err)
+				}
+			}
 			var plan *ProposedPlan
 			if TaskStatus(stored.Status) == TaskCompleted {
 				plan = extractProposedPlan(response)
 			}
 			return TurnResult{
-				ExecutionID:        stored.ExecutionID,
+				ModelFailure: failure, ExecutionID: stored.ExecutionID,
 				Status:             TaskStatus(stored.Status),
 				Response:           response,
 				ProposedPlan:       plan,
@@ -471,6 +480,13 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 	if hasAcceptance {
 		requests = append(requests, PendingRequest{Kind: PendingAcceptanceRequest, Acceptance: &pendingAcceptance})
 	}
+	modelRecovery, hasModelRecovery, err := c.pendingModelRecovery(ctx, r.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if hasModelRecovery {
+		requests = append(requests, PendingRequest{Kind: PendingModelRecoveryRequest, ModelRecovery: &modelRecovery})
+	}
 	blocker, hasBlocker, err := c.pendingExecutionBlocker(ctx, r.sessionID)
 	if err != nil {
 		return nil, err
@@ -581,6 +597,10 @@ func pendingRequestID(request PendingRequest) string {
 	case PendingAcceptanceRequest:
 		if request.Acceptance != nil {
 			return request.Acceptance.CallID
+		}
+	case PendingModelRecoveryRequest:
+		if request.ModelRecovery != nil {
+			return request.ModelRecovery.CallID
 		}
 	case PendingExecutionBlocker:
 		if request.Blocker != nil {

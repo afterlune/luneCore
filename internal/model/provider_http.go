@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 )
 
 func postJSON(ctx context.Context, client *http.Client, endpoint string, headers map[string]string, body any) (*http.Response, error) {
@@ -27,7 +28,7 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, headers
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, fmt.Errorf("call model provider: %w", err)
+		return nil, transportError(err)
 	}
 	return response, nil
 }
@@ -36,7 +37,7 @@ func responseBody(response *http.Response) ([]byte, error) {
 	defer response.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBodyBytes+1))
 	if err != nil {
-		return nil, fmt.Errorf("read model response: %w", err)
+		return nil, transportError(err)
 	}
 	if len(body) > maxResponseBodyBytes {
 		return nil, fmt.Errorf("model response exceeds %d bytes", maxResponseBodyBytes)
@@ -48,11 +49,13 @@ func httpStatusError(response *http.Response, body []byte, provider string) erro
 	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
 		return nil
 	}
-	message := strings.TrimSpace(string(body))
-	if message == "" {
-		message = response.Status
+	err := providerPayloadError(response.StatusCode, body)
+	err.RequestID = response.Header.Get("x-request-id")
+	if err.RequestID == "" {
+		err.RequestID = response.Header.Get("request-id")
 	}
-	return fmt.Errorf("%s returned %s: %s", provider, response.Status, message)
+	err.RetryAfter = retryAfter(response.Header.Get("Retry-After"), time.Now())
+	return err
 }
 
 func scanSSE(ctx context.Context, body io.Reader, handle func(event, data string) error) error {
@@ -96,7 +99,7 @@ func scanSSE(ctx context.Context, body io.Reader, handle func(event, data string
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read model event stream: %w", err)
+		return transportError(err)
 	}
 	return dispatch()
 }

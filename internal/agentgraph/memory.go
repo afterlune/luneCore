@@ -53,7 +53,13 @@ func (a *Agent) extractMemory(ctx context.Context, _ graph.CallInfo, state State
 	}
 	required := "required"
 	request.ToolChoice = &model.ToolChoice{Mode: &required}
-	response, err := a.options.MemoryRequester.CreateResponse(ctx, request)
+	requestCtx := ctx
+	if state.Execution.ModelTimeout > 0 {
+		var cancel context.CancelFunc
+		requestCtx, cancel = context.WithTimeout(ctx, state.Execution.ModelTimeout*9/10)
+		defer cancel()
+	}
+	response, err := a.sendModel(requestCtx, state, a.options.MemoryRequester, request, nil)
 	if err != nil {
 		return a.endMemoryAttempt(state, "failed", nil, err), nil
 	}

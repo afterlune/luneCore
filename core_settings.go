@@ -19,7 +19,7 @@ type PermissionMode string
 
 func agentExecutionOptions(options ExecutionOptions) agentgraph.ExecutionOptions {
 	return agentgraph.ExecutionOptions{
-		MaxSteps: options.MaxSteps, MaxInvocations: options.MaxInvocations, MaxConcurrency: options.MaxConcurrency,
+		ModelMaxAttempts: options.ModelMaxAttempts, MaxSteps: options.MaxSteps, MaxInvocations: options.MaxInvocations, MaxConcurrency: options.MaxConcurrency,
 		ModelTimeout: options.ModelTimeout, ToolTimeout: options.ToolTimeout, JoinTimeout: options.JoinTimeout,
 		TeamEntryTimeout: options.TeamEntryTimeout, TeamQuorum: options.TeamQuorum,
 	}
@@ -27,7 +27,7 @@ func agentExecutionOptions(options ExecutionOptions) agentgraph.ExecutionOptions
 
 func coreExecutionOptions(options agentgraph.ExecutionOptions) ExecutionOptions {
 	return ExecutionOptions{
-		MaxSteps: options.MaxSteps, MaxInvocations: options.MaxInvocations, MaxConcurrency: options.MaxConcurrency,
+		ModelMaxAttempts: options.ModelMaxAttempts, MaxSteps: options.MaxSteps, MaxInvocations: options.MaxInvocations, MaxConcurrency: options.MaxConcurrency,
 		ModelTimeout: options.ModelTimeout, ToolTimeout: options.ToolTimeout, JoinTimeout: options.JoinTimeout,
 		TeamEntryTimeout: options.TeamEntryTimeout, TeamQuorum: options.TeamQuorum,
 	}
@@ -199,7 +199,7 @@ func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 }
 
 func validateExecutionOptions(options ExecutionOptions) error {
-	if options.MaxSteps < 0 || options.MaxInvocations < 0 || options.MaxConcurrency < 0 || options.TeamQuorum < 0 {
+	if options.ModelMaxAttempts < 0 || options.MaxSteps < 0 || options.MaxInvocations < 0 || options.MaxConcurrency < 0 || options.TeamQuorum < 0 {
 		return errors.New("execution limits must not be negative")
 	}
 	if options.ModelTimeout < 0 || options.ToolTimeout < 0 || options.JoinTimeout < 0 || options.TeamEntryTimeout < 0 {
@@ -216,6 +216,9 @@ func validatePermissionOverride(mode string) error {
 }
 
 func mergeExecutionOptions(defaults, overrides ExecutionOptions) ExecutionOptions {
+	if overrides.ModelMaxAttempts != 0 {
+		defaults.ModelMaxAttempts = overrides.ModelMaxAttempts
+	}
 	if overrides.MaxSteps != 0 {
 		defaults.MaxSteps = overrides.MaxSteps
 	}

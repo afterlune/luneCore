@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"mime"
 	"net/http"
 	"net/url"
@@ -88,7 +89,8 @@ func (p *anthropicMessagesProvider) StreamResponse(ctx context.Context, request 
 		return nil, httpStatusError(response, body, p.providerID+" Messages API")
 	}
 	defer response.Body.Close()
-	return readAnthropicStream(ctx, response.Body, emit, wire.Model, p.providerID)
+	result, streamErr := readAnthropicStream(ctx, response.Body, emit, wire.Model, p.providerID)
+	return result, annotateRequestError(response, streamErr)
 }
 
 func anthropicHeaders(apiKey, accept string) map[string]string {
@@ -475,7 +477,7 @@ func readAnthropicStream(ctx context.Context, body interface{ Read([]byte) (int,
 	}
 	err := scanSSE(ctx, body, func(eventName, data string) error {
 		if eventName == "error" {
-			return fmt.Errorf("%s Messages stream error: %s", providerID, data)
+			return providerPayloadError(0, []byte(data))
 		}
 		var event struct {
 			Type         string          `json:"type"`
@@ -489,7 +491,7 @@ func readAnthropicStream(ctx context.Context, body interface{ Read([]byte) (int,
 			return fmt.Errorf("decode Anthropic stream event: %w", err)
 		}
 		if event.Type == "error" {
-			return fmt.Errorf("%s Messages stream error: %s", providerID, data)
+			return providerPayloadError(0, []byte(data))
 		}
 		switch event.Type {
 		case "message_start":
@@ -603,10 +605,10 @@ func readAnthropicStream(ctx context.Context, body interface{ Read([]byte) (int,
 		return nil
 	})
 	if err != nil {
-		return nil, err
+		return response, err
 	}
 	if response.Status == "in_progress" {
-		return nil, fmt.Errorf("%s stream ended before message_stop", providerID)
+		return response, transportError(io.ErrUnexpectedEOF)
 	}
 	return response, nil
 }

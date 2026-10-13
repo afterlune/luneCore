@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -276,7 +275,7 @@ func TestCoreStreamingCancellationPausesAndResumeStreamsAgain(t *testing.T) {
 	}
 }
 
-func TestCoreProviderFailureAfterTextDeltaFailsTaskAndEmitsStreamFailure(t *testing.T) {
+func TestCoreProviderFailureAfterTextDeltaPausesTaskAndEmitsStreamFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request model.ResponseRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
@@ -321,8 +320,8 @@ func TestCoreProviderFailureAfterTextDeltaFailsTaskAndEmitsStreamFailure(t *test
 	_, runErr := client.RunTask(context.Background(), TaskRequest{
 		SessionID: saved.ID, Input: mustSettingsTaskInput(t, "stream and fail"),
 	})
-	if runErr == nil || !strings.Contains(runErr.Error(), "injected stream failure") {
-		t.Fatalf("RunTask error = %v, want injected provider failure", runErr)
+	if !errors.Is(runErr, ErrTaskPaused) {
+		t.Fatalf("RunTask error = %v, want model recovery pause", runErr)
 	}
 	var events []Event
 	var taskFinished, streamFailed bool
@@ -358,7 +357,7 @@ func TestCoreProviderFailureAfterTextDeltaFailsTaskAndEmitsStreamFailure(t *test
 			}
 		case EventTaskFinished:
 			if event.TaskID == taskID {
-				if event.Status != TaskFailed || event.Err != "" {
+				if event.Status != TaskPaused || event.Err != "" {
 					t.Fatalf("failed task event = %#v", event)
 				}
 				finishIndex = index
@@ -368,8 +367,8 @@ func TestCoreProviderFailureAfterTextDeltaFailsTaskAndEmitsStreamFailure(t *test
 	if deltaIndex < 0 || failureIndex < 0 || finishIndex < 0 {
 		t.Fatalf("stream failure sequence delta=%d failure=%d task finish=%d events=%#v", deltaIndex, failureIndex, finishIndex, events)
 	}
-	if pending, err := client.hasPending(context.Background(), saved.ID); err != nil || pending {
-		t.Fatalf("failed provider stream pending=%v error=%v; want failed task without resumable checkpoint", pending, err)
+	if pending, err := client.hasPending(context.Background(), saved.ID); err != nil || !pending {
+		t.Fatalf("failed provider stream pending=%v error=%v; want resumable checkpoint", pending, err)
 	}
 }
 

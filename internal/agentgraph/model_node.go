@@ -51,7 +51,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	}
 	requestCtx := ctx
 	cancelRequest := func() {}
-	if state.AcceptancePhase == "acceptance" && state.Execution.ModelTimeout > 0 {
+	if state.Execution.ModelTimeout > 0 {
 		requestTimeout := state.Execution.ModelTimeout * 9 / 10
 		if requestTimeout <= 0 {
 			requestTimeout = state.Execution.ModelTimeout
@@ -184,7 +184,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		}
 		compactionThreshold = contextTokenThreshold(state.ContextWindow, state.ReserveOutputTokens, ratio)
 		if compactionThreshold <= 0 {
-			return a.failOrPauseAcceptance(ctx, state, errors.New("automatic compaction has no available input-token budget"))
+			return a.failOrPauseModel(ctx, state, errors.New("automatic compaction has no available input-token budget"))
 		}
 		useServerCompaction := state.Protocol == model.ProtocolResponses && state.ServerCompaction && !state.ServerCompactionFallback
 		if useServerCompaction && compactionThreshold < minimumServerCompactionThreshold {
@@ -207,7 +207,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 				if ctx.Err() != nil {
 					return graph.Transition[State]{}, ctx.Err()
 				}
-				return a.failOrPauseAcceptance(ctx, state, fmt.Errorf("automatic context compaction: %w", err))
+				return a.failOrPauseModel(ctx, state, fmt.Errorf("automatic context compaction: %w", err))
 			}
 		}
 	}
@@ -223,21 +223,21 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		"visible_tools", visibleNames,
 	)
 	sendRequest := func(request model.ModelRequest) (*model.ModelResponse, error) {
-		if streaming, ok := requester.(StreamingRequester); ok {
-			return streaming.StreamResponse(requestCtx, request, func(event model.ModelStreamEvent) error {
+		var emit func(model.ModelStreamEvent) error
+		if a.options.StreamObserverFor != nil || a.options.StreamObserver != nil {
+			emit = func(event model.ModelStreamEvent) error {
 				if a.options.StreamObserverFor != nil {
 					a.options.StreamObserverFor(state, event)
-				} else if a.options.StreamObserver != nil {
+				} else {
 					a.options.StreamObserver(event)
 				}
 				return nil
-			})
+			}
 		}
-		return requester.CreateResponse(requestCtx, request)
+		return a.sendModel(requestCtx, state, requester, request, emit)
 	}
-	var response *model.Response
 	response, responseErr := sendRequest(request)
-	if serverCompactionRequested && compactOptionUnsupported(responseErr) {
+	if serverCompactionRequested && compactOptionUnsupported(responseErr) && !streamFailure(responseErr) {
 		state.ServerCompactionFallback = true
 		a.notifyCompaction(ContextCompactionEvent{
 			Stage: "fallback", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold,
@@ -249,7 +249,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 			if ctx.Err() != nil {
 				return graph.Transition[State]{}, ctx.Err()
 			}
-			return a.failOrPauseAcceptance(ctx, state, fmt.Errorf("automatic context compaction: %w", err))
+			return a.failOrPauseModel(ctx, state, fmt.Errorf("automatic context compaction: %w", err))
 		}
 		serverCompactionRequested = false
 		response, responseErr = sendRequest(request)
@@ -261,47 +261,12 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		if ctx.Err() != nil {
 			return graph.Transition[State]{}, responseErr
 		}
-		return a.failOrPauseAcceptance(ctx, state, responseErr)
+		return a.failOrPauseModel(ctx, state, responseErr)
 	}
 	if response == nil {
-		return a.failOrPauseAcceptance(ctx, state, errors.New("requester returned a nil response"))
+		return a.failOrPauseModel(ctx, state, errors.New("requester returned a nil response"))
 	}
-	if response.Status == "failed" {
-		if response.Error != nil {
-			responseErr := fmt.Errorf("model response failed (%s): %s", response.Error.Code, response.Error.Message)
-			if serverCompactionRequested && compactOptionUnsupported(responseErr) {
-				state.ServerCompactionFallback = true
-				a.notifyCompaction(ContextCompactionEvent{Stage: "fallback", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold, Error: responseErr})
-				request.ContextManagement = nil
-				state, request, _, err = a.prepareAutomaticCompaction(requestCtx, state, request)
-				if err != nil {
-					if ctx.Err() != nil {
-						return graph.Transition[State]{}, ctx.Err()
-					}
-					return a.failOrPauseAcceptance(ctx, state, fmt.Errorf("automatic context compaction: %w", err))
-				}
-				serverCompactionRequested = false
-				response, responseErr = sendRequest(request)
-				if responseErr != nil {
-					return a.failOrPauseAcceptance(ctx, state, responseErr)
-				}
-				if response == nil {
-					return a.failOrPauseAcceptance(ctx, state, errors.New("requester returned a nil response"))
-				}
-				if response.Status == "failed" {
-					if response.Error != nil {
-						return a.failOrPauseAcceptance(ctx, state, fmt.Errorf("model response failed (%s): %s", response.Error.Code, response.Error.Message))
-					}
-					return a.failOrPauseAcceptance(ctx, state, errors.New("model response failed"))
-				}
-			} else {
-				return a.failOrPauseAcceptance(ctx, state, responseErr)
-			}
-		}
-		if response.Status == "failed" {
-			return a.failOrPauseAcceptance(ctx, state, errors.New("model response failed"))
-		}
-	}
+
 	if serverCompactionRequested {
 		if responseContainsCompaction(response.Output) {
 			a.notifyCompaction(ContextCompactionEvent{Stage: "completed", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold})

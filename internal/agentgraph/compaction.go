@@ -56,7 +56,7 @@ func (a *Agent) prepareAutomaticCompaction(ctx context.Context, state State, req
 	}
 	a.notifyCompaction(ContextCompactionEvent{Stage: "started", Mode: "local", BeforeTokens: before, Threshold: threshold})
 
-	compacted, after, err := a.compactLocalHistory(ctx, state.History, request, threshold)
+	compacted, after, err := a.compactLocalHistory(ctx, state.History, request, threshold, state)
 	if err != nil {
 		a.notifyCompaction(ContextCompactionEvent{Stage: "failed", Mode: "local", BeforeTokens: before, AfterTokens: after, Threshold: threshold, Error: err})
 		return state, request, false, err
@@ -72,7 +72,7 @@ func (a *Agent) prepareAutomaticCompaction(ctx context.Context, state State, req
 	return state, request, true, nil
 }
 
-func (a *Agent) compactLocalHistory(ctx context.Context, history model.ResponseInput, request model.ModelRequest, threshold int64) (model.ResponseInput, int64, error) {
+func (a *Agent) compactLocalHistory(ctx context.Context, history model.ResponseInput, request model.ModelRequest, threshold int64, state State) (model.ResponseInput, int64, error) {
 	items := append([]model.InputItem(nil), history.Items...)
 	if len(items) == 0 {
 		return history, model.EstimateInputTokens(request), errors.New("no conversation history can be compacted")
@@ -105,7 +105,7 @@ func (a *Agent) compactLocalHistory(ctx context.Context, history model.ResponseI
 	working := append([]model.InputItem(nil), prefix...)
 	var lastEstimate int64 = model.EstimateInputTokens(current)
 	for attempt := 0; attempt < 3; attempt++ {
-		summary, err := a.summarizeHistoryPrefix(ctx, request, working, attempt > 0)
+		summary, err := a.summarizeHistoryPrefix(ctx, request, working, attempt > 0, state)
 		if err != nil {
 			return history, lastEstimate, err
 		}
@@ -132,7 +132,7 @@ func (a *Agent) compactLocalHistory(ctx context.Context, history model.ResponseI
 	return history, lastEstimate, fmt.Errorf("context remains above threshold after three compaction passes (%d/%d tokens)", lastEstimate, threshold)
 }
 
-func (a *Agent) summarizeHistoryPrefix(ctx context.Context, request model.ModelRequest, prefix []model.InputItem, condense bool) (string, error) {
+func (a *Agent) summarizeHistoryPrefix(ctx context.Context, request model.ModelRequest, prefix []model.InputItem, condense bool, state State) (string, error) {
 	instructions := request.Instructions
 	if instructions != "" {
 		instructions += "\n\n"
@@ -148,7 +148,7 @@ func (a *Agent) summarizeHistoryPrefix(ctx context.Context, request model.ModelR
 		Instructions: instructions,
 		Reasoning:    request.Reasoning,
 	}
-	response, err := a.requester.CreateResponse(ctx, request)
+	response, err := a.sendModel(ctx, state, a.requester, request, nil)
 	if err != nil {
 		return "", fmt.Errorf("summarize conversation: %w", err)
 	}
@@ -303,6 +303,10 @@ func compactOptionUnsupported(err error) bool {
 	if err == nil {
 		return false
 	}
-	message := strings.ToLower(err.Error())
+	var messages []string
+	for current := err; current != nil; current = errors.Unwrap(current) {
+		messages = append(messages, current.Error())
+	}
+	message := strings.ToLower(strings.Join(messages, " "))
 	return strings.Contains(message, "context_management") || strings.Contains(message, "compact_threshold")
 }

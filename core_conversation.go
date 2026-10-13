@@ -67,6 +67,7 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		modelContext = &decoded
 	}
 	compactOptions := agentgraph.TaskOptions{
+		Execution:       agentExecutionOptions(c.executionDefaults),
 		ReasoningEffort: settings.ReasoningEffort, Goal: effective.Goal,
 		ContextWindow: effective.ContextWindow, ReserveOutputTokens: effective.ReserveOutputTokens,
 		AutoCompact: effective.AutoCompact, AutoCompactThreshold: effective.AutoCompactThreshold,
