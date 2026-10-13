@@ -89,6 +89,7 @@ func externalResponseForRequest(request model.ModelRequest) *model.ModelResponse
 func TestExternalGoPackageCanEmbedAndExtendCore(t *testing.T) {
 	client, err := core.New(core.Config{
 		Workspace: t.TempDir(), StateDir: t.TempDir(),
+		Memory: core.MemoryConfig{Disabled: true},
 		ModelConfig: &model.Config{
 			Providers:    map[string]model.ProviderConfig{"external": {Protocol: model.ProtocolResponses}},
 			Models:       map[string]model.ModelProfile{"main": {Provider: "external", Model: "test-model"}},

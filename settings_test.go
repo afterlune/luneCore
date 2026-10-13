@@ -50,7 +50,7 @@ func writeProjectSettingsConfig(t *testing.T, workspace string, config projectco
 
 func openSettingsCore(t *testing.T, workspace, stateDir string) *Core {
 	t.Helper()
-	client, err := New(Config{Workspace: workspace, StateDir: stateDir})
+	client, err := New(Config{Workspace: workspace, StateDir: stateDir, Memory: MemoryConfig{Disabled: true}})
 	if err != nil {
 		t.Fatalf("New Core: %v", err)
 	}

@@ -82,6 +82,10 @@ const (
 	EventAcceptanceRequired       EventKind = "acceptance_required"
 	EventAcceptanceResolved       EventKind = "acceptance_resolved"
 	EventExecutionBlocked         EventKind = "execution_blocked"
+	EventMemoryStarted            EventKind = "memory_started"
+	EventMemorySaved              EventKind = "memory_saved"
+	EventMemorySkipped            EventKind = "memory_skipped"
+	EventMemoryFailed             EventKind = "memory_failed"
 )
 
 // Event is a structured runtime notification. Arguments and response payloads
@@ -129,6 +133,8 @@ type Event struct {
 	AcceptanceCriterionIDs []string
 	BlockerID              string
 	BlockerTool            string
+	MemoryStatus           string
+	MemoryIDs              []string
 }
 
 // ExecutionBlocker is a persisted, non-interactive report for an operation

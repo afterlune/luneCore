@@ -94,6 +94,14 @@ func (r *Responder) finish(result graph.Result[agentgraph.State], runErr error) 
 		state := *result.Final
 		r.lastState = &state
 	}
+	if (result.Status == graph.StatusBudget || result.Status == graph.StatusCancelled) && result.Final != nil &&
+		result.Final.AcceptancePhase == "complete" && result.Final.FinalResponse != nil && result.Final.TaskError == "" {
+		// Acceptance has already completed. An optional post-acceptance memory
+		// node may be skipped when the remaining graph budget is exhausted or
+		// the caller cancels; neither should revoke the accepted result.
+		result.Status = graph.StatusCompleted
+		runErr = nil
+	}
 	if result.Status == graph.StatusCompleted || result.Status == graph.StatusCompletedWithFailures {
 		if result.Final == nil {
 			if !r.deferCompletedCleanup {

@@ -149,7 +149,7 @@ func (a *Agent) resolveAcceptanceDecision(state State) (graph.Transition[State],
 		})
 		state.AcceptancePaused, state.AcceptancePauseReason = false, ""
 		a.observeAcceptance(state, "resolved", string(acceptance.SourceUser), "confirmed")
-		return graph.EndExecution(state), nil
+		return a.finishAccepted(state), nil
 	}
 	if decision != acceptance.DecisionContinue {
 		return graph.Transition[State]{}, fmt.Errorf("unsupported acceptance decision %q", decision)
@@ -288,9 +288,8 @@ func (a *Agent) acceptModelReport(ctx context.Context, state State, report accep
 		unknown = unknown || result.Outcome == acceptance.Unknown
 	}
 	if !failed && !unknown {
-		state.AcceptancePhase = "complete"
 		state.AcceptancePaused, state.AcceptancePauseReason = false, ""
-		return graph.EndExecution(state), nil
+		return a.finishAccepted(state), nil
 	}
 	if failed && state.AcceptanceRepairs < maxAcceptanceRepairs {
 		state.AcceptanceRepairs++

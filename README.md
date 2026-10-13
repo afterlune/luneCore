@@ -115,6 +115,45 @@ Each `StateDir` is exclusively owned by one Core instance at a time, including a
 
 Hosts can provide a model catalog through `core.Config.ModelConfig`, custom implementations through `core.Config.ModelProviders`, and custom tools through `core.Config.Tools`. These are programmatic equivalents of the corresponding `config.json` model fields; explicit Go entries override file entries with the same provider or profile name, and the file supplies entries not given in Go. A programmatic model config can be used without a `config.json` file.
 
+Workspace memory is enabled by default. After an accepted task, Core makes a separate model call to extract a few reusable preferences, decisions, conventions, or verified facts. Future tasks receive a short untrusted memory summary and can call the read-only `search_memory` tool for details. Memories are scoped to the workspace and stored with the session database. Deleting a source session also deletes memories extracted from it; manually added memories remain. Use `ListMemories`, `SearchMemories`, `AddMemory`, `UpdateMemory`, `DeleteMemory`, and `ClearMemories` to manage them. Set `Config.Memory.Disabled` to opt out of automatic memory use and extraction.
+
+Hosts may provide an `Embedder` through `Config.Memory.Embedder` for semantic retrieval. Core stores the returned vectors and combines vector and SQLite full-text rankings; if embedding fails, full-text search remains available. Keep `Embedder.ID()` stable for one model and vector format, and call `ReindexMemories` after changing it.
+
+```go
+import (
+	"context"
+	"log"
+
+	core "github.com/afterlune/luneCore"
+	"github.com/afterlune/luneCore/memory"
+)
+
+var myEmbedder memory.Embedder // supplied by the host application
+
+func main() {
+	ctx := context.Background()
+	client, err := core.New(core.Config{
+		Workspace: ".",
+		Memory:    core.MemoryConfig{Embedder: myEmbedder},
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer client.Close()
+
+	_, err = client.AddMemory(ctx, memory.Input{
+		Category:   memory.CategoryPreference,
+		Content:    "Prefers concise explanations.",
+		Importance: 3,
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+`myEmbedder` implements `memory.Embedder` from `github.com/afterlune/luneCore/memory`. Embedding services and their credentials remain host-owned; Core persists only the vectors and embedder ID.
+
 Implement model providers with the public `model.Provider` interface and register tools with the public `tool.Tool` interface. Provider methods receive normalized request, response, and stream types; the runtime owns history, tool execution, and checkpointing. Provider implementations must support concurrent calls from different sessions. Every registered tool must declare a category, permission class, and JSON parameter schema. The built-in lead-agent tool name `ask_user` is reserved.
 
 The `delegate_team` tool runs member agents as `luneGraph` fan-out branches in the same run. By default, results join in assignment order after every member finishes. Set `Config.Execution.TeamQuorum` for a host default, or pass `minimum_successes` for one delegation; `null` inherits the host default and `0` waits for every member. Reaching the threshold cancels unfinished branches, and their results are marked incomplete for the lead. `maxParallelAgents` bounds branch concurrency.

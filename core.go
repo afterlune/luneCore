@@ -20,6 +20,7 @@ import (
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
 	"github.com/afterlune/luneCore/internal/tool"
+	publicmemory "github.com/afterlune/luneCore/memory"
 	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
@@ -46,8 +47,17 @@ type Config struct {
 	// AcceptanceVerifier optionally overrides the model's acceptance judgment.
 	// Implementations should be idempotent, read-only, and honor ctx cancellation.
 	AcceptanceVerifier acceptance.Verifier
+	Memory             MemoryConfig
 	// MaxConcurrentCallbacks caps callback work across all sessions in this Core.
 	MaxConcurrentCallbacks int
+}
+
+// MemoryConfig controls automatic workspace memory. Memory is enabled by
+// default; set Disabled to turn off extraction, context injection, and search.
+// Embedder is optional and enables vector-assisted retrieval.
+type MemoryConfig struct {
+	Disabled bool
+	Embedder publicmemory.Embedder
 }
 
 type Core struct {
@@ -64,6 +74,7 @@ type Core struct {
 	executionDefaults  ExecutionOptions
 	callbackLimiter    *graph.Limiter
 	acceptanceVerifier acceptance.Verifier
+	memoryConfig       MemoryConfig
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
@@ -90,6 +101,14 @@ type Core struct {
 func New(config Config) (_ *Core, err error) {
 	if err := validateExecutionOptions(config.Execution); err != nil {
 		return nil, fmt.Errorf("invalid execution defaults: %w", err)
+	}
+	if !config.Memory.Disabled && config.Memory.Embedder != nil && strings.TrimSpace(config.Memory.Embedder.ID()) == "" {
+		return nil, errors.New("memory embedder ID must not be empty")
+	}
+	for _, registration := range config.Tools {
+		if registration.Tool != nil && registration.Tool.Definition().Name == publicmemory.SearchToolName {
+			return nil, fmt.Errorf("tool name is reserved: %s", publicmemory.SearchToolName)
+		}
 	}
 	if config.MaxConcurrentCallbacks < 0 {
 		return nil, errors.New("maximum concurrent callbacks must not be negative")
@@ -194,6 +213,7 @@ func New(config Config) (_ *Core, err error) {
 		executionDefaults:   config.Execution,
 		callbackLimiter:     callbackLimiter,
 		acceptanceVerifier:  config.AcceptanceVerifier,
+		memoryConfig:        config.Memory,
 		liveExecutions:      make(map[string]*graph.Execution[agentgraph.State]),
 		active:              TaskState{Status: TaskIdle},
 		activeTasks:         make(map[string]TaskState),
@@ -207,6 +227,22 @@ func New(config Config) (_ *Core, err error) {
 		executionRuns:       make(map[string]chan struct{}),
 		interruptRequests:   make(map[string]bool),
 		stateDirLock:        stateLock,
+	}
+	if !c.memoryConfig.Disabled {
+		registrations, err := tool.HostToolRegistrations([]publictool.Registration{{
+			Tool: memorySearchTool{core: c},
+			Metadata: publictool.Metadata{
+				Category:        publictool.Category{Name: "workspace_memory", Description: "Search saved workspace memories from earlier accepted tasks."},
+				PermissionClass: publictool.PermissionWorkspaceRead,
+				ReadOnly:        true,
+			},
+		}})
+		if err != nil {
+			return nil, fmt.Errorf("prepare workspace memory search tool: %w", err)
+		}
+		if err := registry.Register(registrations[0]); err != nil {
+			return nil, fmt.Errorf("register workspace memory search tool: %w", err)
+		}
 	}
 	attachmentLimits := c.ProjectAttachmentLimits()
 	mcpManager, err := mcp.NewManager(mcp.Options{
@@ -256,6 +292,8 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 	}
 	requester := agentruntime.NewUsageTrackingRequester(client, "lead", profileID, profile.Provider, profile.Model)
 	requester.SetContextAgentUsageObserver(c.onAgentUsageContext)
+	memoryRequester := agentruntime.NewUsageTrackingRequester(client, "memory", profileID, profile.Provider, profile.Model)
+	memoryRequester.SetContextAgentUsageObserver(c.onAgentUsageContext)
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
@@ -265,6 +303,11 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		AcceptanceEnabled:     true,
 		AcceptanceVerifier:    c.acceptanceVerifier,
 		AcceptanceObserver:    c.onAcceptanceEvent,
+		MemoryEnabled:         !c.memoryConfig.Disabled,
+		MemoryRequester:       memoryRequester,
+		MemorySummaryFor:      c.memorySummaryForTask,
+		MemoryWriter:          c.saveExtractedMemories,
+		MemoryObserver:        c.onMemoryEvent,
 		ToolVisibleForMode:    c.registry.ToolVisibleForMode,
 		CurrentPermissionMode: func() string { return string(c.PermissionMode()) },
 		StreamObserverFor: func(state agentgraph.State, event model.ModelStreamEvent) {

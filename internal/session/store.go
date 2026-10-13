@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 8
+const currentSchemaVersion = 9
 
 // Snapshot is the persisted state for one workspace session. Data is owned by
 // the caller so the session package does not depend on the TUI or model layer.
@@ -212,6 +212,75 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize graph resume input store: %w", err)
 	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS memories (
+		id TEXT PRIMARY KEY,
+		workspace TEXT NOT NULL,
+		category TEXT NOT NULL,
+		content TEXT NOT NULL,
+		importance INTEGER NOT NULL,
+		source_session_id TEXT NOT NULL DEFAULT '',
+		source_execution_id TEXT NOT NULL DEFAULT '',
+		source_ordinal INTEGER NOT NULL DEFAULT -1,
+		embedder_id TEXT NOT NULL DEFAULT '',
+		embedding BLOB,
+		created_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL
+	)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize memory store: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS memories_workspace_updated
+		ON memories(workspace, updated_at DESC)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize memory workspace index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS memories_workspace_source_session
+		ON memories(workspace, source_session_id)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize memory source index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS memories_execution_ordinal
+		ON memories(workspace, source_execution_id, source_ordinal)
+		WHERE source_execution_id <> ''`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize memory execution index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+		content, content='memories', content_rowid='rowid', tokenize='trigram'
+	)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize memory full-text index: %w", err)
+	}
+	for _, statement := range []string{
+		`CREATE TRIGGER IF NOT EXISTS memories_ai AFTER INSERT ON memories BEGIN
+			INSERT INTO memory_fts(rowid, content) VALUES (new.rowid, new.content);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS memories_ad AFTER DELETE ON memories BEGIN
+			INSERT INTO memory_fts(memory_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+		END`,
+		`CREATE TRIGGER IF NOT EXISTS memories_au AFTER UPDATE OF content ON memories BEGIN
+			INSERT INTO memory_fts(memory_fts, rowid, content) VALUES ('delete', old.rowid, old.content);
+			INSERT INTO memory_fts(rowid, content) VALUES (new.rowid, new.content);
+		END`,
+	} {
+		if _, err := tx.Exec(statement); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return nil, fmt.Errorf("initialize memory full-text trigger: %w", err)
+		}
+	}
+	if version < 9 {
+		if _, err := tx.Exec(`INSERT INTO memory_fts(memory_fts) VALUES ('rebuild')`); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return nil, fmt.Errorf("rebuild memory full-text index: %w", err)
+		}
+	}
 	if version < currentSchemaVersion {
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {
 			_ = tx.Rollback()
@@ -357,6 +426,9 @@ func (s *Store) Delete(ctx context.Context, id, workspace string) (bool, error) 
 	}
 	if deleted == 0 {
 		return false, nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE workspace = ? AND source_session_id = ?`, workspace, id); err != nil {
+		return false, fmt.Errorf("delete memories for session %q: %w", id, err)
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ?`, id); err != nil {
 		return false, fmt.Errorf("delete queued turns for session %q: %w", id, err)

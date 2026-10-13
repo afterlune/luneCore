@@ -259,6 +259,7 @@ func newProgrammaticCore(t *testing.T, provider publicmodel.Provider, hostTools 
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	client, err := New(Config{
 		Workspace: workspace, StateDir: stateDir,
+		Memory: MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
 			Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
 			Models:       map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test-model"}},
@@ -535,6 +536,7 @@ func TestCoreRoutesCommandsThroughInjectedExecutor(t *testing.T) {
 	var received publictool.CommandRequest
 	client, err := New(Config{
 		Workspace: t.TempDir(), StateDir: t.TempDir(),
+		Memory: MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
 			Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
 			Models:       map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test-model"}},
@@ -693,6 +695,7 @@ func TestProgrammaticModelConfigOverridesFileAndStateDirOwnsMCPState(t *testing.
 	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{hostTextResponse("unused")}}
 	client, err := New(Config{
 		Workspace: workspace, StateDir: stateDir,
+		Memory: MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
 			Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
 			Models:       map[string]publicmodel.ModelProfile{"host-profile": {Provider: "host", Model: "new-model"}},

@@ -11,6 +11,7 @@ import (
 
 	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/model"
+	"github.com/afterlune/luneCore/memory"
 	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
 )
@@ -24,6 +25,7 @@ const (
 	teamBranchJoinNode = "team_branch_join"
 	criteriaNode       = "prepare_acceptance_criteria"
 	acceptanceNode     = "accept_candidate"
+	memoryNode         = "extract_workspace_memory"
 	machineID          = "lune-agent-v3"
 )
 
@@ -79,6 +81,11 @@ type AgentOptions struct {
 	AcceptanceEnabled  bool
 	AcceptanceVerifier acceptance.Verifier
 	AcceptanceObserver func(State, string, string, string)
+	MemoryEnabled      bool
+	MemoryRequester    Requester
+	MemorySummaryFor   func(context.Context, State) (string, error)
+	MemoryWriter       func(context.Context, State, []memory.Candidate) ([]string, error)
+	MemoryObserver     func(State, string, []string, error)
 	BlockerObserver    func(context.Context, State, string, string)
 	// ToolVisible filters registered tools for each model request.
 	ToolVisible           func(string) bool
@@ -272,6 +279,9 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: acceptanceNode, Run: agent.requestAcceptance, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
 		return nil, fmt.Errorf("add acceptance node: %w", err)
 	}
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: memoryNode, Run: agent.extractMemory, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
+		return nil, fmt.Errorf("add memory node: %w", err)
+	}
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: teamModelNode, Run: agent.requestTeam, OnError: graph.FailInvocation, Timeout: options.Execution.ModelTimeout}); err != nil {
 		return nil, fmt.Errorf("add team model node: %w", err)
 	}
@@ -306,7 +316,7 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	if err := workflow.AddEdge(criteriaNode, toolNode); err != nil {
 		return nil, fmt.Errorf("add criteria-to-tool edge: %w", err)
 	}
-	for _, edge := range [][2]string{{criteriaNode, modelNode}, {criteriaNode, criteriaNode}, {criteriaNode, acceptanceNode}, {modelNode, acceptanceNode}, {toolNode, criteriaNode}, {toolNode, acceptanceNode}, {acceptanceNode, modelNode}, {acceptanceNode, criteriaNode}, {acceptanceNode, acceptanceNode}} {
+	for _, edge := range [][2]string{{criteriaNode, modelNode}, {criteriaNode, criteriaNode}, {criteriaNode, acceptanceNode}, {modelNode, acceptanceNode}, {toolNode, criteriaNode}, {toolNode, acceptanceNode}, {toolNode, memoryNode}, {acceptanceNode, modelNode}, {acceptanceNode, criteriaNode}, {acceptanceNode, acceptanceNode}, {acceptanceNode, memoryNode}} {
 		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
 			return nil, fmt.Errorf("add %s-to-%s edge: %w", edge[0], edge[1], err)
 		}

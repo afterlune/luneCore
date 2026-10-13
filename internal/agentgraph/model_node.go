@@ -132,6 +132,13 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 			request.Instructions += "\n\nThe acceptance reviewer requested more evidence before deciding: " + state.AcceptanceEvidenceRequest
 			state.AcceptanceEvidenceRequest = ""
 		}
+		if !state.TeamBranch && a.options.MemorySummaryFor != nil {
+			if summary, summaryErr := a.options.MemorySummaryFor(ctx, state); summaryErr != nil {
+				slog.WarnContext(ctx, "load workspace memory summary", "error_type", fmt.Sprintf("%T", summaryErr))
+			} else if summary != "" {
+				request.Instructions += "\n\n" + summary
+			}
+		}
 	}
 	if state.NoInteractiveDecisions {
 		request.Instructions += "\n\nThe host has already approved this plan. Do not ask the user questions or request new permissions. If an unapproved action becomes necessary, stop and report the blocker."

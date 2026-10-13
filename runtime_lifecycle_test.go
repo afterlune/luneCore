@@ -445,6 +445,7 @@ func TestCancelTaskCancelsPendingApproval(t *testing.T) {
 func stateLockTestConfig(workspace, stateDir string) Config {
 	return Config{
 		Workspace: workspace, StateDir: stateDir,
+		Memory: MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
 			Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
 			Models:       map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test-model"}},
