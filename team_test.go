@@ -132,7 +132,7 @@ func TestTeamBranchesRunConcurrentlyAndJoinInAssignmentOrder(t *testing.T) {
 	core.activeTasks[saved.ID] = TaskState{SessionID: saved.ID, TaskID: "team-task", ExecutionID: "team-execution", Status: TaskRunning}
 	core.team = &teamExecutor{core: core, models: catalog, tools: registry}
 	profile, _ := catalog.Profile("lead")
-	requesterClient, err := catalog.NewClient("lead", registry)
+	requesterClient, err := catalog.NewClient("lead", registry, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

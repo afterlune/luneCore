@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"sort"
 	"time"
 
@@ -198,7 +197,7 @@ func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
 			return c.sessions.PauseQueuedTurnWithReason(context.Background(), sessionID, state.QueueID, state.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload, artifacts...)
 		})
 		if persistErr != nil {
-			slog.Warn("persist paused queued task", "error", persistErr)
+			c.logger.Warn("persist paused queued task", "error", persistErr)
 		}
 		return
 	}
@@ -263,7 +262,7 @@ func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, a
 	}
 	if state.SessionID != "" {
 		if err := c.recordUsageForAgent(context.Background(), state.SessionID, value, agentID, profile, provider, modelID, contextWindow, estimatedInputTokens); err != nil {
-			slog.Warn("persist token usage", "error", err)
+			c.logger.Warn("persist token usage", "error", err)
 		}
 	}
 	c.emit(Event{Kind: EventUsage, SessionID: state.SessionID, TaskID: state.TaskID, ExecutionID: state.ExecutionID, Usage: value,

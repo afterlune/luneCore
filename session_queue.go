@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
@@ -468,10 +467,10 @@ func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, 
 		hub.notifyDurable()
 	}
 	if err := c.runtime.DeleteCompletedRunForSession(queued.SessionID); err != nil {
-		slog.Warn("delete completed graph checkpoint", "error", err)
+		c.logger.Warn("delete completed graph checkpoint", "error", err)
 	}
 	if err := c.sessions.DeleteToolInvocationsForSession(context.Background(), queued.SessionID); err != nil {
-		slog.Warn("delete completed tool invocation records", "error", err)
+		c.logger.Warn("delete completed tool invocation records", "error", err)
 	}
 	return nil
 }

@@ -55,7 +55,7 @@ func (t *teamExecutor) Requester(_ context.Context, state agentgraph.State) (age
 	if state.Provider != profile.Provider || state.Model != profile.Model || state.Protocol != provider.Protocol || state.ServerCompaction != provider.ServerCompaction || state.SupportsInputAudio != profile.SupportsInputAudio {
 		return nil, errors.New("team model configuration changed; the paused task remains pinned to its original profile")
 	}
-	client, err := t.models.NewClient(state.ModelProfile, t.tools)
+	client, err := t.models.NewClient(state.ModelProfile, t.tools, t.core.logger)
 	if err != nil {
 		return nil, err
 	}

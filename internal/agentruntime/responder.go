@@ -3,6 +3,7 @@ package agentruntime
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
@@ -16,6 +17,7 @@ const (
 )
 
 type Responder struct {
+	logger                *slog.Logger
 	agent                 *agentgraph.Agent
 	store                 graph.Store[agentgraph.State]
 	limiter               *graph.Limiter
@@ -123,8 +125,11 @@ type PendingQuestion struct {
 	Options      []string
 }
 
-func NewResponder(store graph.Store[agentgraph.State], limiter *graph.Limiter) *Responder {
-	return &Responder{store: store, limiter: limiter}
+func NewResponder(store graph.Store[agentgraph.State], limiter *graph.Limiter, logger *slog.Logger) *Responder {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Responder{store: store, limiter: limiter, logger: logger}
 }
 
 func (r *Responder) SetExecution(execution *graph.Execution[agentgraph.State]) {

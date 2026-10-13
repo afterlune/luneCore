@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -165,7 +166,7 @@ func (c *ProviderCatalog) Profiles() map[string]ModelProfile {
 	return profiles
 }
 
-func (c *ProviderCatalog) NewClient(profileID string, tools ToolExecutor) (*Client, error) {
+func (c *ProviderCatalog) NewClient(profileID string, tools ToolExecutor, logger *slog.Logger) (*Client, error) {
 	if c == nil {
 		return nil, errors.New("model provider catalog is nil")
 	}
@@ -180,7 +181,10 @@ func (c *ProviderCatalog) NewClient(profileID string, tools ToolExecutor) (*Clie
 	if !ok {
 		return nil, fmt.Errorf("provider %q is unavailable for model profile %q", profile.Provider, profileID)
 	}
-	return &Client{provider: provider, profileID: profileID, profile: profile, tools: tools}, nil
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return &Client{provider: provider, profileID: profileID, profile: profile, tools: tools, logger: logger}, nil
 }
 
 func (c *Client) ProfileID() string {

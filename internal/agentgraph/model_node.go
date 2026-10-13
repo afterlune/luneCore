@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 
@@ -145,7 +144,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		}
 		if !state.TeamBranch && a.options.MemorySummaryFor != nil {
 			if summary, summaryErr := a.options.MemorySummaryFor(ctx, state); summaryErr != nil {
-				slog.WarnContext(ctx, "load workspace memory summary", "error_type", fmt.Sprintf("%T", summaryErr))
+				a.options.Logger.WarnContext(ctx, "load workspace memory summary", "error_type", fmt.Sprintf("%T", summaryErr))
 			} else if summary != "" {
 				request.Instructions += "\n\n" + summary
 			}
@@ -212,7 +211,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 			}
 		}
 	}
-	slog.InfoContext(ctx, "agent model request started",
+	a.options.Logger.InfoContext(ctx, "agent model request started",
 		"agent_id", state.AgentID,
 		"provider", state.Provider,
 		"model", request.Model,

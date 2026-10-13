@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
@@ -49,7 +48,7 @@ func (c *Core) drainQueue(sessionID string) {
 	}()
 	ctx := context.Background()
 	if err := c.reconcileQueuedTurns(ctx, sessionID); err != nil {
-		slog.Warn("reconcile queued turns before draining", "error", err)
+		c.logger.Warn("reconcile queued turns before draining", "error", err)
 		return
 	}
 	for {
@@ -64,7 +63,7 @@ func (c *Core) drainQueue(sessionID string) {
 		}
 		pending, found, err := c.pendingState(ctx, sessionID)
 		if err != nil {
-			slog.Warn("inspect checkpoint before queued turn", "error", err)
+			c.logger.Warn("inspect checkpoint before queued turn", "error", err)
 			return
 		}
 		if found {
@@ -79,7 +78,7 @@ func (c *Core) drainQueue(sessionID string) {
 		}
 		queued, claimed, err := c.sessions.ClaimNextQueuedTurn(ctx, sessionID)
 		if err != nil {
-			slog.Warn("claim queued turn", "error", err)
+			c.logger.Warn("claim queued turn", "error", err)
 			return
 		}
 		if !claimed {
@@ -90,7 +89,7 @@ func (c *Core) drainQueue(sessionID string) {
 		c.mu.RUnlock()
 		if closing {
 			if err := c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnQueued); err != nil {
-				slog.Warn("return claimed turn to queue during close", "error", err)
+				c.logger.Warn("return claimed turn to queue during close", "error", err)
 			}
 			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: errors.New("core is closing")})
 			return
@@ -123,7 +122,7 @@ func (c *Core) drainQueue(sessionID string) {
 		if closing {
 			if _, exists, lookupErr := c.sessions.QueuedTurnByExecutionID(ctx, sessionID, queued.ExecutionID); lookupErr == nil && exists {
 				if err := c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnQueued); err != nil {
-					slog.Warn("preserve queued turn during close", "error", err)
+					c.logger.Warn("preserve queued turn during close", "error", err)
 				}
 			}
 			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: errors.New("core is closing")})
@@ -142,7 +141,7 @@ func (c *Core) drainQueue(sessionID string) {
 						}
 						return c.sessions.PauseQueuedTurnWithReason(ctx, sessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload, artifacts...)
 					}); persistErr != nil {
-						slog.Warn("restore paused queued turn", "error", persistErr)
+						c.logger.Warn("restore paused queued turn", "error", persistErr)
 					}
 				}
 				if current.Status == session.QueuedTurnQueued {
@@ -154,19 +153,19 @@ func (c *Core) drainQueue(sessionID string) {
 					// checkpoint has committed, then continue this drain in place.
 					inputs, inputErr := c.graphResumeInputs(ctx, sessionID, c.runtime.CheckpointID(sessionID))
 					if inputErr != nil {
-						slog.Warn("inspect answered graph wait", "error", inputErr)
+						c.logger.Warn("inspect answered graph wait", "error", inputErr)
 					} else if len(inputs) > 0 {
 						if _, _, recoverErr := c.recoverSession(ctx, sessionID, false); recoverErr == nil {
 							resumeQueued = true
 						} else if !errors.Is(recoverErr, ErrSessionBusy) {
-							slog.Warn("queue answer received while graph was pausing", "error", recoverErr)
+							c.logger.Warn("queue answer received while graph was pausing", "error", recoverErr)
 						}
 					}
 				}
 			} else {
 				completed, finalResponse, finalizeErr := c.completeQueuedTurnFromCheckpoint(ctx, current)
 				if finalizeErr != nil {
-					slog.Warn("finalize completed queued turn", "error", finalizeErr)
+					c.logger.Warn("finalize completed queued turn", "error", finalizeErr)
 					c.resolveTurnWaiter(queued.ExecutionID, turnResult{response: response, err: finalizeErr})
 					return
 				}
@@ -192,7 +191,7 @@ func (c *Core) drainQueue(sessionID string) {
 func (c *Core) failQueuedTurn(ctx context.Context, queued session.QueuedTurn, err error) {
 	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskFailed, Err: errorString(err)}
 	if _, persistErr := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(TaskFailed), nil, nil, nil, "", mustMarshalEvent(event)); persistErr != nil {
-		slog.Warn("finish rejected queued turn", "error", persistErr)
+		c.logger.Warn("finish rejected queued turn", "error", persistErr)
 	} else if hub := c.eventHubs[queued.SessionID]; hub != nil {
 		hub.notifyDurable()
 	}

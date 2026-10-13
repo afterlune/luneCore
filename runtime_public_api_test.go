@@ -1,8 +1,11 @@
 package core_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -52,6 +55,67 @@ func (p *personalInstructionsProvider) StreamResponse(ctx context.Context, reque
 		}
 	}
 	return response, nil
+}
+
+type loggingProvider struct {
+	toolCallSent bool
+}
+
+func (*loggingProvider) Name() string { return "logging" }
+
+func (p *loggingProvider) CreateResponse(_ context.Context, request model.ModelRequest, _ model.ModelProfile) (*model.ModelResponse, error) {
+	names := make(map[string]bool, len(request.Tools))
+	for _, definition := range request.Tools {
+		if function, ok := definition.(model.FunctionTool); ok {
+			names[function.Name] = true
+		}
+	}
+	switch {
+	case names["prepare_task_criteria"]:
+		return externalResponseForRequest(request), nil
+	case names["submit_acceptance"]:
+		return externalResponseForRequest(request), nil
+	case names["logging_tool"]:
+		if !p.toolCallSent {
+			p.toolCallSent = true
+			return &model.ModelResponse{Status: "completed", Output: []model.ResponseOutputItem{
+				model.OutputFunctionCall{CallID: "logging-tool-call", Name: "logging_tool", Arguments: `{"value":"PRIVATE-TOOL-ARGUMENT"}`},
+			}}, nil
+		}
+		return externalResponse(), nil
+	case names["select_tool_category"]:
+		return &model.ModelResponse{Status: "completed", Output: []model.ResponseOutputItem{
+			model.OutputFunctionCall{CallID: "logging-category-call", Name: "select_tool_category", Arguments: `{"category":"logging"}`},
+		}}, nil
+	default:
+		return externalResponse(), nil
+	}
+}
+
+func (p *loggingProvider) StreamResponse(ctx context.Context, request model.ModelRequest, profile model.ModelProfile, emit func(model.ModelStreamEvent) error) (*model.ModelResponse, error) {
+	response, err := p.CreateResponse(ctx, request, profile)
+	if err != nil {
+		return nil, err
+	}
+	if emit != nil {
+		if err := emit(model.ModelStreamEvent{Type: model.ModelStreamCompleted, Response: response}); err != nil {
+			return nil, err
+		}
+	}
+	return response, nil
+}
+
+type loggingTool struct{}
+
+func (loggingTool) Definition() tool.Definition {
+	return model.FunctionTool{
+		Name:       "logging_tool",
+		Parameters: json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}`),
+	}
+}
+
+func (loggingTool) Run(context.Context, json.RawMessage) tool.Result {
+	return tool.Result{Output: "PRIVATE-TOOL-RESULT"}
 }
 
 type externalTool struct{}
@@ -214,4 +278,131 @@ func TestHostPersonalInstructionsReachOnlyNormalTaskRequests(t *testing.T) {
 	if !strings.Contains(provider.requests[1].Instructions, "Prefers concise answers.") {
 		t.Fatal("normal task request is missing host personal instructions")
 	}
+}
+
+func TestCoreLoggerReceivesRuntimeLogsWithoutPayloads(t *testing.T) {
+	globalBuffer := &bytes.Buffer{}
+	previousDefault := slog.Default()
+	globalLogger := slog.New(slog.NewTextHandler(globalBuffer, nil))
+	slog.SetDefault(globalLogger)
+	t.Cleanup(func() { slog.SetDefault(previousDefault) })
+
+	logBuffer := &bytes.Buffer{}
+	logger := slog.New(slog.NewTextHandler(logBuffer, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	client, err := core.New(core.Config{
+		Workspace: t.TempDir(), StateDir: t.TempDir(), Logger: logger,
+		Memory: core.MemoryConfig{Disabled: true},
+		ModelConfig: &model.Config{
+			Providers:    map[string]model.ProviderConfig{"logging": {Protocol: model.ProtocolResponses}},
+			Models:       map[string]model.ModelProfile{"main": {Provider: "logging", Model: "test-model"}},
+			DefaultModel: "main",
+		},
+		ModelProviders: map[string]model.Provider{"logging": &loggingProvider{}},
+		Tools: []tool.Registration{{Tool: loggingTool{}, Metadata: tool.Metadata{
+			Category:        tool.Category{Name: "logging", Description: "Logging test tool."},
+			PermissionClass: tool.PermissionWorkspaceRead, ReadOnly: true,
+		}}},
+	})
+	if err != nil {
+		t.Fatalf("core.New: %v", err)
+	}
+	defer client.Close()
+	if slog.Default() != globalLogger {
+		t.Fatal("core.New changed the process default logger")
+	}
+	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := core.NewTaskInput("PRIVATE-PROMPT-CONTENT hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.RunTask(context.Background(), core.TaskRequest{SessionID: session.ID, Input: input})
+	if err != nil || result.Status != core.TaskCompleted {
+		t.Fatalf("RunTask result=%#v error=%v logs:\n%s", result, err, logBuffer.String())
+	}
+	logs := logBuffer.String()
+	for _, expected := range []string{"graph execution", "agent model request started", "tool execution started", "tool execution finished"} {
+		if !strings.Contains(logs, expected) {
+			t.Errorf("configured logger is missing %q record; logs:\n%s", expected, logs)
+		}
+	}
+	for _, private := range []string{"PRIVATE-PROMPT-CONTENT", "PRIVATE-TOOL-ARGUMENT", "PRIVATE-TOOL-RESULT"} {
+		if strings.Contains(logs, private) {
+			t.Errorf("configured logs contain private payload %q", private)
+		}
+	}
+	if globalBuffer.Len() != 0 {
+		t.Fatalf("Core runtime logs escaped to slog.Default(): %s", globalBuffer.String())
+	}
+}
+
+func TestCoreCapturesDefaultLoggerAtCreation(t *testing.T) {
+	previousDefault := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(previousDefault) })
+	firstBuffer, secondBuffer := &bytes.Buffer{}, &bytes.Buffer{}
+	firstLogger := slog.New(slog.NewTextHandler(firstBuffer, nil)).With("owner", "first")
+	secondLogger := slog.New(slog.NewTextHandler(secondBuffer, nil)).With("owner", "second")
+	slog.SetDefault(firstLogger)
+	first, err := core.New(defaultLoggerTestConfig(t))
+	if err != nil {
+		t.Fatalf("create first Core: %v", err)
+	}
+	defer first.Close()
+	slog.SetDefault(secondLogger)
+	second, err := core.New(defaultLoggerTestConfig(t))
+	if err != nil {
+		t.Fatalf("create second Core: %v", err)
+	}
+	defer second.Close()
+	if slog.Default() != secondLogger {
+		t.Fatal("Core creation changed slog.Default()")
+	}
+	if err := runDefaultLoggerTestTask(first); err != nil {
+		t.Fatalf("run first Core task: %v", err)
+	}
+	if firstBuffer.Len() == 0 || secondBuffer.Len() != 0 {
+		t.Fatalf("first Core logs escaped its captured logger: first=%q second=%q", firstBuffer.String(), secondBuffer.String())
+	}
+	if err := runDefaultLoggerTestTask(second); err != nil {
+		t.Fatalf("run second Core task: %v", err)
+	}
+	if secondBuffer.Len() == 0 {
+		t.Fatal("second Core did not use the default logger captured at its creation")
+	}
+}
+
+func defaultLoggerTestConfig(t *testing.T) core.Config {
+	t.Helper()
+	provider := &personalInstructionsProvider{}
+	return core.Config{
+		Workspace: t.TempDir(), StateDir: t.TempDir(),
+		Memory: core.MemoryConfig{Disabled: true},
+		ModelConfig: &model.Config{
+			Providers:    map[string]model.ProviderConfig{"personal": {Protocol: model.ProtocolResponses}},
+			Models:       map[string]model.ModelProfile{"main": {Provider: "personal", Model: "test-model"}},
+			DefaultModel: "main",
+		},
+		ModelProviders: map[string]model.Provider{"personal": provider},
+	}
+}
+
+func runDefaultLoggerTestTask(client *core.Core) error {
+	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		return err
+	}
+	input, err := core.NewTaskInput("hello")
+	if err != nil {
+		return err
+	}
+	result, err := client.RunTask(context.Background(), core.TaskRequest{SessionID: session.ID, Input: input})
+	if err != nil {
+		return err
+	}
+	if result.Status != core.TaskCompleted {
+		return fmt.Errorf("task status = %q, want completed", result.Status)
+	}
+	return nil
 }

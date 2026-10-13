@@ -32,8 +32,11 @@ import (
 // entries from config.json; omitted model settings are loaded from that file.
 // ModelProviders replace protocol adapters with host implementations.
 type Config struct {
-	Workspace       string
-	StateDir        string
+	Workspace string
+	StateDir  string
+	// Logger receives structured logs from this Core and its internal components.
+	// When nil, New captures slog.Default() for the Core's lifetime.
+	Logger          *slog.Logger
 	ModelConfig     *publicmodel.Config
 	ModelProviders  map[string]publicmodel.Provider
 	Tools           []publictool.Registration
@@ -64,6 +67,7 @@ type MemoryConfig struct {
 }
 
 type Core struct {
+	logger               *slog.Logger
 	workspace            string
 	registry             *tool.Registry
 	models               *model.ProviderCatalog
@@ -103,6 +107,10 @@ type Core struct {
 }
 
 func New(config Config) (_ *Core, err error) {
+	logger := config.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	if err := validateExecutionOptions(config.Execution); err != nil {
 		return nil, fmt.Errorf("invalid execution defaults: %w", err)
 	}
@@ -168,7 +176,7 @@ func New(config Config) (_ *Core, err error) {
 	}
 	registry, err := tool.NewDefaultRegistry(workspace, tool.RegistryOptions{
 		Tools: hostTools, CommandExecutor: config.CommandExecutor, AllowLocalCommands: config.AllowLocalCommand,
-		SandboxHelperPath: config.SandboxHelperPath,
+		SandboxHelperPath: config.SandboxHelperPath, Logger: logger,
 	})
 	if err != nil {
 		return nil, err
@@ -204,6 +212,7 @@ func New(config Config) (_ *Core, err error) {
 		}
 	}()
 	c := &Core{
+		logger:           logger,
 		workspace:        workspace,
 		registry:         registry,
 		models:           models,
@@ -253,6 +262,7 @@ func New(config Config) (_ *Core, err error) {
 	mcpManager, err := mcp.NewManager(mcp.Options{
 		Workspace: workspace, StateDir: stateDir, Servers: projectConfig.MCPServers, Registry: registry,
 		Limits:             mcp.Limits{MaxBinaryBlocks: attachmentLimits.MaxFiles, MaxFileBytes: attachmentLimits.MaxFileBytes, MaxTotalBytes: attachmentLimits.MaxTotalBytes},
+		Logger:             logger,
 		RequestInteraction: c.requestUserInteraction,
 	})
 	if err != nil {
@@ -266,11 +276,11 @@ func New(config Config) (_ *Core, err error) {
 		}
 	}()
 	for _, restoreErr := range mcpManager.RestoreEnabled() {
-		slog.Warn("could not restore enabled MCP server", "error_type", fmt.Sprintf("%T", restoreErr))
+		c.logger.Warn("could not restore enabled MCP server", "error_type", fmt.Sprintf("%T", restoreErr))
 	}
 	team := &teamExecutor{core: c, models: models, tools: registry}
 	c.team = team
-	c.runtime = agentruntime.NewResponder(checkpoints, callbackLimiter)
+	c.runtime = agentruntime.NewResponder(checkpoints, callbackLimiter, c.logger)
 	registry.SetToolEventObserver(c.onToolEvent)
 	registry.SetToolCallController(c.executeToolCall)
 	registry.SetPermissionApprovalHandler(c.requestApproval)
@@ -291,7 +301,7 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 	if !ok {
 		return nil, nil, model.ModelProfile{}, fmt.Errorf("unknown provider %q for model profile %q", profile.Provider, profileID)
 	}
-	client, err := c.models.NewClient(profileID, c.registry)
+	client, err := c.models.NewClient(profileID, c.registry, c.logger)
 	if err != nil {
 		return nil, nil, model.ModelProfile{}, err
 	}
@@ -301,6 +311,7 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 	memoryRequester.SetContextAgentUsageObserver(c.onAgentUsageContext)
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
+		Logger:   c.logger,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		SupportsInputAudio: profile.SupportsInputAudio, Execution: agentExecutionOptions(taskState.Execution),
 		Team:                       c.team,
@@ -424,7 +435,7 @@ func (c *Core) configureRuntime(profileID, reasoningEffort string, taskState Tas
 	if err != nil {
 		return nil, model.ModelProfile{}, err
 	}
-	runtime := agentruntime.NewResponder(c.checkpoints, c.callbackLimiter)
+	runtime := agentruntime.NewResponder(c.checkpoints, c.callbackLimiter, c.logger)
 	runtime.SetRunModel(agent, requester, profile.Model, reasoningEffort)
 	return runtime, profile, nil
 }

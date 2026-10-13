@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -69,6 +70,7 @@ type TeamExecutor interface {
 type AgentOptions struct {
 	ID                         string
 	Name                       string
+	Logger                     *slog.Logger
 	Profile                    string
 	Provider                   string
 	Protocol                   string
@@ -248,6 +250,9 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	}
 	if tools == nil {
 		return nil, errors.New("tool executor is required")
+	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
 	}
 	if options.ID == "" {
 		options.ID = "lead"

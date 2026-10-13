@@ -18,6 +18,7 @@ import (
 // Registry stores tools by their function name.
 type Registry struct {
 	mu             sync.RWMutex
+	logger         *slog.Logger
 	tools          map[string]Tool
 	toolMetadata   map[string]model.ToolMetadata
 	toolOrder      []string
@@ -73,10 +74,19 @@ type RegistryOptions struct {
 	CommandExecutor    publictool.CommandExecutor
 	SandboxHelperPath  string
 	AllowLocalCommands bool
+	Logger             *slog.Logger
 }
 
 func NewRegistry(registrations ...ToolRegistration) (*Registry, error) {
+	return newRegistry(nil, registrations...)
+}
+
+func newRegistry(logger *slog.Logger, registrations ...ToolRegistration) (*Registry, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	registry := &Registry{
+		logger:       logger,
 		tools:        make(map[string]Tool, len(registrations)),
 		toolMetadata: make(map[string]model.ToolMetadata, len(registrations)),
 		permissions:  newPermissionSettings(PermissionModeReadOnly),
@@ -445,7 +455,7 @@ func (r *Registry) ExecuteCallRecoverable(ctx context.Context, call model.Output
 		return toolCallOutput(call.CallID, Result{Err: permissionErr}), nil
 	}
 	execute := func() model.InputFunctionCallOutput {
-		slog.Info("tool execution started", "tool", call.Name, "call_id", call.CallID)
+		r.logger.Info("tool execution started", "tool", call.Name, "call_id", call.CallID)
 		r.observeToolEvent(ToolEvent{CallID: call.CallID, InvocationID: identity.InvocationID, SessionID: identity.SessionID, TaskID: identity.TaskID, RunID: identity.RunID, ExecutionID: identity.ExecutionID, AgentID: identity.AgentID, Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Started: true})
 		result := registeredTool.Run(ctx, arguments)
 		duration := time.Since(started)
@@ -455,9 +465,9 @@ func (r *Registry) ExecuteCallRecoverable(ctx context.Context, call model.Output
 			"canceled", errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
 		}
 		if result.Err != nil {
-			slog.Warn("tool execution finished", attributes...)
+			r.logger.Warn("tool execution finished", attributes...)
 		} else {
-			slog.Info("tool execution finished", attributes...)
+			r.logger.Info("tool execution finished", attributes...)
 		}
 		r.observeToolEvent(ToolEvent{
 			CallID: call.CallID, InvocationID: identity.InvocationID, SessionID: identity.SessionID, TaskID: identity.TaskID, RunID: identity.RunID, ExecutionID: identity.ExecutionID, AgentID: identity.AgentID,
@@ -508,7 +518,7 @@ func (r *Registry) observeToolEvent(event ToolEvent) {
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			slog.Warn("tool event observer panicked", "panic_type", fmt.Sprintf("%T", recovered))
+			r.logger.Warn("tool event observer panicked", "panic_type", fmt.Sprintf("%T", recovered))
 		}
 	}()
 	observer(event)
@@ -534,7 +544,7 @@ func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry
 	workspaceWrite := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceWrite}
 	command := model.ToolMetadata{Category: commandCategory, PermissionClass: model.ToolPermissionCommand}
 	network := model.ToolMetadata{Category: webCategory, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true}
-	registry, err := NewRegistry(
+	registry, err := newRegistry(registryOptions.Logger,
 		ToolRegistration{Tool: ListDirTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
 		ToolRegistration{Tool: GlobTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
 		ToolRegistration{Tool: GrepTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},

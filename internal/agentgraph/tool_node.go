@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"sort"
 	"strings"
 
@@ -204,19 +203,19 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		category, err := model.ParseCategorySelection(call.Arguments, categories)
 		text := "Category selected. Its tools will be available in the next request."
 		if err != nil {
-			slog.WarnContext(ctx, "tool category selection rejected",
+			a.options.Logger.WarnContext(ctx, "tool category selection rejected",
 				"selected_category", state.SelectedCategory,
 				"error_type", fmt.Sprintf("%T", err),
 			)
 			text = "Category was not changed: " + err.Error()
 		} else {
 			state.SelectedCategory = category
-			slog.InfoContext(ctx, "tool category selected", "selected_category", category)
+			a.options.Logger.InfoContext(ctx, "tool category selected", "selected_category", category)
 		}
 		output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(text)}
 	case !contains(state.VisibleTools, call.Name):
 		expectedCategory := a.categoryForTool(call.Name)
-		slog.WarnContext(ctx, "tool call is not in the visible tool set",
+		a.options.Logger.WarnContext(ctx, "tool call is not in the visible tool set",
 			"tool", call.Name,
 			"selected_category", state.SelectedCategory,
 			"visible_tools", state.VisibleTools,

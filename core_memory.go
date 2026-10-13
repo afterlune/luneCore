@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -60,7 +59,7 @@ func (c *Core) AddMemory(ctx context.Context, input memory.Input) (memory.Item, 
 	item.CreatedAt, item.UpdatedAt = time.Now(), time.Now()
 	embedderID, vectors, embedErr := c.embedTexts(ctx, []string{item.Content})
 	if embedErr != nil {
-		slog.Warn("memory embedding unavailable; saving for full-text search", "error_type", fmt.Sprintf("%T", embedErr))
+		c.logger.Warn("memory embedding unavailable; saving for full-text search", "error_type", fmt.Sprintf("%T", embedErr))
 		embedderID, vectors = "", nil
 	}
 	var vector []float32
@@ -90,7 +89,7 @@ func (c *Core) UpdateMemory(ctx context.Context, id string, input memory.Input) 
 	item.UpdatedAt = time.Now()
 	embedderID, vectors, embedErr := c.embedTexts(ctx, []string{item.Content})
 	if embedErr != nil {
-		slog.Warn("memory embedding unavailable; updating full-text memory", "error_type", fmt.Sprintf("%T", embedErr))
+		c.logger.Warn("memory embedding unavailable; updating full-text memory", "error_type", fmt.Sprintf("%T", embedErr))
 		embedderID, vectors = "", nil
 	}
 	var vector []float32
@@ -193,7 +192,7 @@ func (c *Core) searchMemories(ctx context.Context, query string, limit int) ([]m
 	}
 	_, vectors, embedErr := c.embedTexts(ctx, []string{query})
 	if embedErr != nil {
-		slog.Warn("memory vector search unavailable; using full-text results", "error_type", fmt.Sprintf("%T", embedErr))
+		c.logger.Warn("memory vector search unavailable; using full-text results", "error_type", fmt.Sprintf("%T", embedErr))
 		if len(lexical) > limit {
 			lexical = lexical[:limit]
 		}
@@ -432,7 +431,7 @@ func (c *Core) saveExtractedMemories(ctx context.Context, state agentgraph.State
 	}
 	embedderID, vectors, embedErr := c.embedTexts(ctx, texts)
 	if embedErr != nil {
-		slog.Warn("memory embedding unavailable; saved memories remain searchable by text", "error_type", fmt.Sprintf("%T", embedErr))
+		c.logger.Warn("memory embedding unavailable; saved memories remain searchable by text", "error_type", fmt.Sprintf("%T", embedErr))
 		embedderID, vectors = "", nil
 	}
 	if err := c.sessions.ReplaceExtractedMemories(ctx, c.workspace, sessionID, state.ExecutionID, items, embedderID, vectors); err != nil {

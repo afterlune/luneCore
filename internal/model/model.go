@@ -91,6 +91,7 @@ type Client struct {
 	profileID string
 	profile   ModelProfile
 	tools     ToolExecutor
+	logger    *slog.Logger
 	history   []InputItem
 }
 
@@ -195,7 +196,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 	for {
 		requestNumber++
 		requestStarted := time.Now()
-		slog.Info("model request started",
+		c.logger.Info("model request started",
 			"provider", providerName,
 			"model", modelName,
 			"request", requestNumber,
@@ -221,7 +222,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 		}
 		response, err := c.CreateResponse(ctx, request)
 		if err != nil {
-			slog.Warn("model request failed",
+			c.logger.Warn("model request failed",
 				"provider", providerName,
 				"model", modelName,
 				"request", requestNumber,
@@ -236,7 +237,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 			return nil, err
 		}
 		calls := functionCalls(response.Output)
-		slog.Info("model response received",
+		c.logger.Info("model response received",
 			"provider", providerName,
 			"model", modelName,
 			"request", requestNumber,
@@ -245,7 +246,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 			"tool_calls", len(calls),
 		)
 		if response.Status == "failed" {
-			slog.Warn("model response failed", "provider", providerName, "model", modelName, "request", requestNumber)
+			c.logger.Warn("model response failed", "provider", providerName, "model", modelName, "request", requestNumber)
 			if response.Error != nil {
 				return response, fmt.Errorf("%s response failed (%s): %s", providerName, response.Error.Code, response.Error.Message)
 			}
@@ -268,7 +269,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 			return response, err
 		}
 		if options.MaxToolRounds > 0 && toolRounds >= options.MaxToolRounds {
-			slog.Warn("tool round limit reached",
+			c.logger.Warn("tool round limit reached",
 				"limit", options.MaxToolRounds,
 				"tool_rounds_completed", toolRounds,
 				"skipped_tool_calls", len(calls),
@@ -281,7 +282,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 		visibleToolNames := responseToolNames(visibleTools)
 		for i, call := range calls {
 			if ctx.Err() != nil {
-				slog.Warn("tool batch interrupted",
+				c.logger.Warn("tool batch interrupted",
 					"tool_round", toolRounds+1,
 					"completed_tool_calls", i,
 					"skipped_tool_calls", len(calls)-i,
@@ -305,7 +306,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 				})
 			} else if _, visible := visibleToolNames[call.Name]; !visible {
 				expectedCategory := categoryForTool(categorized, categories, call.Name)
-				slog.Warn("tool call is not in the visible tool set",
+				c.logger.Warn("tool call is not in the visible tool set",
 					"tool", call.Name,
 					"selected_category", selectedCategory,
 					"visible_tools", responseToolNameList(visibleTools),
@@ -319,7 +320,7 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 				history = append(history, c.tools.ExecuteCall(ctx, call))
 			}
 			if ctx.Err() != nil {
-				slog.Warn("tool batch interrupted",
+				c.logger.Warn("tool batch interrupted",
 					"tool_round", toolRounds+1,
 					"completed_tool_calls", i+1,
 					"skipped_tool_calls", len(calls)-i-1,
@@ -458,6 +459,7 @@ func newClient(apiKey, endpoint string, httpClient *http.Client, tools ToolExecu
 		profileID: DeepSeekFlashModel,
 		profile:   ModelProfile{Provider: ProviderDeepSeek, Model: DeepSeekFlashModel},
 		tools:     tools,
+		logger:    slog.Default(),
 	}
 }
 

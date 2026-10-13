@@ -37,6 +37,7 @@ type InteractionHandler func(context.Context, string, string, json.RawMessage) (
 type Options struct {
 	Workspace          string
 	StateDir           string
+	Logger             *slog.Logger
 	Servers            map[string]projectconfig.MCPServerConfig
 	Registry           *tool.Registry
 	Limits             Limits
@@ -57,6 +58,7 @@ type ServerStatus struct {
 type Manager struct {
 	mu        sync.Mutex
 	connectMu sync.Mutex
+	logger    *slog.Logger
 	workspace string
 	stateFile string
 	servers   map[string]projectconfig.MCPServerConfig
@@ -96,6 +98,9 @@ func NewManager(options Options) (*Manager, error) {
 	if options.Workspace == "" || options.StateDir == "" {
 		return nil, errors.New("MCP manager requires workspace and state directory")
 	}
+	if options.Logger == nil {
+		options.Logger = slog.Default()
+	}
 	if options.Limits.MaxBinaryBlocks <= 0 {
 		options.Limits.MaxBinaryBlocks = 5
 	}
@@ -106,6 +111,7 @@ func NewManager(options Options) (*Manager, error) {
 		options.Limits.MaxTotalBytes = 20 << 20
 	}
 	manager := &Manager{
+		logger:    options.Logger,
 		workspace: options.Workspace, stateFile: filepath.Join(options.StateDir, "mcp-enabled.json"),
 		servers: options.Servers, registry: options.Registry, limits: options.Limits,
 		interact: options.RequestInteraction, enabled: make(map[string]bool),
@@ -405,7 +411,7 @@ func (manager *Manager) readEnabled() error {
 		if _, exists := manager.servers[name]; exists {
 			manager.enabled[name] = true
 		} else {
-			slog.Warn("ignoring enabled MCP server missing from project config", "server", name)
+			manager.logger.Warn("ignoring enabled MCP server missing from project config", "server", name)
 		}
 	}
 	return nil
@@ -471,13 +477,13 @@ func (manager *Manager) listTools(ctx context.Context, serverName string, instan
 		}
 		for _, definition := range response.Tools {
 			if strings.TrimSpace(definition.Name) == "" || seen[definition.Name] {
-				slog.Warn("ignoring MCP tool with an empty or duplicate name", "server", serverName)
+				manager.logger.Warn("ignoring MCP tool with an empty or duplicate name", "server", serverName)
 				continue
 			}
 			seen[definition.Name] = true
 			schema := definition.InputSchema
 			if len(schema) == 0 || !json.Valid(schema) || !isObjectSchema(schema) {
-				slog.Warn("ignoring MCP tool with an invalid input schema", "server", serverName, "tool", definition.Name)
+				manager.logger.Warn("ignoring MCP tool with an invalid input schema", "server", serverName, "tool", definition.Name)
 				continue
 			}
 			var bindings []headerBinding
@@ -485,7 +491,7 @@ func (manager *Manager) listTools(ctx context.Context, serverName string, instan
 				var valid bool
 				bindings, valid = parseHeaderBindings(schema)
 				if !valid {
-					slog.Warn("ignoring MCP HTTP tool with invalid x-mcp-header schema annotation", "server", serverName, "tool", definition.Name)
+					manager.logger.Warn("ignoring MCP HTTP tool with invalid x-mcp-header schema annotation", "server", serverName, "tool", definition.Name)
 					continue
 				}
 			}

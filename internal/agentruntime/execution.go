@@ -59,13 +59,13 @@ func (r *Responder) options() graph.Options {
 		maxConcurrency = r.agent.MaxConcurrency()
 	}
 	return graph.Options{
-		Observer: graph.ObserverFunc(logGraphEvent), Limiter: r.limiter,
+		Observer: graph.ObserverFunc(r.logGraphEvent), Limiter: r.limiter,
 		MaxSteps: r.taskOptions.Execution.MaxSteps, MaxInvocations: r.taskOptions.Execution.MaxInvocations,
 		MaxConcurrency: maxConcurrency,
 	}
 }
 
-func logGraphEvent(ctx context.Context, event graph.Event) {
+func (r *Responder) logGraphEvent(ctx context.Context, event graph.Event) {
 	level := slog.LevelDebug
 	if event.Operation == graph.OperationStart || event.Operation == graph.OperationResume || event.Operation == graph.OperationAdvance || event.Operation == graph.OperationRecover {
 		level = slog.LevelInfo
@@ -86,7 +86,7 @@ func logGraphEvent(ctx context.Context, event graph.Event) {
 	if event.Err != nil {
 		attrs = append(attrs, slog.String("error_type", fmt.Sprintf("%T", event.Err)))
 	}
-	slog.LogAttrs(ctx, level, "graph execution", attrs...)
+	r.logger.LogAttrs(ctx, level, "graph execution", attrs...)
 }
 
 func (r *Responder) finish(result graph.Result[agentgraph.State], runErr error) (*model.Response, error) {
@@ -166,7 +166,7 @@ func (r *Responder) finish(result graph.Result[agentgraph.State], runErr error) 
 		if result.BudgetReason != "" {
 			attrs = append(attrs, "budget_reason", string(result.BudgetReason))
 		}
-		slog.Warn("agent task remains resumable", attrs...)
+		r.logger.Warn("agent task remains resumable", attrs...)
 		if result.Status == graph.StatusWaiting || result.Status == graph.StatusBudget {
 			if result.Status == graph.StatusBudget {
 				return nil, &TaskPausedError{BudgetReason: BudgetReason(result.BudgetReason)}

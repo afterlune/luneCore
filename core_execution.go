@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strings"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
@@ -322,7 +321,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 	c.finishTaskState(sessionID, status, taskErr)
 	if queueID == "" && status != TaskPaused {
 		if cleanupErr := c.sessions.DeleteToolInvocationsForSession(context.Background(), sessionID); cleanupErr != nil {
-			slog.Warn("delete completed tool invocation records", "error", cleanupErr)
+			c.logger.Warn("delete completed tool invocation records", "error", cleanupErr)
 		}
 	}
 	if response == nil {

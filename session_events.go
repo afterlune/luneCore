@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"log/slog"
 	"sync"
 	"time"
 )
@@ -100,11 +99,11 @@ func (c *Core) emit(event Event) {
 	}
 	encoded, err := json.Marshal(safeEventProjection(event))
 	if err != nil {
-		slog.Warn("encode runtime event", "error", err)
+		c.logger.Warn("encode runtime event", "error", err)
 		return
 	}
 	if _, err := c.sessions.AppendRuntimeEvent(context.Background(), event.SessionID, encoded); err != nil {
-		slog.Warn("persist runtime event", "error", err, "kind", event.Kind)
+		c.logger.Warn("persist runtime event", "error", err, "kind", event.Kind)
 		return
 	}
 	c.eventHub(event.SessionID).notifyDurable()
