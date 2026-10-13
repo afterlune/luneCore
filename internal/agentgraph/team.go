@@ -59,7 +59,11 @@ func (a *Agent) mergeTeam(ctx context.Context, _ graph.CallInfo, parent State, b
 		return State{}, errors.New("team join lost its originating tool call")
 	}
 	call := parent.PendingCalls[parent.PendingIndex]
-	parent = appendToolOutput(parent, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(formatTeamResults(results))})
+	output := model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(formatTeamResults(results))}
+	if a.options.AcceptanceEnabled && parent.AcceptancePhase == "execution" {
+		parent = saveToolEvidence(parent, call.CallID, output)
+	}
+	parent = appendToolOutput(parent, output)
 	parent.TeamAssignments, parent.TeamDispatchID = nil, ""
 	parent.TeamMinimumSuccesses = 0
 	return parent, nil

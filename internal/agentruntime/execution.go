@@ -90,6 +90,10 @@ func logGraphEvent(ctx context.Context, event graph.Event) {
 }
 
 func (r *Responder) finish(result graph.Result[agentgraph.State], runErr error) (*model.Response, error) {
+	if result.Final != nil {
+		state := *result.Final
+		r.lastState = &state
+	}
 	if result.Status == graph.StatusCompleted || result.Status == graph.StatusCompletedWithFailures {
 		if result.Final == nil {
 			if !r.deferCompletedCleanup {

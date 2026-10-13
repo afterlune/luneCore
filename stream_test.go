@@ -27,6 +27,17 @@ func TestCoreEmitsLeadTextDeltasWithTaskIdentity(t *testing.T) {
 		} else if request.Model != taskModel {
 			t.Errorf("stream request model = %q, want %q", request.Model, taskModel)
 		}
+		stage := acceptanceRequestStage(request)
+		if stage == "criteria" || stage == "review" {
+			response := scriptedCriteriaResponse(request)
+			if stage == "review" {
+				response = scriptedAcceptanceResponse(request)
+			}
+			if err := writeCompletedSSE(w, response); err != nil {
+				t.Errorf("write acceptance response: %v", err)
+			}
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"msg_1\",\"output_index\":0,\"delta\":\"hello\"}\n\n")
 		_, _ = fmt.Fprint(w, "event: response.completed\ndata: {\"type\":\"response.completed\",\"sequence_number\":2,\"response\":{\"id\":\"resp_stream\",\"object\":\"response\",\"status\":\"completed\",\"model\":\"deepseek-test\",\"output\":[{\"id\":\"msg_1\",\"type\":\"message\",\"role\":\"assistant\",\"content\":[{\"type\":\"output_text\",\"text\":\"hello\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n")
@@ -103,7 +114,7 @@ func TestCoreEmitsLeadTextDeltasWithTaskIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(updated.UsageRequests) != 1 || updated.UsageRequests[0].ContextWindow != 64000 || updated.UsageRequests[0].Model != taskModel {
+	if len(updated.UsageRequests) != 3 || updated.UsageRequests[1].ContextWindow != 64000 || updated.UsageRequests[1].Model != taskModel {
 		t.Fatalf("persisted request usage = %#v; want context window and task model", updated.UsageRequests)
 	}
 }
@@ -120,7 +131,19 @@ func TestCoreStreamingCancellationPausesAndResumeStreamsAgain(t *testing.T) {
 		if !request.Stream {
 			t.Error("Core request did not enable provider streaming")
 		}
-		if requests.Add(1) == 1 {
+		stage := acceptanceRequestStage(request)
+		if stage == "criteria" || stage == "review" {
+			response := scriptedCriteriaResponse(request)
+			if stage == "review" {
+				response = scriptedAcceptanceResponse(request)
+			}
+			if err := writeCompletedSSE(w, response); err != nil {
+				t.Errorf("write acceptance response: %v", err)
+			}
+			requests.Add(1)
+			return
+		}
+		if requests.Add(1) == 2 {
 			w.Header().Set("Content-Type", "text/event-stream")
 			_, _ = fmt.Fprint(w, "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"sequence_number\":1,\"item_id\":\"partial_1\",\"output_index\":0,\"delta\":\"partial before cancellation\"}\n\n")
 			if flusher, ok := w.(http.Flusher); ok {
@@ -214,7 +237,7 @@ func TestCoreStreamingCancellationPausesAndResumeStreamsAgain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ResumeTask after stream cancellation: %v", err)
 	}
-	if len(response) == 0 {
+	if len(response.Response) == 0 {
 		t.Fatal("resumed stream returned an empty response")
 	}
 	timeout.Reset(5 * time.Second)
@@ -248,7 +271,7 @@ func TestCoreStreamingCancellationPausesAndResumeStreamsAgain(t *testing.T) {
 			t.Fatal("Core did not finish the resumed stream")
 		}
 	}
-	if resumedTaskID == "" || resumedTaskID == firstTaskID || !gotResumedDelta || requests.Load() != 2 {
+	if resumedTaskID == "" || resumedTaskID == firstTaskID || !gotResumedDelta || requests.Load() != 4 {
 		t.Fatalf("resume task=%q first task=%q delta=%v provider requests=%d", resumedTaskID, firstTaskID, gotResumedDelta, requests.Load())
 	}
 }

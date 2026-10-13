@@ -48,12 +48,13 @@ func (s *Store) ForkPausedTask(ctx context.Context, sourceSessionID, sourceRunID
 		return fmt.Errorf("create forked paused turn: %w", err)
 	}
 	var budgetReason string
-	err = tx.QueryRowContext(ctx, `SELECT budget_reason FROM turn_results WHERE session_id = ? AND execution_id = ?`, sourceSessionID, sourceExecutionID).Scan(&budgetReason)
+	var acceptanceReports, acceptanceCriteria, acceptanceEvidence []byte
+	err = tx.QueryRowContext(ctx, `SELECT budget_reason, acceptance_reports, acceptance_criteria, acceptance_evidence FROM turn_results WHERE session_id = ? AND execution_id = ?`, sourceSessionID, sourceExecutionID).Scan(&budgetReason, &acceptanceReports, &acceptanceCriteria, &acceptanceEvidence)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("read source paused turn result: %w", err)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO turn_results(session_id, execution_id, status, response, budget_reason, updated_at)
-		VALUES(?, ?, ?, NULL, ?, ?)`, forkSessionID, forkExecutionID, "paused", budgetReason, now); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO turn_results(session_id, execution_id, status, response, budget_reason, acceptance_reports, acceptance_criteria, acceptance_evidence, updated_at)
+		VALUES(?, ?, ?, NULL, ?, ?, ?, ?, ?)`, forkSessionID, forkExecutionID, "paused", budgetReason, acceptanceReports, acceptanceCriteria, acceptanceEvidence, now); err != nil {
 		return fmt.Errorf("create forked paused turn result: %w", err)
 	}
 	if _, err := appendRuntimeEventTx(ctx, tx, forkSessionID, event, time.Now()); err != nil {

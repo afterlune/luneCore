@@ -50,7 +50,7 @@ func TestReadOnlyPlanHandoffImplementsInSameContextWithScopedPermission(t *testi
 	if err := client.SetPermissionMode(PermissionReadOnly); err != nil {
 		t.Fatal(err)
 	}
-	client.executionDefaults = ExecutionOptions{MaxSteps: 1}
+	client.executionDefaults = ExecutionOptions{MaxSteps: 20}
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -74,6 +74,7 @@ func TestReadOnlyPlanHandoffImplementsInSameContextWithScopedPermission(t *testi
 	if planResult.ProposedPlan.Text != "Write the requested workspace file." {
 		t.Fatalf("proposed plan = %q", planResult.ProposedPlan.Text)
 	}
+	client.executionDefaults = ExecutionOptions{MaxSteps: 1}
 	provider.mu.Lock()
 	planningRequest := provider.seenRequests[0]
 	provider.mu.Unlock()
@@ -442,8 +443,8 @@ func TestSessionRuntimeWaitTurnResultSurvivesReopen(t *testing.T) {
 	if err != nil || result.Status != TaskCompleted || len(result.Response) == 0 || !json.Valid(result.Response) {
 		t.Fatalf("WaitTurn result = %#v, error=%v", result, err)
 	}
-	if string(result.Response) != string(runResponse) {
-		t.Fatalf("WaitTurn raw response differs from RunTask: got %s, want %s", result.Response, runResponse)
+	if string(result.Response) != string(runResponse.Response) {
+		t.Fatalf("WaitTurn response differs from RunTask: got %s, want %s", result.Response, runResponse.Response)
 	}
 	firstResponse := append(json.RawMessage(nil), result.Response...)
 	result, err = runtime.WaitTurn(context.Background(), submission.ExecutionID)

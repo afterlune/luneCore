@@ -193,7 +193,7 @@ func TestResumeRejectsCheckpointWithoutTaskSettingsSnapshot(t *testing.T) {
 	}
 }
 
-func TestCoreUsesV8CheckpointFileAndLeavesLegacyFilesUntouched(t *testing.T) {
+func TestCoreUsesV9CheckpointFileAndLeavesLegacyFilesUntouched(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 	workspace, stateDir := t.TempDir(), t.TempDir()
@@ -216,8 +216,8 @@ func TestCoreUsesV8CheckpointFileAndLeavesLegacyFilesUntouched(t *testing.T) {
 			t.Fatalf("legacy file %q changed: %q, error=%v", name, got, err)
 		}
 	}
-	if info, err := os.Stat(filepath.Join(stateDir, "checkpoints-v8.db")); err != nil || info.IsDir() {
-		t.Fatalf("v8 checkpoint file missing: info=%v error=%v", info, err)
+	if info, err := os.Stat(filepath.Join(stateDir, "checkpoints-v10.db")); err != nil || info.IsDir() {
+		t.Fatalf("v10 checkpoint file missing: info=%v error=%v", info, err)
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/model"
 	runtimepermission "github.com/afterlune/luneCore/internal/tool"
 	publictool "github.com/afterlune/luneCore/tool"
@@ -28,6 +29,9 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 	ensureTranscript(&state)
 	if state.UserAnswerReady {
 		call := state.PendingCalls[state.PendingIndex]
+		if state.AcceptancePhase == "criteria" {
+			state.AcceptanceClarifications = append(state.AcceptanceClarifications, state.UserAnswer)
+		}
 		output := model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("User's answer: " + state.UserAnswer)}
 		state.UserQuestion, state.UserQuestionOptions = "", nil
 		state.UserAnswer, state.UserAnswerReady = "", false
@@ -46,8 +50,59 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 	}
 	call := state.PendingCalls[state.PendingIndex]
 	var output model.InputFunctionCallOutput
+	evidenceEligible := false
 	switch {
-	case call.Name == askUserToolName && a.options.AskUser && !state.TeamBranch:
+	case call.Name == submitCriteriaToolName && a.options.AcceptanceEnabled && !state.TeamBranch && state.AcceptancePhase == "criteria" && len(state.AcceptanceCriteria) == 0:
+		if len(state.PendingCalls) != 1 {
+			return a.rejectAcceptanceCall(state, call, criteriaNode, "Submit task criteria in a single tool call.")
+		}
+		var submission criteriaSubmission
+		if err := parseJSONStrict(call.Arguments, &submission); err != nil {
+			return a.rejectAcceptanceCall(state, call, criteriaNode, "Criteria were not valid structured JSON: "+err.Error())
+		}
+		if err := validateCriteria(state, submission); err != nil {
+			return a.rejectAcceptanceCall(state, call, criteriaNode, "Criteria were rejected: "+err.Error())
+		}
+		state.AcceptanceCriteria = append([]acceptance.Criterion(nil), submission.Criteria...)
+		state.AcceptanceKind = submission.Kind
+		state.AcceptanceFormatRetries = 0
+		state.AcceptancePhase = "execution"
+		state = appendToolOutput(state, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Acceptance criteria saved for this execution.")})
+		state.PendingCalls, state.PendingIndex, state.VisibleTools = nil, 0, nil
+		a.observeAcceptance(state, "criteria_prepared", "", "")
+		return graph.To(state, modelNode), nil
+	case call.Name == submitAcceptanceToolName && a.options.AcceptanceEnabled && !state.TeamBranch && state.AcceptancePhase == "acceptance":
+		if len(state.PendingCalls) != 1 {
+			return a.rejectAcceptanceCall(state, call, acceptanceNode, "Submit one acceptance action in a single tool call.")
+		}
+		var submission acceptanceSubmission
+		if err := parseJSONStrict(call.Arguments, &submission); err != nil {
+			return a.rejectAcceptanceCall(state, call, acceptanceNode, "Acceptance report was not valid structured JSON: "+err.Error())
+		}
+		report, err := validateModelReport(state, submission)
+		if err != nil {
+			return a.rejectAcceptanceCall(state, call, acceptanceNode, "Acceptance report was rejected: "+err.Error())
+		}
+		state = appendToolOutput(state, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Acceptance report received.")})
+		state.PendingCalls, state.PendingIndex, state.VisibleTools = nil, 0, nil
+		return a.acceptModelReport(ctx, state, report)
+	case call.Name == requestEvidenceToolName && a.options.AcceptanceEnabled && !state.TeamBranch && state.AcceptancePhase == "acceptance":
+		if len(state.PendingCalls) != 1 {
+			return a.rejectAcceptanceCall(state, call, acceptanceNode, "Submit one acceptance action in a single tool call.")
+		}
+		var request evidenceRequest
+		if err := parseJSONStrict(call.Arguments, &request); err != nil || strings.TrimSpace(request.Question) == "" {
+			if err == nil {
+				err = errors.New("question must not be empty")
+			}
+			return a.rejectAcceptanceCall(state, call, acceptanceNode, "Evidence request was rejected: "+err.Error())
+		}
+		state.AcceptanceEvidenceRequest = strings.TrimSpace(request.Question)
+		state.AcceptancePhase = "execution"
+		state = appendToolOutput(state, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Returning to task execution to gather the requested evidence.")})
+		state.PendingCalls, state.PendingIndex, state.VisibleTools = nil, 0, nil
+		return graph.To(state, modelNode), nil
+	case call.Name == askUserToolName && a.options.AskUser && !state.NoInteractiveDecisions && !state.TeamBranch:
 		question, options, err := parseUserQuestion(call.Arguments)
 		if err != nil {
 			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Question request rejected: " + err.Error())}
@@ -55,6 +110,8 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			state.UserQuestion, state.UserQuestionOptions = question, append([]string(nil), options...)
 			return graph.Wait(state, UserQuestionContinuation, toolNode), nil
 		}
+	case call.Name == askUserToolName && state.NoInteractiveDecisions && !state.TeamBranch:
+		return a.blockExecution(ctx, state, call.CallID, call.Name, "execution requires a user decision that was not resolved during planning"), nil
 	case call.Name == teamDispatchToolName && a.options.Team != nil:
 		assignments, minimumSuccesses, err := parseTeamAssignments(call.Arguments, a.options.Team)
 		if err != nil {
@@ -75,6 +132,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			taskOptions := TaskOptions{
 				ExecutionID: state.ExecutionID, MaxToolRounds: state.MaxToolRounds,
 				ReasoningEffort: state.ReasoningEffort, PermissionOverride: state.PermissionOverride,
+				PlanAuthorization: state.PlanAuthorization, NoInteractiveDecisions: state.NoInteractiveDecisions,
 			}
 			for _, assignment := range assignments {
 				input, inputErr := model.NewResponseInput(assignment.Task)
@@ -95,12 +153,16 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 				branch.MaxToolRounds = state.MaxToolRounds
 				branch.Execution = state.Execution
 				branch.PermissionOverride = state.PermissionOverride
+				branch.PlanAuthorization = state.PlanAuthorization
+				branch.NoInteractiveDecisions = state.NoInteractiveDecisions
 				branch.ReasoningEffort = state.ReasoningEffort
 				branch, branchErr = a.options.Team.PrepareBranch(ctx, branch, assignment, taskOptions)
 				if branchErr != nil {
 					return graph.Transition[State]{}, branchErr
 				}
 				branch.PermissionOverride = state.PermissionOverride
+				branch.PlanAuthorization = state.PlanAuthorization
+				branch.NoInteractiveDecisions = state.NoInteractiveDecisions
 				branches = append(branches, graph.Branch[State]{Target: teamModelNode, State: branch, EntryTimeout: a.options.Execution.TeamEntryTimeout})
 			}
 			return graph.FanOut(state, branches...), nil
@@ -138,6 +200,8 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		}
 	default:
 		toolContext := runtimepermission.WithPermissionMode(ctx, state.PermissionOverride)
+		toolContext = publictool.WithPlanAuthorization(toolContext, state.PlanAuthorization)
+		toolContext = publictool.WithNoInteractiveDecisions(toolContext, state.NoInteractiveDecisions)
 		toolContext = model.WithAgentID(toolContext, state.AgentID)
 		toolContext = model.WithInputAudioSupport(toolContext, state.SupportsInputAudio)
 		identity := publictool.CallIdentityFromContext(toolContext)
@@ -152,15 +216,44 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			var err error
 			output, err = recoverable.ExecuteCallRecoverable(toolContext, call)
 			if err != nil {
+				var blocker *publictool.ExecutionBlockerError
+				if errors.As(err, &blocker) && state.NoInteractiveDecisions && !state.TeamBranch {
+					return a.blockExecution(ctx, state, call.CallID, blocker.Tool, blocker.Error()), nil
+				}
 				return graph.Transition[State]{}, err
 			}
 		} else {
 			output = a.tools.ExecuteCall(toolContext, call)
 		}
+		evidenceEligible = true
 	}
 
+	if a.options.AcceptanceEnabled && !state.TeamBranch && state.AcceptancePhase == "execution" && evidenceEligible {
+		state = saveToolEvidence(state, call.CallID, output)
+	}
 	state = appendToolOutput(state, output)
 	return a.nextToolTransition(state), nil
+}
+
+func (a *Agent) blockExecution(ctx context.Context, state State, callID, toolName, reason string) graph.Transition[State] {
+	state.BlockerID = state.ExecutionID + ":" + callID
+	state.BlockerTool = toolName
+	state.BlockerReason = reason
+	state.PendingCalls, state.VisibleTools = nil, nil
+	if a.options.BlockerObserver != nil {
+		a.options.BlockerObserver(ctx, state, state.BlockerID, state.BlockerTool)
+	}
+	return graph.Wait(state, ExecutionBlockerContinuation, toolNode)
+}
+
+func (a *Agent) rejectAcceptanceCall(state State, call model.OutputFunctionCall, target, reason string) (graph.Transition[State], error) {
+	state = appendToolOutput(state, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(reason)})
+	state.PendingCalls, state.PendingIndex, state.VisibleTools = nil, 0, nil
+	if state.AcceptanceFormatRetries < 1 {
+		state.AcceptanceFormatRetries++
+		return graph.To(state, target), nil
+	}
+	return a.pauseAcceptanceFormat(state, reason), nil
 }
 
 func appendToolOutput(state State, output model.InputFunctionCallOutput) State {
@@ -202,7 +295,7 @@ func (a *Agent) visibleTools(state State, category, permissionMode string) ([]mo
 		if a.options.Team != nil && len(a.options.Team.Profiles()) > 0 && a.options.Team.MaxParallelAgents() > 0 {
 			definitions = append(definitions, teamDispatchDefinition(a.options.Team))
 		}
-		if a.options.AskUser && !state.TeamBranch {
+		if a.options.AskUser && !state.NoInteractiveDecisions && !state.TeamBranch {
 			definitions = append(definitions, askUserDefinition())
 		}
 		return definitions

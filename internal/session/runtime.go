@@ -35,12 +35,15 @@ type RuntimeEvent struct {
 }
 
 type TurnResult struct {
-	SessionID    string
-	ExecutionID  string
-	Status       string
-	Response     json.RawMessage
-	BudgetReason string
-	UpdatedAt    time.Time
+	SessionID          string
+	ExecutionID        string
+	Status             string
+	Response           json.RawMessage
+	AcceptanceReports  json.RawMessage
+	AcceptanceCriteria json.RawMessage
+	AcceptanceEvidence json.RawMessage
+	BudgetReason       string
+	UpdatedAt          time.Time
 }
 
 func (s *Store) EnqueueTurn(ctx context.Context, queued QueuedTurn, event json.RawMessage) (QueuedTurn, int64, error) {
@@ -250,7 +253,7 @@ func (s *Store) PauseQueuedTurn(ctx context.Context, sessionID, queueID, executi
 	return s.PauseQueuedTurnWithReason(ctx, sessionID, queueID, executionID, status, "", event)
 }
 
-func (s *Store) PauseQueuedTurnWithReason(ctx context.Context, sessionID, queueID, executionID, status, budgetReason string, event json.RawMessage) (int64, error) {
+func (s *Store) PauseQueuedTurnWithReason(ctx context.Context, sessionID, queueID, executionID, status, budgetReason string, event json.RawMessage, artifacts ...json.RawMessage) (int64, error) {
 	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
 		return 0, errors.New("session store, turn identity, status, and valid event JSON are required")
 	}
@@ -271,7 +274,17 @@ func (s *Store) PauseQueuedTurnWithReason(ctx context.Context, sessionID, queueI
 	if updated == 0 {
 		return 0, fmt.Errorf("queued turn %q does not exist in session %q", queueID, sessionID)
 	}
-	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, nil, time.Now(), budgetReason); err != nil {
+	var acceptanceReports, acceptanceCriteria, acceptanceEvidence json.RawMessage
+	if len(artifacts) > 0 {
+		acceptanceReports = artifacts[0]
+	}
+	if len(artifacts) > 1 {
+		acceptanceCriteria = artifacts[1]
+	}
+	if len(artifacts) > 2 {
+		acceptanceEvidence = artifacts[2]
+	}
+	if err := upsertTurnResultWithAcceptanceTx(ctx, tx, sessionID, executionID, status, nil, time.Now(), acceptanceReports, acceptanceCriteria, acceptanceEvidence, budgetReason); err != nil {
 		return 0, err
 	}
 	cursor, err := appendRuntimeEventTx(ctx, tx, sessionID, event, time.Now())
@@ -287,10 +300,16 @@ func (s *Store) PauseQueuedTurnWithReason(ctx context.Context, sessionID, queueI
 // CompleteQueuedTurn atomically saves conversation state, the durable result,
 // the terminal event, and queue removal.
 func (s *Store) CompleteQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, response, history, modelContext json.RawMessage, contextKey string, event json.RawMessage) (int64, error) {
+	return s.CompleteQueuedTurnWithAcceptance(ctx, sessionID, queueID, executionID, status, response, history, modelContext, contextKey, nil, nil, nil, event)
+}
+
+// CompleteQueuedTurnWithAcceptance atomically saves acceptance details alongside
+// its conversation, terminal event, and queue removal.
+func (s *Store) CompleteQueuedTurnWithAcceptance(ctx context.Context, sessionID, queueID, executionID, status string, response, history, modelContext json.RawMessage, contextKey string, acceptanceReports, acceptanceCriteria, acceptanceEvidence, event json.RawMessage) (int64, error) {
 	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
 		return 0, errors.New("session store, turn identity, status, and valid event JSON are required")
 	}
-	if len(response) > 0 && !json.Valid(response) || len(history) > 0 && !json.Valid(history) || len(modelContext) > 0 && !json.Valid(modelContext) {
+	if len(response) > 0 && !json.Valid(response) || len(history) > 0 && !json.Valid(history) || len(modelContext) > 0 && !json.Valid(modelContext) || len(acceptanceReports) > 0 && !json.Valid(acceptanceReports) || len(acceptanceCriteria) > 0 && !json.Valid(acceptanceCriteria) || len(acceptanceEvidence) > 0 && !json.Valid(acceptanceEvidence) {
 		return 0, errors.New("turn response and conversation must be valid JSON")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -324,7 +343,7 @@ func (s *Store) CompleteQueuedTurn(ctx context.Context, sessionID, queueID, exec
 			return 0, fmt.Errorf("session %q does not exist", sessionID)
 		}
 	}
-	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, response, time.Now()); err != nil {
+	if err := upsertTurnResultWithAcceptanceTx(ctx, tx, sessionID, executionID, status, response, time.Now(), acceptanceReports, acceptanceCriteria, acceptanceEvidence); err != nil {
 		return 0, err
 	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ? AND execution_id = ?`, sessionID, queueID, executionID)
@@ -349,6 +368,10 @@ func (s *Store) CompleteQueuedTurn(ctx context.Context, sessionID, queueID, exec
 }
 
 func upsertTurnResultTx(ctx context.Context, tx *sql.Tx, sessionID, executionID, status string, response json.RawMessage, now time.Time, budgetReasons ...string) error {
+	return upsertTurnResultWithAcceptanceTx(ctx, tx, sessionID, executionID, status, response, now, nil, nil, nil, budgetReasons...)
+}
+
+func upsertTurnResultWithAcceptanceTx(ctx context.Context, tx *sql.Tx, sessionID, executionID, status string, response json.RawMessage, now time.Time, acceptanceReports, acceptanceCriteria, acceptanceEvidence json.RawMessage, budgetReasons ...string) error {
 	var payload any
 	if len(response) > 0 {
 		payload = []byte(response)
@@ -357,10 +380,26 @@ func upsertTurnResultTx(ctx context.Context, tx *sql.Tx, sessionID, executionID,
 	if len(budgetReasons) > 0 {
 		budgetReason = budgetReasons[0]
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO turn_results(session_id, execution_id, status, response, budget_reason, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?)
-		ON CONFLICT(session_id, execution_id) DO UPDATE SET status = excluded.status, response = excluded.response, budget_reason = excluded.budget_reason, updated_at = excluded.updated_at`,
-		sessionID, executionID, status, payload, budgetReason, now.UnixNano()); err != nil {
+	var reports any
+	var criteria any
+	var evidence any
+	if len(acceptanceReports) > 0 {
+		reports = []byte(acceptanceReports)
+	}
+	if len(acceptanceCriteria) > 0 {
+		criteria = []byte(acceptanceCriteria)
+	}
+	if len(acceptanceEvidence) > 0 {
+		evidence = []byte(acceptanceEvidence)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO turn_results(session_id, execution_id, status, response, budget_reason, acceptance_reports, acceptance_criteria, acceptance_evidence, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_id, execution_id) DO UPDATE SET status = excluded.status, response = excluded.response, budget_reason = excluded.budget_reason,
+		acceptance_reports = CASE WHEN excluded.acceptance_reports IS NULL THEN turn_results.acceptance_reports ELSE excluded.acceptance_reports END,
+		acceptance_criteria = CASE WHEN excluded.acceptance_criteria IS NULL THEN turn_results.acceptance_criteria ELSE excluded.acceptance_criteria END,
+		acceptance_evidence = CASE WHEN excluded.acceptance_evidence IS NULL THEN turn_results.acceptance_evidence ELSE excluded.acceptance_evidence END,
+		updated_at = excluded.updated_at`,
+		sessionID, executionID, status, payload, budgetReason, reports, criteria, evidence, now.UnixNano()); err != nil {
 		return fmt.Errorf("persist turn result: %w", err)
 	}
 	return nil
@@ -372,10 +411,11 @@ func (s *Store) TurnResult(ctx context.Context, sessionID, executionID string) (
 	}
 	var result TurnResult
 	var response []byte
+	var acceptanceReports, acceptanceCriteria, acceptanceEvidence []byte
 	var updatedAt int64
-	err := s.db.QueryRowContext(ctx, `SELECT session_id, execution_id, status, response, budget_reason, updated_at
+	err := s.db.QueryRowContext(ctx, `SELECT session_id, execution_id, status, response, budget_reason, acceptance_reports, acceptance_criteria, acceptance_evidence, updated_at
 		FROM turn_results WHERE session_id = ? AND execution_id = ?`, sessionID, executionID).
-		Scan(&result.SessionID, &result.ExecutionID, &result.Status, &response, &result.BudgetReason, &updatedAt)
+		Scan(&result.SessionID, &result.ExecutionID, &result.Status, &response, &result.BudgetReason, &acceptanceReports, &acceptanceCriteria, &acceptanceEvidence, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TurnResult{}, false, nil
 	}
@@ -383,6 +423,9 @@ func (s *Store) TurnResult(ctx context.Context, sessionID, executionID string) (
 		return TurnResult{}, false, fmt.Errorf("load turn result: %w", err)
 	}
 	result.Response = append(json.RawMessage(nil), response...)
+	result.AcceptanceReports = append(json.RawMessage(nil), acceptanceReports...)
+	result.AcceptanceCriteria = append(json.RawMessage(nil), acceptanceCriteria...)
+	result.AcceptanceEvidence = append(json.RawMessage(nil), acceptanceEvidence...)
 	result.UpdatedAt = time.Unix(0, updatedAt)
 	return result, true, nil
 }

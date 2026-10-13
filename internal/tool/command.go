@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os/exec"
-	"runtime"
+	"os"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -21,13 +21,30 @@ const (
 	maxCommandOutput = 1 << 20
 )
 
-// CommandTool executes a command in the workspace. Shell commands can still
-// access files outside the workspace; Workspace only sets their working dir.
+// CommandTool delegates local execution to a kernel-sandboxed executor.
 type CommandTool struct {
 	Workspace         string
 	Timeout           time.Duration
 	Executor          publictool.CommandExecutor
+	SandboxHelperPath string
 	AllowLocalCommand bool
+}
+
+var highRiskCommandPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\brm\b[^;&|]*-(?:[a-z]*r[a-z]*|recursive)\b`),
+	regexp.MustCompile(`(?i)\b(remove-item|del|rmdir|rd)\b[^;&|]*(?:-recurse|/s\b|--recursive)`),
+	regexp.MustCompile(`(?i)\b(find)\b[^;&|]*\s-delete\b`),
+	regexp.MustCompile(`(?i)\brsync\b[^;&|]*--delete(?:-before|-during|-after|-excluded)?\b`),
+	regexp.MustCompile(`(?i)\bgit\s+clean\b[^;&|]*(?:-[a-z]*f[a-z]*|--force\b)`),
+	regexp.MustCompile(`(?i)\b(shred|srm)\b`),
+	regexp.MustCompile(`(?i)\b(chmod|chown|chgrp|setfacl|icacls|takeown)\b[^;&|]*(?:\s-R\b|--recursive\b|/T\b|/reset\b)`),
+	regexp.MustCompile(`(?i)\b(mkfs(?:\.[a-z0-9]+)?|wipefs|fdisk|sfdisk|parted|diskpart|format-volume|clear-disk|initialize-disk|bcdedit)\b`),
+	regexp.MustCompile(`(?i)\bdd\b[^;&|]*\bof=/dev/`),
+	regexp.MustCompile(`(?i)\b(set-mppreference|set-executionpolicy|iptables(?:-nft|-legacy)?\s+-F|nft\s+flush\s+ruleset|ufw\s+disable|netsh\s+advfirewall|systemctl\s+(enable|disable|mask)|sc(?:\.exe)?\s+(config|create|delete)|reg\s+(delete|add)|net\s+(user|localgroup)|(?:useradd|userdel|usermod|groupadd|groupdel|passwd|chpasswd)|efibootmgr|grub-install|update-grub)\b`),
+	regexp.MustCompile(`(?i)(?:^|\s)(sudo|runas|start-process\s+[^;&|]*-verb\s+runas)(?:\s|$)`),
+	regexp.MustCompile(`(?i)(-encodedcommand|\b(?:invoke-expression|iex)\b|\bexec\s*\(|\beval\s*\(|\b(?:curl|wget|iwr|invoke-webrequest)\b[^;&|]*\|\s*(?:sh|bash|powershell|iex))`),
+	regexp.MustCompile(`(?i)\b(?:sh|bash|zsh|dash|powershell|pwsh)(?:\.exe)?\b[^;&|]*\s-(?:c|command|encodedcommand)(?:\s|$)`),
+	regexp.MustCompile(`(?i)\b(?:python(?:\d+(?:\.\d+)*)?|perl|ruby|node|php)\b[^;&|]*\s-(?:c|e|r)(?:\s|$)`),
 }
 
 func (CommandTool) Definition() model.FunctionTool {
@@ -55,52 +72,65 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 	commandCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	if t.Executor != nil {
-		invocationID := publictool.InvocationID(ctx)
-		requestContext := publictool.WithInvocationID(commandCtx, invocationID)
-		result, err := t.Executor.Execute(requestContext, publictool.CommandRequest{
-			Command: args.Command, Workspace: workspace, InvocationID: invocationID,
-		})
-		if commandCtx.Err() != nil {
-			return Result{Output: result.Output, Err: fmt.Errorf("command stopped: %w", commandCtx.Err())}
-		}
-		if err != nil {
-			return Result{Output: result.Output, Err: fmt.Errorf("run command: %w", err)}
-		}
-		return Result{Output: result.Output}
+	executor := t.Executor
+	if executor == nil {
+		executor = SandboxedCommandExecutor{HelperPath: t.SandboxHelperPath}
 	}
-	if !t.AllowLocalCommand {
-		return Result{Err: errors.New("no command executor is configured; inject a host executor or explicitly enable local shell execution")}
+	authorization := publictool.PlanAuthorizationFromContext(ctx)
+	if reason := highRiskCommandReason(args.Command); reason != "" && !commandApproved(args.Command, authorization.ApprovedHighRiskCommands) {
+		return Result{Err: &publictool.ExecutionBlockerError{Tool: "command", Reason: "high-risk command is not individually approved in the plan: " + reason}}
 	}
-
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(commandCtx, "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", args.Command)
-	} else {
-		cmd = exec.CommandContext(commandCtx, "/bin/sh", "-c", args.Command)
+	mode := PermissionModeFromContext(ctx)
+	if mode == "" {
+		mode = PermissionModeWorkspace
 	}
-	configureCommandProcess(cmd)
-	cmd.Dir = workspace
-
-	output := &limitedBuffer{limit: maxCommandOutput}
-	cmd.Stdout = output
-	cmd.Stderr = output
-	runErr := cmd.Run()
-	text, truncated := output.String()
-	if truncated {
-		text += "\n[command output truncated at 1 MiB]"
+	sandbox := publictool.SandboxPolicy{
+		PermissionMode: string(mode), Workspace: workspace,
+		Grants:  append([]publictool.PathGrant(nil), authorization.Paths...),
+		Network: mode == PermissionModeFullAccess || authorization.AllowNetwork,
 	}
+	if mode == PermissionModeFullAccess {
+		sandbox.HomeDir, _ = os.UserHomeDir()
+	}
+	invocationID := publictool.InvocationID(ctx)
+	requestContext := publictool.WithInvocationID(commandCtx, invocationID)
+	result, err := executor.Execute(requestContext, publictool.CommandRequest{
+		Command: args.Command, Workspace: workspace, InvocationID: invocationID, Sandbox: sandbox,
+	})
 	if commandCtx.Err() != nil {
-		return Result{Output: text, Err: fmt.Errorf("command stopped: %w", commandCtx.Err())}
+		return Result{Output: result.Output, Err: fmt.Errorf("command stopped: %w", commandCtx.Err())}
 	}
-	if runErr != nil {
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			return Result{Output: text, Err: fmt.Errorf("command exited with code %d", exitErr.ExitCode())}
+	if err != nil {
+		var blocker *publictool.ExecutionBlockerError
+		if errors.As(err, &blocker) {
+			return Result{Err: blocker}
 		}
-		return Result{Output: text, Err: fmt.Errorf("run command: %w", runErr)}
+		return Result{Output: result.Output, Err: fmt.Errorf("run sandboxed command: %w", err)}
 	}
-	return Result{Output: text}
+	return Result{Output: result.Output}
+}
+
+func highRiskCommandReason(command string) string {
+	for _, pattern := range highRiskCommandPatterns {
+		if pattern.MatchString(command) {
+			return "the command may destroy data or modify sensitive system settings"
+		}
+	}
+	return ""
+}
+
+func commandApproved(command string, approved []string) bool {
+	normalized := normalizeCommand(command)
+	for _, candidate := range approved {
+		if normalizeCommand(candidate) == normalized {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizeCommand(command string) string {
+	return strings.Join(strings.Fields(command), " ")
 }
 
 // limitedBuffer captures command output up to a fixed limit.

@@ -170,18 +170,36 @@ func TestRunTaskPersistsImageDataForSessionReplay(t *testing.T) {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
-		if request.Input == nil || len(request.Input.Items) != 1 {
+		stage := acceptanceRequestStage(request)
+		if stage == "criteria" || stage == "review" {
+			response := scriptedCriteriaResponse(request)
+			if stage == "review" {
+				response = scriptedAcceptanceResponse(request)
+			}
+			if err := writeCompletedSSE(w, response); err != nil {
+				t.Errorf("write acceptance response: %v", err)
+			}
+			return
+		}
+		if request.Input == nil {
 			t.Errorf("request input = %#v", request.Input)
 			return
 		}
-		message, ok := request.Input.Items[0].(model.InputMessage)
-		if !ok || len(message.Content.Parts) != 2 {
-			t.Errorf("request message = %#v", request.Input.Items[0])
-			return
+		foundImage := false
+		for _, item := range request.Input.Items {
+			message, ok := item.(model.InputMessage)
+			if !ok || message.Role != model.RoleUser {
+				continue
+			}
+			for _, part := range message.Content.Parts {
+				imagePart, ok := part.(model.InputImage)
+				if ok && imagePart.ImageURL == "data:image/png;base64,YQ==" {
+					foundImage = true
+				}
+			}
 		}
-		imagePart, ok := message.Content.Parts[1].(model.InputImage)
-		if !ok || imagePart.ImageURL != "data:image/png;base64,YQ==" {
-			t.Errorf("request image = %#v", message.Content.Parts[1])
+		if !foundImage {
+			t.Errorf("execution request did not retain the user image: %#v", request.Input)
 		}
 		if err := writeCompletedSSE(w, &model.ModelResponse{
 			ID: "response-image", Object: "response", Status: "completed", Model: request.Model,

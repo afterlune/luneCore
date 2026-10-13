@@ -300,9 +300,24 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 			t.Errorf("decode request: %v", err)
 			return
 		}
-		observed <- request
-		if calls.Add(1) == 1 {
+		select {
+		case observed <- request:
+		default:
+		}
+		callNumber := calls.Add(1)
+		if callNumber == 1 {
 			<-r.Context().Done()
+			return
+		}
+		stage := acceptanceRequestStage(request)
+		if stage == "criteria" || stage == "review" {
+			response := scriptedCriteriaResponse(request)
+			if stage == "review" {
+				response = scriptedAcceptanceResponse(request)
+			}
+			if err := writeCompletedSSE(w, response); err != nil {
+				t.Errorf("write acceptance response: %v", err)
+			}
 			return
 		}
 		writeCompletedResponseSSE(w, request.Model)
@@ -409,8 +424,13 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	if current.Settings.ModelProfile != "review" || current.Settings.ReasoningEffort != model.ReasoningEffortHigh {
 		t.Fatalf("session settings after resume = %#v", current.Settings)
 	}
-	if len(current.UsageRequests) != 1 || current.UsageRequests[0].Model != taskModel {
-		t.Fatalf("usage requests = %#v; want one request attributed to %q", current.UsageRequests, taskModel)
+	if len(current.UsageRequests) != 3 {
+		t.Fatalf("usage requests = %#v; want criteria, execution, and acceptance requests", current.UsageRequests)
+	}
+	for _, request := range current.UsageRequests {
+		if request.Model != taskModel {
+			t.Fatalf("usage request model = %q, want pinned task model %q", request.Model, taskModel)
+		}
 	}
 }
 
@@ -447,7 +467,21 @@ func TestDefaultReasoningEffortIsOmittedFromModelRequest(t *testing.T) {
 			t.Errorf("decode request: %v", err)
 			return
 		}
-		observed <- request
+		stage := acceptanceRequestStage(request)
+		if stage == "criteria" || stage == "review" {
+			response := scriptedCriteriaResponse(request)
+			if stage == "review" {
+				response = scriptedAcceptanceResponse(request)
+			}
+			if err := writeCompletedSSE(w, response); err != nil {
+				t.Errorf("write acceptance response: %v", err)
+			}
+			return
+		}
+		select {
+		case observed <- request:
+		default:
+		}
 		writeCompletedResponseSSE(w, request.Model)
 	}))
 	defer server.Close()

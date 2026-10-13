@@ -29,6 +29,16 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 		if len(request.ContextManagement) != 1 || request.ContextManagement[0].Type != "compaction" || request.ContextManagement[0].CompactThreshold != 47923 {
 			t.Errorf("Responses context_management = %#v", request.ContextManagement)
 		}
+		if stage := acceptanceRequestStage(request); stage == "criteria" || stage == "review" {
+			response := scriptedCriteriaResponse(request)
+			if stage == "review" {
+				response = scriptedAcceptanceResponse(request)
+			}
+			if err := writeCompletedSSE(w, response); err != nil {
+				t.Errorf("write acceptance completion: %v", err)
+			}
+			return
+		}
 		if err := writeCompletedSSE(w, &model.ModelResponse{
 			ID: "resp-native-compact", Object: "response", Status: "completed", Model: request.Model,
 			Output: []model.ResponseOutputItem{
@@ -61,6 +71,32 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 			strings.Contains(string(encoded), "encrypted-openai-reasoning") ||
 			strings.Contains(string(encoded), "openai-reasoning-signature")
 		sawAnthropicRequest = true
+		var system []struct {
+			Text string `json:"text"`
+		}
+		_ = json.Unmarshal(request["system"], &system)
+		instructions := ""
+		for _, block := range system {
+			instructions += block.Text + "\n"
+		}
+		var toolNames []string
+		var tools []struct {
+			Name string `json:"name"`
+		}
+		_ = json.Unmarshal(request["tools"], &tools)
+		for _, tool := range tools {
+			toolNames = append(toolNames, tool.Name)
+		}
+		stage := acceptanceRequestStageNames(toolNames)
+		if stage == "criteria" || stage == "review" {
+			normalized := model.ModelRequest{Instructions: instructions}
+			response := scriptedCriteriaResponse(normalized)
+			if stage == "review" {
+				response = scriptedAcceptanceResponse(normalized)
+			}
+			writeAnthropicToolResponse(t, w, response)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, event := range []string{
 			`event: message_start` + "\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"model\":\"shared-model\",\"usage\":{\"input_tokens\":20}}}\n\n",
@@ -132,7 +168,7 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 	if _, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: mustSettingsTaskInput(t, "continue through Anthropic Messages")}); err != nil {
 		t.Fatalf("Anthropic RunTask: %v", err)
 	}
-	if responsesRequests != 1 || anthropicRequests != 1 || !sawAnthropicRequest || anthropicHadOpaqueState {
+	if responsesRequests != 3 || anthropicRequests != 3 || !sawAnthropicRequest || anthropicHadOpaqueState {
 		t.Fatalf("requests responses=%d anthropic=%d sawAnthropic=%v opaqueLeaked=%v", responsesRequests, anthropicRequests, sawAnthropicRequest, anthropicHadOpaqueState)
 	}
 	updated, err := client.GetSession(context.Background(), saved.ID)
@@ -144,5 +180,34 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 	}
 	if updated.ModelContextKey == responsesSession.ModelContextKey {
 		t.Fatal("provider switch kept the previous provider's model context key")
+	}
+}
+
+func writeAnthropicToolResponse(t *testing.T, writer http.ResponseWriter, response *model.ModelResponse) {
+	t.Helper()
+	var call model.OutputFunctionCall
+	for _, item := range response.Output {
+		if value, ok := item.(model.OutputFunctionCall); ok {
+			call = value
+			break
+		}
+	}
+	if call.CallID == "" {
+		t.Errorf("acceptance response has no function call: %#v", response.Output)
+		return
+	}
+	writer.Header().Set("Content-Type", "text/event-stream")
+	events := []string{
+		`event: message_start` + "\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"acceptance\",\"model\":\"shared-model\",\"usage\":{\"input_tokens\":20}}}\n\n",
+		fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":%q,\"name\":%q,\"input\":{}}}\n\n", call.CallID, call.Name),
+		fmt.Sprintf("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":%q}}\n\n", call.Arguments),
+		`event: content_block_stop` + "\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
+		`event: message_delta` + "\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":2}}\n\n",
+		`event: message_stop` + "\ndata: {\"type\":\"message_stop\"}\n\n",
+	}
+	for _, event := range events {
+		if _, err := fmt.Fprint(writer, event); err != nil {
+			t.Errorf("write Anthropic event: %v", err)
+		}
 	}
 }

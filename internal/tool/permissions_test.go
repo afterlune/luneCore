@@ -50,7 +50,7 @@ func TestPermissionModesAuthorizeToolsAsDesigned(t *testing.T) {
 			name:          "workspace",
 			mode:          PermissionModeWorkspace,
 			allowed:       map[string]bool{"read_file": true, "write_file": true, "command": true, "web_fetch": true},
-			needsApproval: map[string]bool{"command": true, "web_fetch": true},
+			needsApproval: map[string]bool{"web_fetch": true},
 		},
 		{
 			name:          "ask",

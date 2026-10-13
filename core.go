@@ -8,9 +8,11 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
 	projectconfig "github.com/afterlune/luneCore/internal/config"
@@ -29,31 +31,39 @@ import (
 // entries from config.json; omitted model settings are loaded from that file.
 // ModelProviders replace protocol adapters with host implementations.
 type Config struct {
-	Workspace         string
-	StateDir          string
-	ModelConfig       *publicmodel.Config
-	ModelProviders    map[string]publicmodel.Provider
-	Tools             []publictool.Registration
-	CommandExecutor   publictool.CommandExecutor
+	Workspace       string
+	StateDir        string
+	ModelConfig     *publicmodel.Config
+	ModelProviders  map[string]publicmodel.Provider
+	Tools           []publictool.Registration
+	CommandExecutor publictool.CommandExecutor
+	// SandboxHelperPath optionally selects the lune-sandbox companion binary.
+	// When empty, Core searches beside the host executable and then PATH.
+	SandboxHelperPath string
+	// Deprecated: local commands now always run through the kernel sandbox.
 	AllowLocalCommand bool
 	Execution         ExecutionOptions
+	// AcceptanceVerifier optionally overrides the model's acceptance judgment.
+	// Implementations should be idempotent, read-only, and honor ctx cancellation.
+	AcceptanceVerifier acceptance.Verifier
 	// MaxConcurrentCallbacks caps callback work across all sessions in this Core.
 	MaxConcurrentCallbacks int
 }
 
 type Core struct {
-	workspace         string
-	registry          *tool.Registry
-	models            *model.ProviderCatalog
-	taskDefaults      taskSettings
-	attachmentLimits  projectconfig.AttachmentLimits
-	team              *teamExecutor
-	runtime           *agentruntime.Responder
-	mcpManager        *mcp.Manager
-	checkpoints       *sqlite.Store[agentgraph.State]
-	sessions          *session.Store
-	executionDefaults ExecutionOptions
-	callbackLimiter   *graph.Limiter
+	workspace          string
+	registry           *tool.Registry
+	models             *model.ProviderCatalog
+	taskDefaults       taskSettings
+	attachmentLimits   projectconfig.AttachmentLimits
+	team               *teamExecutor
+	runtime            *agentruntime.Responder
+	mcpManager         *mcp.Manager
+	checkpoints        *sqlite.Store[agentgraph.State]
+	sessions           *session.Store
+	executionDefaults  ExecutionOptions
+	callbackLimiter    *graph.Limiter
+	acceptanceVerifier acceptance.Verifier
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
@@ -135,6 +145,7 @@ func New(config Config) (_ *Core, err error) {
 	}
 	registry, err := tool.NewDefaultRegistry(workspace, tool.RegistryOptions{
 		Tools: hostTools, CommandExecutor: config.CommandExecutor, AllowLocalCommands: config.AllowLocalCommand,
+		SandboxHelperPath: config.SandboxHelperPath,
 	})
 	if err != nil {
 		return nil, err
@@ -149,7 +160,7 @@ func New(config Config) (_ *Core, err error) {
 	if err != nil {
 		return nil, err
 	}
-	checkpoints, err := sqlite.Open[agentgraph.State](context.Background(), filepath.Join(stateDir, "checkpoints-v8.db"), checkpoint.JSON[agentgraph.State]{})
+	checkpoints, err := sqlite.Open[agentgraph.State](context.Background(), filepath.Join(stateDir, "checkpoints-v10.db"), checkpoint.JSON[agentgraph.State]{})
 	if err != nil {
 		return nil, fmt.Errorf("open task checkpoints: %w", err)
 	}
@@ -182,6 +193,7 @@ func New(config Config) (_ *Core, err error) {
 		sessions:            sessions,
 		executionDefaults:   config.Execution,
 		callbackLimiter:     callbackLimiter,
+		acceptanceVerifier:  config.AcceptanceVerifier,
 		liveExecutions:      make(map[string]*graph.Execution[agentgraph.State]),
 		active:              TaskState{Status: TaskIdle},
 		activeTasks:         make(map[string]TaskState),
@@ -250,6 +262,9 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		SupportsInputAudio: profile.SupportsInputAudio, Execution: agentExecutionOptions(taskState.Execution),
 		Team:                  c.team,
 		AskUser:               true,
+		AcceptanceEnabled:     true,
+		AcceptanceVerifier:    c.acceptanceVerifier,
+		AcceptanceObserver:    c.onAcceptanceEvent,
 		ToolVisibleForMode:    c.registry.ToolVisibleForMode,
 		CurrentPermissionMode: func() string { return string(c.PermissionMode()) },
 		StreamObserverFor: func(state agentgraph.State, event model.ModelStreamEvent) {
@@ -299,6 +314,59 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		return nil, nil, model.ModelProfile{}, err
 	}
 	return agent, requester, profile, nil
+}
+
+func (c *Core) onAcceptanceEvent(state agentgraph.State, status, source, reason string) {
+	kind := EventAcceptanceStarted
+	switch status {
+	case "criteria_prepared":
+		kind = EventAcceptanceCriteriaReady
+	case "reported":
+		kind = EventAcceptanceReported
+	case "required":
+		kind = EventAcceptanceRequired
+	case "resolved":
+		kind = EventAcceptanceResolved
+	}
+	task, _ := c.StateForSession(stateSessionID(state))
+	criteriaIDs := make([]string, 0, len(state.AcceptanceCriteria))
+	for _, criterion := range state.AcceptanceCriteria {
+		criteriaIDs = append(criteriaIDs, criterion.ID)
+	}
+	var outcome AcceptanceOutcome
+	if len(state.AcceptanceReports) > 0 {
+		outcome = AcceptancePassed
+		for _, result := range state.AcceptanceReports[len(state.AcceptanceReports)-1].Results {
+			if result.Outcome == AcceptanceFailed {
+				outcome = AcceptanceFailed
+				break
+			}
+			if result.Outcome == AcceptanceUnknown {
+				outcome = AcceptanceUnknown
+			}
+		}
+	}
+	c.emit(Event{
+		Kind: kind, SessionID: task.SessionID, TaskID: task.TaskID, ExecutionID: state.ExecutionID,
+		AcceptanceStatus: status, AcceptanceSource: AcceptanceSource(source),
+		AcceptanceOutcome: outcome,
+		AcceptanceReason:  AcceptancePauseReason(reason), AcceptanceCandidateID: state.AcceptanceCandidateID,
+		AcceptanceCriterionIDs: criteriaIDs,
+	})
+}
+
+func (c *Core) onExecutionBlocker(ctx context.Context, state agentgraph.State, blockerID, toolName string) {
+	identity := publictool.CallIdentityFromContext(ctx)
+	c.emit(Event{
+		Kind: EventExecutionBlocked, SessionID: identity.SessionID, TaskID: identity.TaskID,
+		ExecutionID: state.ExecutionID, BlockerID: blockerID, BlockerTool: toolName,
+		Status: TaskPaused,
+	})
+}
+
+func stateSessionID(state agentgraph.State) string {
+	const prefix = "lune-session-"
+	return strings.TrimPrefix(state.RunID, prefix)
 }
 
 func (c *Core) configureRuntime(profileID, reasoningEffort string, taskState TaskState) (*agentruntime.Responder, model.ModelProfile, error) {

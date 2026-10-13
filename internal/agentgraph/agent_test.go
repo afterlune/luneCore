@@ -35,7 +35,7 @@ func TestLegacyPlanModeCheckpointStillDecodes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode legacy checkpoint: %v", err)
 	}
-	if state.TaskSettingsVersion != CurrentTaskSettingsVersion || state.Goal != "create a plan" {
+	if state.TaskSettingsVersion != 5 || state.Goal != "create a plan" {
 		t.Fatalf("decoded legacy checkpoint = %#v", state)
 	}
 	encoded, err := codec.Append(nil, state)

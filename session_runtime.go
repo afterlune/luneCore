@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
 	"time"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
 	"github.com/afterlune/luneCore/internal/session"
+	publictool "github.com/afterlune/luneCore/tool"
+	graph "github.com/afterlune/luneGraph"
 	"github.com/afterlune/luneGraph/checkpoint"
 )
 
@@ -45,10 +48,12 @@ const (
 )
 
 type TurnRequest struct {
-	Input         TaskInput
-	Model         string
-	MaxToolRounds int
-	Execution     ExecutionOptions
+	Input                  TaskInput
+	Model                  string
+	MaxToolRounds          int
+	Execution              ExecutionOptions
+	PlanAuthorization      publictool.PlanAuthorization
+	NoInteractiveDecisions bool
 }
 
 type TurnSubmission struct {
@@ -71,24 +76,33 @@ type RuntimeState struct {
 	Queue []QueuedTurnState
 }
 
-type TurnResult struct {
+// TaskResult is the shared synchronous and asynchronous outcome shape.
+type TaskResult struct {
 	ExecutionID string
 	Status      TaskStatus
 	Response    json.RawMessage
 	// ProposedPlan is set only for a completed response containing one complete
 	// proposed-plan block. Hosts can offer handoff choices when it is non-nil.
-	ProposedPlan *ProposedPlan
-	BudgetReason BudgetReason
+	ProposedPlan       *ProposedPlan
+	BudgetReason       BudgetReason
+	AcceptanceCriteria []AcceptanceCriterion
+	AcceptanceEvidence []AcceptanceEvidence
+	// AcceptanceReports contains every candidate judgment for this execution.
+	AcceptanceReports []AcceptanceReport
 }
+
+type TurnResult = TaskResult
 
 type PendingRequestKind string
 
 const (
 	PendingApproval PendingRequestKind = "approval"
 	// PendingUserQuestion is a lead-agent clarification waiting for the host.
-	PendingUserQuestion    PendingRequestKind = "user_question"
-	PendingUserInteraction PendingRequestKind = "user_interaction"
-	PendingToolRecovery    PendingRequestKind = "tool_recovery"
+	PendingUserQuestion      PendingRequestKind = "user_question"
+	PendingUserInteraction   PendingRequestKind = "user_interaction"
+	PendingToolRecovery      PendingRequestKind = "tool_recovery"
+	PendingAcceptanceRequest PendingRequestKind = "acceptance"
+	PendingExecutionBlocker  PendingRequestKind = "execution_blocker"
 )
 
 type PendingRequest struct {
@@ -97,6 +111,8 @@ type PendingRequest struct {
 	UserQuestion *UserQuestionRequest
 	Interaction  *UserInteractionRequest
 	ToolRecovery *ToolRecoveryRequest
+	Acceptance   *PendingAcceptance
+	Blocker      *ExecutionBlocker
 }
 
 // SessionRuntime is a handle to one session's turns, event log and pending
@@ -107,13 +123,15 @@ type SessionRuntime struct {
 }
 
 type storedTurnRequest struct {
-	Input              json.RawMessage  `json:"input"`
-	Model              string           `json:"model,omitempty"`
-	MaxToolRounds      int              `json:"max_tool_rounds,omitempty"`
-	Execution          ExecutionOptions `json:"execution,omitempty"`
-	ExecutionOverride  bool             `json:"execution_override,omitempty"`
-	PermissionOverride string           `json:"permission_override,omitempty"`
-	Resume             bool             `json:"resume,omitempty"`
+	Input                  json.RawMessage              `json:"input"`
+	Model                  string                       `json:"model,omitempty"`
+	MaxToolRounds          int                          `json:"max_tool_rounds,omitempty"`
+	Execution              ExecutionOptions             `json:"execution,omitempty"`
+	ExecutionOverride      bool                         `json:"execution_override,omitempty"`
+	PermissionOverride     string                       `json:"permission_override,omitempty"`
+	PlanAuthorization      publictool.PlanAuthorization `json:"plan_authorization,omitempty"`
+	NoInteractiveDecisions bool                         `json:"no_interactive_decisions,omitempty"`
+	Resume                 bool                         `json:"resume,omitempty"`
 }
 
 type turnResult struct {
@@ -208,16 +226,37 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 				}
 			}
 			response := append(json.RawMessage(nil), stored.Response...)
+			var reports []AcceptanceReport
+			if len(stored.AcceptanceReports) > 0 {
+				if err := json.Unmarshal(stored.AcceptanceReports, &reports); err != nil {
+					return TurnResult{}, fmt.Errorf("decode acceptance reports: %w", err)
+				}
+			}
+			var criteria []AcceptanceCriterion
+			if len(stored.AcceptanceCriteria) > 0 {
+				if err := json.Unmarshal(stored.AcceptanceCriteria, &criteria); err != nil {
+					return TurnResult{}, fmt.Errorf("decode acceptance criteria: %w", err)
+				}
+			}
+			var evidence []AcceptanceEvidence
+			if len(stored.AcceptanceEvidence) > 0 {
+				if err := json.Unmarshal(stored.AcceptanceEvidence, &evidence); err != nil {
+					return TurnResult{}, fmt.Errorf("decode acceptance evidence: %w", err)
+				}
+			}
 			var plan *ProposedPlan
 			if TaskStatus(stored.Status) == TaskCompleted {
 				plan = extractProposedPlan(response)
 			}
 			return TurnResult{
-				ExecutionID:  stored.ExecutionID,
-				Status:       TaskStatus(stored.Status),
-				Response:     response,
-				ProposedPlan: plan,
-				BudgetReason: BudgetReason(stored.BudgetReason),
+				ExecutionID:        stored.ExecutionID,
+				Status:             TaskStatus(stored.Status),
+				Response:           response,
+				ProposedPlan:       plan,
+				BudgetReason:       BudgetReason(stored.BudgetReason),
+				AcceptanceReports:  reports,
+				AcceptanceCriteria: criteria,
+				AcceptanceEvidence: evidence,
 			}, nil
 		}
 		_, queued, err := r.core.sessions.QueuedTurnByExecutionID(ctx, r.sessionID, executionID)
@@ -425,6 +464,20 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 		publicQuestion := publicUserQuestionRequest(question)
 		requests = append(requests, PendingRequest{Kind: PendingUserQuestion, UserQuestion: &publicQuestion})
 	}
+	pendingAcceptance, hasAcceptance, err := c.pendingAcceptance(ctx, r.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if hasAcceptance {
+		requests = append(requests, PendingRequest{Kind: PendingAcceptanceRequest, Acceptance: &pendingAcceptance})
+	}
+	blocker, hasBlocker, err := c.pendingExecutionBlocker(ctx, r.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	if hasBlocker {
+		requests = append(requests, PendingRequest{Kind: PendingExecutionBlocker, Blocker: &blocker})
+	}
 	recoveries, err := c.pendingToolRecoveries(ctx, r.sessionID)
 	if err != nil {
 		return nil, err
@@ -440,6 +493,71 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 		return pendingRequestID(requests[i]) < pendingRequestID(requests[j])
 	})
 	return requests, nil
+}
+
+func (r *SessionRuntime) PendingAcceptance(ctx context.Context) (PendingAcceptance, bool, error) {
+	if r == nil || r.core == nil || ctx == nil {
+		return PendingAcceptance{}, false, errors.New("session runtime and context are required")
+	}
+	return r.core.pendingAcceptance(ctx, r.sessionID)
+}
+
+func (c *Core) pendingAcceptance(ctx context.Context, sessionID string) (PendingAcceptance, bool, error) {
+	cp, err := c.runtime.CheckpointForSession(ctx, sessionID)
+	if errors.Is(err, checkpoint.ErrNotFound) {
+		return PendingAcceptance{}, false, nil
+	}
+	if err != nil {
+		return PendingAcceptance{}, false, err
+	}
+	for _, invocation := range cp.Invocations {
+		if invocation.Status != graph.InvocationWaiting || invocation.Continuation != agentgraph.AcceptanceContinuation || !invocation.State.AcceptancePaused {
+			continue
+		}
+		state := invocation.State
+		return PendingAcceptance{
+			RunID: cp.RunID, InvocationID: invocation.ID, CallID: invocation.CallID, ExecutionID: state.ExecutionID,
+			CandidateID: state.AcceptanceCandidateID, Candidate: state.AcceptanceCandidate, Kind: state.AcceptanceKind,
+			Criteria:             append([]AcceptanceCriterion(nil), state.AcceptanceCriteria...),
+			ClarificationAnswers: append([]string(nil), state.AcceptanceClarifications...),
+			Evidence:             append([]AcceptanceEvidence(nil), state.AcceptanceEvidence...),
+			Reports:              cloneAcceptanceReports(state.AcceptanceReports), Reason: state.AcceptancePauseReason, Repairs: state.AcceptanceRepairs,
+		}, true, nil
+	}
+	return PendingAcceptance{}, false, nil
+}
+
+func (c *Core) pendingExecutionBlocker(ctx context.Context, sessionID string) (ExecutionBlocker, bool, error) {
+	cp, err := c.runtime.CheckpointForSession(ctx, sessionID)
+	if errors.Is(err, checkpoint.ErrNotFound) {
+		return ExecutionBlocker{}, false, nil
+	}
+	if err != nil {
+		return ExecutionBlocker{}, false, err
+	}
+	for _, invocation := range cp.Invocations {
+		if invocation.Status != graph.InvocationWaiting || invocation.Continuation != agentgraph.ExecutionBlockerContinuation || invocation.State.BlockerID == "" {
+			continue
+		}
+		return ExecutionBlocker{
+			ID: invocation.State.BlockerID, ExecutionID: invocation.State.ExecutionID,
+			Tool: invocation.State.BlockerTool, Reason: invocation.State.BlockerReason,
+		}, true, nil
+	}
+	return ExecutionBlocker{}, false, nil
+}
+
+func cloneAcceptanceReports(reports []AcceptanceReport) []AcceptanceReport {
+	cloned := make([]AcceptanceReport, len(reports))
+	for i, report := range reports {
+		cloned[i] = report
+		cloned[i].Results = make([]AcceptanceCriterionResult, len(report.Results))
+		for j, result := range report.Results {
+			cloned[i].Results[j] = result
+			cloned[i].Results[j].Evidence = append([]string(nil), result.Evidence...)
+		}
+	}
+	return cloned
 }
 
 func pendingRequestID(request PendingRequest) string {
@@ -460,6 +578,14 @@ func pendingRequestID(request PendingRequest) string {
 		if request.ToolRecovery != nil {
 			return request.ToolRecovery.InvocationID
 		}
+	case PendingAcceptanceRequest:
+		if request.Acceptance != nil {
+			return request.Acceptance.CallID
+		}
+	case PendingExecutionBlocker:
+		if request.Blocker != nil {
+			return request.Blocker.ID
+		}
 	}
 	return ""
 }
@@ -477,6 +603,15 @@ func (r *SessionRuntime) ResolveUserQuestion(ctx context.Context, answer UserQue
 		return errors.New("session runtime and context are required")
 	}
 	return r.core.resolveUserQuestion(ctx, r.sessionID, answer)
+}
+
+// ResolveAcceptance explicitly confirms the candidate or grants a fresh pair
+// of correction attempts for a paused acceptance.
+func (r *SessionRuntime) ResolveAcceptance(ctx context.Context, resolution AcceptanceResolution) error {
+	if r == nil || r.core == nil || ctx == nil {
+		return errors.New("session runtime and context are required")
+	}
+	return r.core.resolveAcceptance(ctx, r.sessionID, resolution)
 }
 
 func (r *SessionRuntime) ResolveUserInteraction(id string, response json.RawMessage) error {

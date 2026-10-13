@@ -16,30 +16,30 @@ import (
 	graph "github.com/afterlune/luneGraph"
 )
 
-func (c *Core) RunTask(ctx context.Context, request TaskRequest) (json.RawMessage, error) {
+func (c *Core) RunTask(ctx context.Context, request TaskRequest) (TaskResult, error) {
 	if c == nil || ctx == nil {
-		return nil, errors.New("core and context are required")
+		return TaskResult{}, errors.New("core and context are required")
 	}
 	return c.runSynchronous(ctx, request)
 }
 
-func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...ExecutionOptions) (json.RawMessage, error) {
+func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...ExecutionOptions) (TaskResult, error) {
 	if c == nil || ctx == nil || sessionID == "" {
-		return nil, errors.New("core, context, and session id are required")
+		return TaskResult{}, errors.New("core, context, and session id are required")
 	}
 	runtime, err := c.OpenSessionRuntime(ctx, sessionID)
 	if err != nil {
-		return nil, err
+		return TaskResult{}, err
 	}
 	cursor, err := c.sessions.LatestRuntimeEventCursor(ctx, sessionID)
 	if err != nil {
-		return nil, err
+		return TaskResult{}, err
 	}
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 	events, err := runtime.subscribeEvents(streamCtx, cursor, false)
 	if err != nil {
-		return nil, err
+		return TaskResult{}, err
 	}
 	go func() {
 		for range events {
@@ -47,13 +47,13 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...Exec
 	}()
 	submission, waiter, err := c.recoverSession(ctx, sessionID, true, options...)
 	if err != nil {
-		return nil, err
+		return TaskResult{}, err
 	}
 	c.scheduleQueueDrain(sessionID)
 	return c.waitForTurn(ctx, runtime, submission.ExecutionID, waiter)
 }
 
-func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, permissionOverride string, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
+func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, permissionOverride string, authorization publictool.PlanAuthorization, noInteractiveDecisions bool, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
 	if c == nil || ctx == nil {
 		return nil, errors.New("core and context are required")
 	}
@@ -145,9 +145,11 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 			Model: modelOverride,
 			Goal:  effective.Goal, ContextWindow: effective.ContextWindow,
 			ReserveOutputTokens: effective.ReserveOutputTokens, AutoCompact: effective.AutoCompact,
-			AutoCompactThreshold: effective.AutoCompactThreshold,
-			Execution:            agentExecutionOptions(mergeExecutionOptions(c.executionDefaults, executionOptions)),
-			PermissionOverride:   permissionOverride,
+			AutoCompactThreshold:   effective.AutoCompactThreshold,
+			Execution:              agentExecutionOptions(mergeExecutionOptions(c.executionDefaults, executionOptions)),
+			PermissionOverride:     permissionOverride,
+			PlanAuthorization:      authorization,
+			NoInteractiveDecisions: noInteractiveDecisions,
 		}
 	}
 	if resume {
@@ -202,6 +204,8 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		ExecutionID: taskOptions.ExecutionID, AgentID: "lead",
 	})
 	ctx = runtimepermission.WithPermissionMode(ctx, taskOptions.PermissionOverride)
+	ctx = publictool.WithPlanAuthorization(ctx, taskOptions.PlanAuthorization)
+	ctx = publictool.WithNoInteractiveDecisions(ctx, taskOptions.NoInteractiveDecisions)
 	if resume {
 		if recoveryErr := c.checkToolRecovery(ctx, sessionID, taskState); recoveryErr != nil {
 			status := TaskFailed
@@ -331,7 +335,7 @@ func (c *Core) graphResumeInputs(ctx context.Context, sessionID, runID string) (
 	var inputs []graph.ResumeInput
 	for _, input := range stored {
 		for _, invocation := range cp.Invocations {
-			if invocation.Status == graph.InvocationWaiting && invocation.Continuation == agentgraph.UserQuestionContinuation && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
+			if invocation.Status == graph.InvocationWaiting && (invocation.Continuation == agentgraph.UserQuestionContinuation || invocation.Continuation == agentgraph.AcceptanceContinuation) && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
 				inputs = append(inputs, graph.ResumeInput{InvocationID: input.InvocationID, CallID: input.CallID, Payload: append([]byte(nil), input.Payload...)})
 				break
 			}
@@ -352,7 +356,7 @@ func (c *Core) reconcileGraphResumeInputs(ctx context.Context, sessionID, runID 
 	for _, input := range stored {
 		stillPending := false
 		for _, invocation := range cp.Invocations {
-			if invocation.Status == graph.InvocationWaiting && invocation.Continuation == agentgraph.UserQuestionContinuation && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
+			if invocation.Status == graph.InvocationWaiting && (invocation.Continuation == agentgraph.UserQuestionContinuation || invocation.Continuation == agentgraph.AcceptanceContinuation) && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
 				stillPending = true
 				break
 			}

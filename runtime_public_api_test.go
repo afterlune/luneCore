@@ -15,12 +15,12 @@ type externalProvider struct{}
 
 func (externalProvider) Name() string { return "external" }
 
-func (externalProvider) CreateResponse(context.Context, model.ModelRequest, model.ModelProfile) (*model.ModelResponse, error) {
-	return externalResponse(), nil
+func (externalProvider) CreateResponse(_ context.Context, request model.ModelRequest, _ model.ModelProfile) (*model.ModelResponse, error) {
+	return externalResponseForRequest(request), nil
 }
 
 func (externalProvider) StreamResponse(ctx context.Context, request model.ModelRequest, profile model.ModelProfile, emit func(model.ModelStreamEvent) error) (*model.ModelResponse, error) {
-	response := externalResponse()
+	response := externalResponseForRequest(request)
 	if emit != nil {
 		if err := emit(model.ModelStreamEvent{Type: model.ModelStreamCompleted, Response: response}); err != nil {
 			return nil, err
@@ -49,6 +49,41 @@ func externalResponse() *model.ModelResponse {
 	return &model.ModelResponse{Status: "completed", Output: []model.ResponseOutputItem{
 		model.OutputMessage{Role: model.RoleAssistant, Content: []model.OutputContentPart{model.OutputText{Text: "hello"}}},
 	}}
+}
+
+func externalResponseForRequest(request model.ModelRequest) *model.ModelResponse {
+	stage := "execution"
+	for _, definition := range request.Tools {
+		if function, ok := definition.(model.FunctionTool); ok {
+			switch function.Name {
+			case "prepare_task_criteria":
+				stage = "criteria"
+			case "submit_acceptance", "request_acceptance_evidence":
+				stage = "acceptance"
+			}
+		}
+	}
+	if stage == "criteria" {
+		arguments, _ := json.Marshal(map[string]any{
+			"kind": "answer", "criteria": []map[string]string{{
+				"id": "user_request", "description": "Answer the current user request.", "basis": "hello",
+			}},
+		})
+		return &model.ModelResponse{Status: "completed", Output: []model.ResponseOutputItem{
+			model.OutputFunctionCall{CallID: "criteria-call", Name: "prepare_task_criteria", Arguments: string(arguments)},
+		}}
+	}
+	if stage == "acceptance" {
+		arguments, _ := json.Marshal(map[string]any{
+			"candidate_id": "candidate-1", "results": []map[string]any{{
+				"criterion_id": "user_request", "outcome": "passed", "evidence": []string{"candidate:candidate-1"}, "reason": "The candidate answers the user.",
+			}},
+		})
+		return &model.ModelResponse{Status: "completed", Output: []model.ResponseOutputItem{
+			model.OutputFunctionCall{CallID: "acceptance-call", Name: "submit_acceptance", Arguments: string(arguments)},
+		}}
+	}
+	return externalResponse()
 }
 
 func TestExternalGoPackageCanEmbedAndExtendCore(t *testing.T) {

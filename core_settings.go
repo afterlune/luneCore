@@ -191,6 +191,7 @@ func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 		AutoCompact: state.AutoCompact, AutoCompactThreshold: state.AutoCompactThreshold,
 		Execution:          state.Execution,
 		PermissionOverride: state.PermissionOverride,
+		PlanAuthorization:  state.PlanAuthorization, NoInteractiveDecisions: state.NoInteractiveDecisions,
 	}
 }
 
@@ -205,7 +206,7 @@ func validateExecutionOptions(options ExecutionOptions) error {
 }
 
 func validatePermissionOverride(mode string) error {
-	if mode == "" || PermissionMode(mode) == PermissionWorkspace {
+	if mode == "" || PermissionMode(mode) == PermissionWorkspace || PermissionMode(mode) == PermissionAsk || PermissionMode(mode) == PermissionFullAccess {
 		return nil
 	}
 	return fmt.Errorf("unsupported task permission override %q", mode)

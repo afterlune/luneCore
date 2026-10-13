@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 var (
@@ -22,6 +25,9 @@ var (
 type ProposedPlan struct {
 	Text string `json:"text"`
 }
+
+// PlanAuthorization is the host-confirmed permission snapshot for one plan run.
+type PlanAuthorization = publictool.PlanAuthorization
 
 // PlanImplementationMode selects the conversation context used to execute a plan.
 type PlanImplementationMode string
@@ -86,9 +92,12 @@ func extractProposedPlan(raw json.RawMessage) *ProposedPlan {
 
 // ImplementPlan starts one approved plan with workspace permission scoped to
 // that turn. The Core's global permission mode is left unchanged.
-func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID string, mode PlanImplementationMode) (PlanImplementation, error) {
+func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID string, mode PlanImplementationMode, approvals ...PlanAuthorization) (PlanImplementation, error) {
 	if r == nil || r.core == nil || ctx == nil || sourceExecutionID == "" {
 		return PlanImplementation{}, errors.New("session runtime, context, and source execution id are required")
+	}
+	if len(approvals) > 1 {
+		return PlanImplementation{}, errors.New("at most one plan authorization may be supplied")
 	}
 	if mode != PlanImplementSameContext && mode != PlanImplementNewContext {
 		return PlanImplementation{}, fmt.Errorf("unsupported plan implementation mode %q", mode)
@@ -97,11 +106,18 @@ func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID st
 	if err != nil {
 		return PlanImplementation{}, err
 	}
+	var authorization PlanAuthorization
+	if len(approvals) == 1 {
+		authorization, err = validatePlanAuthorization(approvals[0])
+		if err != nil {
+			return PlanImplementation{}, err
+		}
+	}
 
 	targetSessionID := r.sessionID
-	inputText := "Implement the plan."
+	inputText := "Implement the plan. Use the approved authorization. Do not ask the user questions or request permissions. If an unapproved action becomes necessary, stop and report the blocker."
 	if mode == PlanImplementNewContext {
-		inputText = "Implement the following plan. Treat this plan as the complete task context; do not assume access to the previous conversation.\n\n" + plan.Text
+		inputText = "Implement the following plan using the approved authorization. Treat it as the complete task context; do not assume access to the previous conversation. Do not ask the user questions or request permissions. If an unapproved action becomes necessary, stop and report the blocker.\n\n" + plan.Text
 	}
 	input, err := NewTaskInput(inputText)
 	if err != nil {
@@ -114,7 +130,13 @@ func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID st
 		}
 		targetSessionID = target.ID
 	}
-	submission, _, err := r.core.submitTurnWithPermission(ctx, targetSessionID, TurnRequest{Input: input}, StartIfIdle, false, string(PermissionWorkspace))
+	executionPermission := r.core.PermissionMode()
+	if executionPermission == PermissionReadOnly {
+		executionPermission = PermissionWorkspace
+	}
+	submission, _, err := r.core.submitTurnWithPermission(ctx, targetSessionID, TurnRequest{
+		Input: input, PlanAuthorization: authorization, NoInteractiveDecisions: true,
+	}, StartIfIdle, false, string(executionPermission))
 	if err != nil {
 		if targetSessionID != r.sessionID {
 			if _, deleteErr := r.core.sessions.Delete(context.Background(), targetSessionID, r.core.workspace); deleteErr != nil {
@@ -124,6 +146,44 @@ func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID st
 		return PlanImplementation{}, err
 	}
 	return PlanImplementation{SessionID: targetSessionID, Submission: submission}, nil
+}
+
+func validatePlanAuthorization(authorization PlanAuthorization) (PlanAuthorization, error) {
+	validated := authorization
+	validated.Paths = append([]publictool.PathGrant(nil), authorization.Paths...)
+	validated.AllowedTools = append([]string(nil), authorization.AllowedTools...)
+	validated.ApprovedHighRiskCommands = append([]string(nil), authorization.ApprovedHighRiskCommands...)
+	for index, grant := range validated.Paths {
+		if grant.Access != publictool.PathRead && grant.Access != publictool.PathReadWrite {
+			return PlanAuthorization{}, fmt.Errorf("path grant %d has unsupported access %q", index, grant.Access)
+		}
+		if !filepath.IsAbs(grant.Path) {
+			return PlanAuthorization{}, fmt.Errorf("path grant %d must use an absolute path", index)
+		}
+		resolved, err := filepath.EvalSymlinks(grant.Path)
+		if err != nil {
+			return PlanAuthorization{}, fmt.Errorf("resolve approved path %q: %w", grant.Path, err)
+		}
+		if _, err := os.Stat(resolved); err != nil {
+			return PlanAuthorization{}, fmt.Errorf("inspect approved path %q: %w", grant.Path, err)
+		}
+		validated.Paths[index].Path = resolved
+	}
+	for index, command := range validated.ApprovedHighRiskCommands {
+		command = strings.TrimSpace(command)
+		if command == "" {
+			return PlanAuthorization{}, fmt.Errorf("approved high-risk command %d must not be empty", index)
+		}
+		validated.ApprovedHighRiskCommands[index] = command
+	}
+	for index, name := range validated.AllowedTools {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			return PlanAuthorization{}, fmt.Errorf("approved tool %d must not be empty", index)
+		}
+		validated.AllowedTools[index] = name
+	}
+	return validated, nil
 }
 
 func (c *Core) validatePlanSource(ctx context.Context, sessionID, executionID string) (*ProposedPlan, Session, error) {

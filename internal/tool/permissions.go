@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 // PermissionMode controls how registered tools are authorized.
@@ -34,13 +36,13 @@ func PermissionModes() []PermissionMode {
 func PermissionModeDescription(mode PermissionMode) string {
 	switch mode {
 	case PermissionModeReadOnly:
-		return "Read workspace files; ask before web; block writes and shell"
+		return "Read workspace files; ask before network; block writes and commands"
 	case PermissionModeWorkspace:
-		return "Workspace file operations; commands and web need approval"
+		return "Workspace file operations and sandboxed commands; network and external paths need plan approval"
 	case PermissionModeAsk:
-		return "Read workspace files; Ask before every other tool"
+		return "Read workspace files; approve other tool operations in the plan"
 	case PermissionModeFullAccess:
-		return "Allow all tools; shell can access paths outside the workspace"
+		return "Allow current-user files and network inside the OS sandbox; remove elevation and require plan approval for high-risk commands"
 	default:
 		return ""
 	}
@@ -74,6 +76,11 @@ func permissionModeFromContext(ctx context.Context) (PermissionMode, bool) {
 	}
 	mode, ok := ctx.Value(permissionModeContextKey{}).(PermissionMode)
 	return mode, ok
+}
+
+func PermissionModeFromContext(ctx context.Context) PermissionMode {
+	mode, _ := permissionModeFromContext(ctx)
+	return mode
 }
 
 type permissionDisposition uint8
@@ -140,8 +147,17 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 	case permissionAllowed:
 		return ctx.Err()
 	case permissionNeedsApproval:
+		if planAuthorizes(ctx, request) {
+			return ctx.Err()
+		}
+		if publictool.NoInteractiveDecisions(ctx) {
+			return &publictool.ExecutionBlockerError{Tool: request.Tool, Reason: fmt.Sprintf("%s requires approval that was not included in the execution plan", request.Tool)}
+		}
 		return requestApproval(ctx, approve, request)
 	case permissionDenied:
+		if publictool.NoInteractiveDecisions(ctx) {
+			return &publictool.ExecutionBlockerError{Tool: request.Tool, Reason: fmt.Sprintf("%s is outside the permissions approved for this plan", request.Tool)}
+		}
 		if mode == PermissionModeReadOnly {
 			return fmt.Errorf("tool %q is disabled in read-only mode", request.Tool)
 		}
@@ -151,6 +167,25 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 		return fmt.Errorf("unknown permission mode %q", mode)
 	}
 	return fmt.Errorf("unknown permission mode %q", mode)
+}
+
+func planAuthorizes(ctx context.Context, request PermissionRequest) bool {
+	authorization := publictool.PlanAuthorizationFromContext(ctx)
+	if slices.Contains(authorization.AllowedTools, request.Tool) {
+		return true
+	}
+	return request.Metadata.PermissionClass == model.ToolPermissionNetwork && authorization.AllowNetwork
+}
+
+func permissionModeFromRegistry(ctx context.Context, permissions *permissionSettings, metadata model.ToolMetadata) PermissionMode {
+	if mode, ok := permissionModeFromContext(ctx); ok {
+		return mode
+	}
+	if permissions == nil {
+		return PermissionModeFullAccess
+	}
+	mode, _, _ := permissions.policy(metadata)
+	return mode
 }
 
 func (p *permissionSettings) policy(metadata model.ToolMetadata) (PermissionMode, PermissionApprovalHandler, permissionDisposition) {
@@ -176,9 +211,9 @@ func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) perm
 		}
 	case PermissionModeWorkspace:
 		switch class {
-		case model.ToolPermissionWorkspaceRead, model.ToolPermissionWorkspaceWrite:
+		case model.ToolPermissionWorkspaceRead, model.ToolPermissionWorkspaceWrite, model.ToolPermissionCommand:
 			return permissionAllowed
-		case model.ToolPermissionCommand, model.ToolPermissionNetwork:
+		case model.ToolPermissionNetwork:
 			return permissionNeedsApproval
 		default:
 			return permissionDenied

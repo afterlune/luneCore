@@ -3,12 +3,15 @@ package agentgraph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
 )
 
@@ -19,13 +22,17 @@ const (
 	teamToolNode       = "team_execute_tool"
 	teamJoinNode       = "team_join"
 	teamBranchJoinNode = "team_branch_join"
-	machineID          = "lune-agent-v2"
+	criteriaNode       = "prepare_acceptance_criteria"
+	acceptanceNode     = "accept_candidate"
+	machineID          = "lune-agent-v3"
 )
 
 const UserQuestionContinuation = "user_question"
+const AcceptanceContinuation = "acceptance_resolution"
+const ExecutionBlockerContinuation = "execution_blocker"
 
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
-const CurrentTaskSettingsVersion = 5
+const CurrentTaskSettingsVersion = 7
 
 // Requester sends one Responses API request without managing history or tools.
 type Requester interface {
@@ -69,6 +76,10 @@ type AgentOptions struct {
 	Execution          ExecutionOptions
 	Team               TeamExecutor
 	AskUser            bool
+	AcceptanceEnabled  bool
+	AcceptanceVerifier acceptance.Verifier
+	AcceptanceObserver func(State, string, string, string)
+	BlockerObserver    func(context.Context, State, string, string)
 	// ToolVisible filters registered tools for each model request.
 	ToolVisible           func(string) bool
 	ToolVisibleForMode    func(string, string) bool
@@ -95,52 +106,75 @@ type ContextCompactionEvent struct {
 type State struct {
 	RunID string `json:"run_id,omitempty"`
 	// ExecutionID is stable across resume attempts and namespaces tool calls.
-	ExecutionID              string                     `json:"execution_id,omitempty"`
-	AgentID                  string                     `json:"agent_id,omitempty"`
-	AgentName                string                     `json:"agent_name,omitempty"`
-	Provider                 string                     `json:"provider,omitempty"`
-	Protocol                 string                     `json:"protocol,omitempty"`
-	ServerCompaction         bool                       `json:"server_compaction,omitempty"`
-	SupportsInputAudio       bool                       `json:"supports_input_audio"`
-	ServerCompactionFallback bool                       `json:"server_compaction_fallback,omitempty"`
-	ModelProfile             string                     `json:"model_profile,omitempty"`
-	Model                    string                     `json:"model,omitempty"`
-	ModelOverride            string                     `json:"model_override,omitempty"`
-	ReasoningEffort          string                     `json:"reasoning_effort,omitempty"`
-	TaskSettingsVersion      int                        `json:"task_settings_version,omitempty"`
-	Execution                ExecutionOptions           `json:"execution,omitempty"`
-	PermissionOverride       string                     `json:"permission_override,omitempty"`
-	Goal                     string                     `json:"goal,omitempty"`
-	ContextWindow            int64                      `json:"context_window,omitempty"`
-	ReserveOutputTokens      int64                      `json:"reserve_output_tokens,omitempty"`
-	AutoCompact              bool                       `json:"auto_compact,omitempty"`
-	AutoCompactThreshold     float64                    `json:"auto_compact_threshold,omitempty"`
-	History                  model.ResponseInput        `json:"history"`
-	Transcript               model.ResponseInput        `json:"transcript,omitempty"`
-	CompactionWarningEmitted bool                       `json:"compaction_warning_emitted,omitempty"`
-	SelectedCategory         string                     `json:"selected_category,omitempty"`
-	PendingCalls             []model.OutputFunctionCall `json:"pending_calls,omitempty"`
-	PendingIndex             int                        `json:"pending_index,omitempty"`
-	VisibleTools             []string                   `json:"visible_tools,omitempty"`
-	ToolRounds               int                        `json:"tool_rounds,omitempty"`
-	MaxToolRounds            int                        `json:"max_tool_rounds,omitempty"`
-	TaskError                string                     `json:"task_error,omitempty"`
-	FinalResponse            *model.Response            `json:"final_response,omitempty"`
-	TeamBranch               bool                       `json:"team_branch,omitempty"`
-	TeamTaskID               string                     `json:"team_task_id,omitempty"`
-	TeamModel                string                     `json:"team_model,omitempty"`
-	TeamProvider             string                     `json:"team_provider,omitempty"`
-	TeamText                 string                     `json:"team_text,omitempty"`
-	TeamError                string                     `json:"team_error,omitempty"`
-	TeamStarted              bool                       `json:"team_started,omitempty"`
-	TeamRunID                string                     `json:"team_run_id,omitempty"`
-	TeamDispatchID           string                     `json:"team_dispatch_id,omitempty"`
-	TeamAssignments          []TeamAssignment           `json:"team_assignments,omitempty"`
-	TeamMinimumSuccesses     int                        `json:"team_minimum_successes,omitempty"`
-	UserQuestion             string                     `json:"user_question,omitempty"`
-	UserQuestionOptions      []string                   `json:"user_question_options,omitempty"`
-	UserAnswer               string                     `json:"user_answer,omitempty"`
-	UserAnswerReady          bool                       `json:"user_answer_ready,omitempty"`
+	ExecutionID               string                       `json:"execution_id,omitempty"`
+	AgentID                   string                       `json:"agent_id,omitempty"`
+	AgentName                 string                       `json:"agent_name,omitempty"`
+	Provider                  string                       `json:"provider,omitempty"`
+	Protocol                  string                       `json:"protocol,omitempty"`
+	ServerCompaction          bool                         `json:"server_compaction,omitempty"`
+	SupportsInputAudio        bool                         `json:"supports_input_audio"`
+	ServerCompactionFallback  bool                         `json:"server_compaction_fallback,omitempty"`
+	ModelProfile              string                       `json:"model_profile,omitempty"`
+	Model                     string                       `json:"model,omitempty"`
+	ModelOverride             string                       `json:"model_override,omitempty"`
+	ReasoningEffort           string                       `json:"reasoning_effort,omitempty"`
+	TaskSettingsVersion       int                          `json:"task_settings_version,omitempty"`
+	Execution                 ExecutionOptions             `json:"execution,omitempty"`
+	PermissionOverride        string                       `json:"permission_override,omitempty"`
+	PlanAuthorization         publictool.PlanAuthorization `json:"plan_authorization,omitempty"`
+	NoInteractiveDecisions    bool                         `json:"no_interactive_decisions,omitempty"`
+	BlockerID                 string                       `json:"blocker_id,omitempty"`
+	BlockerTool               string                       `json:"blocker_tool,omitempty"`
+	BlockerReason             string                       `json:"blocker_reason,omitempty"`
+	Goal                      string                       `json:"goal,omitempty"`
+	ContextWindow             int64                        `json:"context_window,omitempty"`
+	ReserveOutputTokens       int64                        `json:"reserve_output_tokens,omitempty"`
+	AutoCompact               bool                         `json:"auto_compact,omitempty"`
+	AutoCompactThreshold      float64                      `json:"auto_compact_threshold,omitempty"`
+	History                   model.ResponseInput          `json:"history"`
+	Transcript                model.ResponseInput          `json:"transcript,omitempty"`
+	CompactionWarningEmitted  bool                         `json:"compaction_warning_emitted,omitempty"`
+	SelectedCategory          string                       `json:"selected_category,omitempty"`
+	PendingCalls              []model.OutputFunctionCall   `json:"pending_calls,omitempty"`
+	PendingIndex              int                          `json:"pending_index,omitempty"`
+	VisibleTools              []string                     `json:"visible_tools,omitempty"`
+	ToolRounds                int                          `json:"tool_rounds,omitempty"`
+	MaxToolRounds             int                          `json:"max_tool_rounds,omitempty"`
+	TaskError                 string                       `json:"task_error,omitempty"`
+	FinalResponse             *model.Response              `json:"final_response,omitempty"`
+	TeamBranch                bool                         `json:"team_branch,omitempty"`
+	TeamTaskID                string                       `json:"team_task_id,omitempty"`
+	TeamModel                 string                       `json:"team_model,omitempty"`
+	TeamProvider              string                       `json:"team_provider,omitempty"`
+	TeamText                  string                       `json:"team_text,omitempty"`
+	TeamError                 string                       `json:"team_error,omitempty"`
+	TeamStarted               bool                         `json:"team_started,omitempty"`
+	TeamRunID                 string                       `json:"team_run_id,omitempty"`
+	TeamDispatchID            string                       `json:"team_dispatch_id,omitempty"`
+	TeamAssignments           []TeamAssignment             `json:"team_assignments,omitempty"`
+	TeamMinimumSuccesses      int                          `json:"team_minimum_successes,omitempty"`
+	UserQuestion              string                       `json:"user_question,omitempty"`
+	UserQuestionOptions       []string                     `json:"user_question_options,omitempty"`
+	UserAnswer                string                       `json:"user_answer,omitempty"`
+	UserAnswerReady           bool                         `json:"user_answer_ready,omitempty"`
+	TaskInput                 json.RawMessage              `json:"task_input,omitempty"`
+	AcceptancePhase           string                       `json:"acceptance_phase,omitempty"`
+	AcceptanceKind            acceptance.TaskKind          `json:"acceptance_kind,omitempty"`
+	AcceptanceClarifications  []string                     `json:"acceptance_clarifications,omitempty"`
+	AcceptanceCriteria        []acceptance.Criterion       `json:"acceptance_criteria,omitempty"`
+	AcceptanceCandidate       string                       `json:"acceptance_candidate,omitempty"`
+	AcceptanceCandidateID     string                       `json:"acceptance_candidate_id,omitempty"`
+	AcceptanceCandidateCount  int                          `json:"acceptance_candidate_count,omitempty"`
+	AcceptanceEvidenceRequest string                       `json:"acceptance_evidence_request,omitempty"`
+	AcceptanceReports         []acceptance.Report          `json:"acceptance_reports,omitempty"`
+	AcceptanceEvidence        []acceptance.Evidence        `json:"acceptance_evidence,omitempty"`
+	AcceptanceRepairs         int                          `json:"acceptance_repairs,omitempty"`
+	AcceptanceFormatRetries   int                          `json:"acceptance_format_retries,omitempty"`
+	AcceptancePauseReason     acceptance.PauseReason       `json:"acceptance_pause_reason,omitempty"`
+	AcceptancePaused          bool                         `json:"acceptance_paused,omitempty"`
+	AcceptanceDecision        acceptance.Decision          `json:"acceptance_decision,omitempty"`
+	AcceptanceDecisionRunID   string                       `json:"acceptance_decision_run_id,omitempty"`
+	AcceptanceDecisionCallID  string                       `json:"acceptance_decision_call_id,omitempty"`
 }
 
 // TaskOptions configures one user task. A zero tool-round limit is unlimited.
@@ -148,15 +182,17 @@ type TaskOptions struct {
 	ExecutionID   string
 	MaxToolRounds int
 	// Model optionally overrides the configured profile's model identifier for this task.
-	Model                string
-	ReasoningEffort      string
-	Goal                 string
-	ContextWindow        int64
-	ReserveOutputTokens  int64
-	AutoCompact          bool
-	AutoCompactThreshold float64
-	Execution            ExecutionOptions
-	PermissionOverride   string
+	Model                  string
+	ReasoningEffort        string
+	Goal                   string
+	ContextWindow          int64
+	ReserveOutputTokens    int64
+	AutoCompact            bool
+	AutoCompactThreshold   float64
+	Execution              ExecutionOptions
+	PermissionOverride     string
+	PlanAuthorization      publictool.PlanAuthorization
+	NoInteractiveDecisions bool
 }
 
 // ExecutionOptions contains the small set of controls that affect one Agent run.
@@ -219,12 +255,22 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 		}
 	}
 
-	workflow := graph.New[State](modelNode)
+	startNode := modelNode
+	if options.AcceptanceEnabled {
+		startNode = criteriaNode
+	}
+	workflow := graph.New[State](startNode)
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: criteriaNode, Run: agent.requestCriteria, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
+		return nil, fmt.Errorf("add acceptance criteria node: %w", err)
+	}
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: modelNode, Run: agent.requestLead, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
 		return nil, fmt.Errorf("add model node: %w", err)
 	}
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: toolNode, Run: agent.executeLeadTool, OnError: graph.FailExecution, Timeout: options.Execution.ToolTimeout}); err != nil {
 		return nil, fmt.Errorf("add tool node: %w", err)
+	}
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: acceptanceNode, Run: agent.requestAcceptance, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
+		return nil, fmt.Errorf("add acceptance node: %w", err)
 	}
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: teamModelNode, Run: agent.requestTeam, OnError: graph.FailInvocation, Timeout: options.Execution.ModelTimeout}); err != nil {
 		return nil, fmt.Errorf("add team model node: %w", err)
@@ -244,8 +290,32 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	}); err != nil {
 		return nil, fmt.Errorf("register user question continuation: %w", err)
 	}
+	if err := graph.RegisterJSONContinuation[State, acceptanceResolution](workflow, AcceptanceContinuation, func(_ context.Context, call graph.CallInfo, state State, decision acceptanceResolution) (State, error) {
+		state.AcceptanceDecision = decision.Decision
+		state.AcceptanceDecisionRunID = call.RunID
+		state.AcceptanceDecisionCallID = call.CallID
+		return state, nil
+	}); err != nil {
+		return nil, fmt.Errorf("register acceptance continuation: %w", err)
+	}
+	if err := graph.RegisterJSONContinuation[State, string](workflow, ExecutionBlockerContinuation, func(_ context.Context, _ graph.CallInfo, state State, _ string) (State, error) {
+		return state, errors.New("an execution blocker requires an updated plan")
+	}); err != nil {
+		return nil, fmt.Errorf("register execution blocker continuation: %w", err)
+	}
+	if err := workflow.AddEdge(criteriaNode, toolNode); err != nil {
+		return nil, fmt.Errorf("add criteria-to-tool edge: %w", err)
+	}
+	for _, edge := range [][2]string{{criteriaNode, modelNode}, {criteriaNode, criteriaNode}, {criteriaNode, acceptanceNode}, {modelNode, acceptanceNode}, {toolNode, criteriaNode}, {toolNode, acceptanceNode}, {acceptanceNode, modelNode}, {acceptanceNode, criteriaNode}, {acceptanceNode, acceptanceNode}} {
+		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
+			return nil, fmt.Errorf("add %s-to-%s edge: %w", edge[0], edge[1], err)
+		}
+	}
 	if err := workflow.AddEdge(modelNode, toolNode); err != nil {
 		return nil, fmt.Errorf("add model-to-tool edge: %w", err)
+	}
+	if err := workflow.AddEdge(acceptanceNode, toolNode); err != nil {
+		return nil, fmt.Errorf("add acceptance-to-tool edge: %w", err)
 	}
 	if err := workflow.AddEdge(toolNode, toolNode); err != nil {
 		return nil, fmt.Errorf("add tool-to-tool edge: %w", err)
@@ -308,6 +378,19 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.AutoCompactThreshold = taskOptions.AutoCompactThreshold
 	state.Execution = taskOptions.Execution
 	state.PermissionOverride = taskOptions.PermissionOverride
+	state.PlanAuthorization = taskOptions.PlanAuthorization
+	state.NoInteractiveDecisions = taskOptions.NoInteractiveDecisions
+	if input != nil {
+		state.TaskInput, err = json.Marshal(input)
+		if err != nil {
+			return nil, graph.Result[State]{Status: graph.StatusFailed}, fmt.Errorf("encode task input for acceptance: %w", err)
+		}
+	}
+	if a.options.AcceptanceEnabled {
+		state.AcceptancePhase = "criteria"
+	} else {
+		state.AcceptancePhase = "execution"
+	}
 	return a.runner.Start(ctx, runID, state, store, options)
 }
 
@@ -353,6 +436,10 @@ const askUserToolName = model.UserQuestionToolName
 type userQuestionInput struct {
 	Question string   `json:"question"`
 	Options  []string `json:"options,omitempty"`
+}
+
+type acceptanceResolution struct {
+	Decision acceptance.Decision `json:"decision"`
 }
 
 type teamDispatchRequest struct {

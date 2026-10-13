@@ -173,7 +173,7 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 	}
 }
 
-func TestDefaultRegistryRequiresApprovalForCommandInWorkspaceMode(t *testing.T) {
+func TestDefaultRegistryFailsClosedWhenSandboxHelperIsUnavailable(t *testing.T) {
 	registry, err := NewDefaultRegistry(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewDefaultRegistry: %v", err)
@@ -181,8 +181,8 @@ func TestDefaultRegistryRequiresApprovalForCommandInWorkspaceMode(t *testing.T) 
 	defer registry.Close()
 
 	result := registry.Run(context.Background(), "command", json.RawMessage(`{"command":"exit 0"}`))
-	if result.Err == nil || !strings.Contains(result.Err.Error(), "requires approval") {
-		t.Fatalf("command result error = %v, want workspace-mode approval requirement", result.Err)
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "kernel sandbox helper") {
+		t.Fatalf("command result error = %v, want fail-closed sandbox helper error", result.Err)
 	}
 }
 

@@ -109,7 +109,7 @@ func (c *Core) drainQueue(sessionID string) {
 		c.mu.Lock()
 		c.executionRuns[queued.ExecutionID] = runDone
 		c.mu.Unlock()
-		response, runErr := c.run(ctx, sessionID, request.MaxToolRounds, request.Model, request.Execution, request.ExecutionOverride, request.PermissionOverride, request.Resume, input, queued.QueueID, queued.ExecutionID)
+		response, runErr := c.run(ctx, sessionID, request.MaxToolRounds, request.Model, request.Execution, request.ExecutionOverride, request.PermissionOverride, request.PlanAuthorization, request.NoInteractiveDecisions, request.Resume, input, queued.QueueID, queued.ExecutionID)
 		c.mu.Lock()
 		if c.executionRuns[queued.ExecutionID] == runDone {
 			delete(c.executionRuns, queued.ExecutionID)
@@ -136,7 +136,11 @@ func (c *Core) drainQueue(sessionID string) {
 				if current.Status != session.QueuedTurnPaused && current.Status != session.QueuedTurnQueued {
 					event := Event{Kind: EventTaskFinished, SessionID: sessionID, TaskID: state.TaskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskPaused, BudgetReason: budgetReasonFromError(runErr), Err: errorString(runErr)}
 					if persistErr := c.persistQueuedEvent(ctx, event, func(payload json.RawMessage) (int64, error) {
-						return c.sessions.PauseQueuedTurnWithReason(ctx, sessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload)
+						artifacts, artifactErr := c.acceptanceArtifacts(ctx, sessionID)
+						if artifactErr != nil {
+							return 0, artifactErr
+						}
+						return c.sessions.PauseQueuedTurnWithReason(ctx, sessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload, artifacts...)
 					}); persistErr != nil {
 						slog.Warn("restore paused queued turn", "error", persistErr)
 					}
@@ -336,47 +340,55 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 	return deletedCheckpoint || deletedQueue, nil
 }
 
-func (c *Core) waitForTurn(ctx context.Context, runtime *SessionRuntime, executionID string, waiter <-chan turnResult) (json.RawMessage, error) {
+func (c *Core) waitForTurn(ctx context.Context, runtime *SessionRuntime, executionID string, waiter <-chan turnResult) (TaskResult, error) {
 	if waiter == nil {
-		return nil, errors.New("turn completion channel is unavailable")
+		return TaskResult{}, errors.New("turn completion channel is unavailable")
 	}
 	select {
 	case result := <-waiter:
-		return result.response, result.err
+		stored, err := runtime.WaitTurn(context.Background(), executionID)
+		if err != nil {
+			return TaskResult{}, errors.Join(result.err, err)
+		}
+		return stored, result.err
 	case <-ctx.Done():
 		runtime.Interrupt(executionID)
 		result := <-waiter
-		if result.err != nil {
-			return result.response, result.err
+		stored, storedErr := runtime.WaitTurn(context.Background(), executionID)
+		if storedErr != nil {
+			return TaskResult{}, errors.Join(result.err, storedErr)
 		}
-		return result.response, ctx.Err()
+		if result.err != nil {
+			return stored, result.err
+		}
+		return stored, ctx.Err()
 	}
 }
 
-func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (json.RawMessage, error) {
+func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (TaskResult, error) {
 	if len(request.Input.Raw) == 0 || !json.Valid(request.Input.Raw) {
-		return nil, errors.New("task input must be valid JSON")
+		return TaskResult{}, errors.New("task input must be valid JSON")
 	}
 	input, err := model.NewResponseInput(request.Input.Raw)
 	if err != nil {
-		return nil, err
+		return TaskResult{}, err
 	}
 	if err := validateTaskInputAttachments(input, c.attachmentLimits); err != nil {
-		return nil, err
+		return TaskResult{}, err
 	}
 	runtime, err := c.OpenSessionRuntime(ctx, request.SessionID)
 	if err != nil {
-		return nil, err
+		return TaskResult{}, err
 	}
 	cursor, err := c.sessions.LatestRuntimeEventCursor(ctx, request.SessionID)
 	if err != nil {
-		return nil, err
+		return TaskResult{}, err
 	}
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
 	events, err := runtime.subscribeEvents(streamCtx, cursor, false)
 	if err != nil {
-		return nil, err
+		return TaskResult{}, err
 	}
 	go func() {
 		for range events {
@@ -384,10 +396,11 @@ func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (json.Ra
 	}()
 	submission, waiter, err := c.submitTurn(ctx, request.SessionID, TurnRequest{
 		Input: request.Input, Model: request.Model, MaxToolRounds: request.MaxToolRounds,
-		Execution: request.Execution,
+		Execution: request.Execution, PlanAuthorization: request.PlanAuthorization,
+		NoInteractiveDecisions: request.NoInteractiveDecisions,
 	}, StartIfIdle, true)
 	if err != nil {
-		return nil, err
+		return TaskResult{}, err
 	}
 	c.scheduleQueueDrain(request.SessionID)
 	return c.waitForTurn(ctx, runtime, submission.ExecutionID, waiter)

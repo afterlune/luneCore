@@ -118,18 +118,112 @@ type CommandRequest struct {
 	Command      string
 	Workspace    string
 	InvocationID string
+	Sandbox      SandboxPolicy
+}
+
+// PathAccess describes one path scope explicitly approved for a plan.
+type PathAccess string
+
+const (
+	PathRead      PathAccess = "read"
+	PathReadWrite PathAccess = "read_write"
+)
+
+// PathGrant adds a path outside the workspace to a single planned execution.
+type PathGrant struct {
+	Path   string     `json:"path"`
+	Access PathAccess `json:"access"`
+}
+
+// PlanAuthorization records the host-approved capabilities for one plan run.
+// Paths and high-risk commands are exact grants; an empty value grants nothing.
+type PlanAuthorization struct {
+	Paths                    []PathGrant `json:"paths,omitempty"`
+	AllowNetwork             bool        `json:"allow_network,omitempty"`
+	AllowedTools             []string    `json:"allowed_tools,omitempty"`
+	ApprovedHighRiskCommands []string    `json:"approved_high_risk_commands,omitempty"`
+}
+
+// SandboxPolicy is passed to command executors for every invocation. The
+// built-in executor enforces this policy with the operating system sandbox.
+type SandboxPolicy struct {
+	PermissionMode string      `json:"permission_mode"`
+	Workspace      string      `json:"workspace"`
+	HomeDir        string      `json:"home_dir,omitempty"`
+	Grants         []PathGrant `json:"grants,omitempty"`
+	Network        bool        `json:"network,omitempty"`
+	TempDir        string      `json:"temp_dir,omitempty"`
+}
+
+type planAuthorizationContextKey struct{}
+type noInteractiveDecisionsContextKey struct{}
+
+// WithPlanAuthorization scopes pre-approved plan capabilities to a task.
+func WithPlanAuthorization(ctx context.Context, authorization PlanAuthorization) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	copy := authorization
+	copy.Paths = append([]PathGrant(nil), authorization.Paths...)
+	copy.AllowedTools = append([]string(nil), authorization.AllowedTools...)
+	copy.ApprovedHighRiskCommands = append([]string(nil), authorization.ApprovedHighRiskCommands...)
+	return context.WithValue(ctx, planAuthorizationContextKey{}, copy)
+}
+
+// PlanAuthorizationFromContext returns the capabilities approved for this task.
+func PlanAuthorizationFromContext(ctx context.Context) PlanAuthorization {
+	if ctx == nil {
+		return PlanAuthorization{}
+	}
+	authorization, _ := ctx.Value(planAuthorizationContextKey{}).(PlanAuthorization)
+	return authorization
+}
+
+// WithNoInteractiveDecisions prevents approval and question callbacks after a
+// plan has started. Unapproved operations are reported as blockers.
+func WithNoInteractiveDecisions(ctx context.Context, disabled bool) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	return context.WithValue(ctx, noInteractiveDecisionsContextKey{}, disabled)
+}
+
+func NoInteractiveDecisions(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	disabled, _ := ctx.Value(noInteractiveDecisionsContextKey{}).(bool)
+	return disabled
 }
 
 type CommandResult struct {
 	Output string
 }
 
-// CommandExecutor executes a shell command. Hosts may bind this to an OS-level
-// sandbox. Direct local execution is available only when explicitly enabled.
-// Implementations must support concurrent calls from separate sessions and
-// should return promptly when ctx is canceled.
+// CommandExecutor executes a shell command. The built-in executor enforces
+// CommandRequest.Sandbox with the OS. A host override is trusted and must
+// enforce the supplied policy itself. Implementations must support concurrent
+// calls from separate sessions and should return promptly when ctx is canceled.
 type CommandExecutor interface {
 	Execute(context.Context, CommandRequest) (CommandResult, error)
 }
 
 var ErrInvalidTool = errors.New("invalid tool registration")
+
+// ExecutionBlockerError means a task needs a permission decision that was not
+// included in its approved plan. Hosts should report the blocker and ask the
+// user to re-plan instead of opening an execution-time approval prompt.
+type ExecutionBlockerError struct {
+	Tool   string
+	Reason string
+}
+
+func (e *ExecutionBlockerError) Error() string {
+	if e == nil {
+		return "execution is blocked by an unapproved action"
+	}
+	if e.Reason == "" {
+		return "execution is blocked by an unapproved action: " + e.Tool
+	}
+	return e.Reason
+}

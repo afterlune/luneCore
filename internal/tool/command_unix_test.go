@@ -22,12 +22,13 @@ func TestCommandCancellationStopsShellChildrenPromptly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	helper := sandboxHelperForTest(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	resultChannel := make(chan Result, 1)
 	go func() {
-		resultChannel <- (CommandTool{Workspace: workspace, AllowLocalCommand: true}).Run(ctx, command)
+		resultChannel <- (CommandTool{Workspace: workspace, Executor: SandboxedCommandExecutor{HelperPath: helper}}).Run(ctx, command)
 	}()
 	deadline := time.Now().Add(3 * time.Second)
 	for {

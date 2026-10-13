@@ -16,12 +16,39 @@ func (a *Agent) requestLead(ctx context.Context, call graph.CallInfo, state Stat
 	return a.requestModel(ctx, call, state)
 }
 
+func (a *Agent) requestCriteria(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
+	if !a.options.AcceptanceEnabled {
+		state.AcceptancePhase = "execution"
+		return graph.To(state, modelNode), nil
+	}
+	state.AcceptancePhase = "criteria"
+	return a.requestModel(ctx, call, state)
+}
+
+func (a *Agent) requestAcceptance(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
+	if state.AcceptanceDecision != "" {
+		return a.resolveAcceptanceDecision(state)
+	}
+	state.AcceptancePhase = "acceptance"
+	return a.requestModel(ctx, call, state)
+}
+
 func (a *Agent) requestTeam(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
 	return a.requestModel(ctx, call, state)
 }
 
 func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State) (graph.Transition[State], error) {
 	ensureTranscript(&state)
+	requestCtx := ctx
+	cancelRequest := func() {}
+	if state.AcceptancePhase == "acceptance" && state.Execution.ModelTimeout > 0 {
+		requestTimeout := state.Execution.ModelTimeout * 9 / 10
+		if requestTimeout <= 0 {
+			requestTimeout = state.Execution.ModelTimeout
+		}
+		requestCtx, cancelRequest = context.WithTimeout(ctx, requestTimeout)
+	}
+	defer cancelRequest()
 	requester := a.requester
 	if state.TeamBranch {
 		if !state.TeamStarted {
@@ -60,9 +87,25 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	if permissionMode == "" && a.options.CurrentPermissionMode != nil {
 		permissionMode = a.options.CurrentPermissionMode()
 	}
-	visibleTools, visibleNames, err := a.visibleTools(state, state.SelectedCategory, permissionMode)
-	if err != nil {
-		return failTask(state, err)
+	var visibleTools []model.ResponseTool
+	var visibleNames []string
+	var err error
+	switch state.AcceptancePhase {
+	case "criteria":
+		visibleTools = []model.ResponseTool{criteriaDefinition()}
+		visibleNames = []string{submitCriteriaToolName}
+		if a.options.AskUser && !state.NoInteractiveDecisions && !state.TeamBranch {
+			visibleTools = append(visibleTools, askUserDefinition())
+			visibleNames = append(visibleNames, askUserToolName)
+		}
+	case "acceptance":
+		visibleTools = []model.ResponseTool{acceptanceDefinition(), requestEvidenceDefinition()}
+		visibleNames = []string{submitAcceptanceToolName, requestEvidenceToolName}
+	default:
+		visibleTools, visibleNames, err = a.visibleTools(state, state.SelectedCategory, permissionMode)
+		if err != nil {
+			return failTask(state, err)
+		}
 	}
 	request := model.ModelRequest{
 		Model: state.Model,
@@ -79,6 +122,28 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		request.Model = a.options.Model
 	}
 	request.Instructions = taskInstructions(state.Goal, permissionMode)
+	switch state.AcceptancePhase {
+	case "criteria":
+		request.Instructions = acceptanceCriteriaInstructions(state)
+	case "acceptance":
+		request.Instructions = acceptanceReviewInstructions(state)
+	default:
+		if state.AcceptanceEvidenceRequest != "" {
+			request.Instructions += "\n\nThe acceptance reviewer requested more evidence before deciding: " + state.AcceptanceEvidenceRequest
+			state.AcceptanceEvidenceRequest = ""
+		}
+	}
+	if state.NoInteractiveDecisions {
+		request.Instructions += "\n\nThe host has already approved this plan. Do not ask the user questions or request new permissions. If an unapproved action becomes necessary, stop and report the blocker."
+	}
+	if state.AcceptancePhase == "criteria" {
+		auto := "auto"
+		request.ToolChoice = &model.ToolChoice{Mode: &auto}
+	}
+	if state.AcceptancePhase == "acceptance" {
+		auto := "auto"
+		request.ToolChoice = &model.ToolChoice{Mode: &auto}
+	}
 	compactionThreshold := int64(0)
 	serverCompactionRequested := false
 	if state.AutoCompact && state.ContextWindow <= 0 && !state.CompactionWarningEmitted {
@@ -94,7 +159,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		}
 		compactionThreshold = contextTokenThreshold(state.ContextWindow, state.ReserveOutputTokens, ratio)
 		if compactionThreshold <= 0 {
-			return failTask(state, errors.New("automatic compaction has no available input-token budget"))
+			return a.failOrPauseAcceptance(ctx, state, errors.New("automatic compaction has no available input-token budget"))
 		}
 		useServerCompaction := state.Protocol == model.ProtocolResponses && state.ServerCompaction && !state.ServerCompactionFallback
 		if useServerCompaction && compactionThreshold < minimumServerCompactionThreshold {
@@ -112,12 +177,12 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 				Stage: "started", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold,
 			})
 		} else {
-			state, request, _, err = a.prepareAutomaticCompaction(ctx, state, request)
+			state, request, _, err = a.prepareAutomaticCompaction(requestCtx, state, request)
 			if err != nil {
 				if ctx.Err() != nil {
 					return graph.Transition[State]{}, ctx.Err()
 				}
-				return failTask(state, fmt.Errorf("automatic context compaction: %w", err))
+				return a.failOrPauseAcceptance(ctx, state, fmt.Errorf("automatic context compaction: %w", err))
 			}
 		}
 	}
@@ -134,7 +199,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	)
 	sendRequest := func(request model.ModelRequest) (*model.ModelResponse, error) {
 		if streaming, ok := requester.(StreamingRequester); ok {
-			return streaming.StreamResponse(ctx, request, func(event model.ModelStreamEvent) error {
+			return streaming.StreamResponse(requestCtx, request, func(event model.ModelStreamEvent) error {
 				if a.options.StreamObserverFor != nil {
 					a.options.StreamObserverFor(state, event)
 				} else if a.options.StreamObserver != nil {
@@ -143,7 +208,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 				return nil
 			})
 		}
-		return requester.CreateResponse(ctx, request)
+		return requester.CreateResponse(requestCtx, request)
 	}
 	var response *model.Response
 	response, responseErr := sendRequest(request)
@@ -154,12 +219,12 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 			Error: errors.New("provider rejected context_management; switching this task to local compaction"),
 		})
 		request.ContextManagement = nil
-		state, request, _, err = a.prepareAutomaticCompaction(ctx, state, request)
+		state, request, _, err = a.prepareAutomaticCompaction(requestCtx, state, request)
 		if err != nil {
 			if ctx.Err() != nil {
 				return graph.Transition[State]{}, ctx.Err()
 			}
-			return failTask(state, fmt.Errorf("automatic context compaction: %w", err))
+			return a.failOrPauseAcceptance(ctx, state, fmt.Errorf("automatic context compaction: %w", err))
 		}
 		serverCompactionRequested = false
 		response, responseErr = sendRequest(request)
@@ -171,10 +236,10 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		if ctx.Err() != nil {
 			return graph.Transition[State]{}, responseErr
 		}
-		return failTask(state, responseErr)
+		return a.failOrPauseAcceptance(ctx, state, responseErr)
 	}
 	if response == nil {
-		return failTask(state, errors.New("requester returned a nil response"))
+		return a.failOrPauseAcceptance(ctx, state, errors.New("requester returned a nil response"))
 	}
 	if response.Status == "failed" {
 		if response.Error != nil {
@@ -183,33 +248,33 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 				state.ServerCompactionFallback = true
 				a.notifyCompaction(ContextCompactionEvent{Stage: "fallback", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold, Error: responseErr})
 				request.ContextManagement = nil
-				state, request, _, err = a.prepareAutomaticCompaction(ctx, state, request)
+				state, request, _, err = a.prepareAutomaticCompaction(requestCtx, state, request)
 				if err != nil {
 					if ctx.Err() != nil {
 						return graph.Transition[State]{}, ctx.Err()
 					}
-					return failTask(state, fmt.Errorf("automatic context compaction: %w", err))
+					return a.failOrPauseAcceptance(ctx, state, fmt.Errorf("automatic context compaction: %w", err))
 				}
 				serverCompactionRequested = false
 				response, responseErr = sendRequest(request)
 				if responseErr != nil {
-					return failTask(state, responseErr)
+					return a.failOrPauseAcceptance(ctx, state, responseErr)
 				}
 				if response == nil {
-					return failTask(state, errors.New("requester returned a nil response"))
+					return a.failOrPauseAcceptance(ctx, state, errors.New("requester returned a nil response"))
 				}
 				if response.Status == "failed" {
 					if response.Error != nil {
-						return failTask(state, fmt.Errorf("model response failed (%s): %s", response.Error.Code, response.Error.Message))
+						return a.failOrPauseAcceptance(ctx, state, fmt.Errorf("model response failed (%s): %s", response.Error.Code, response.Error.Message))
 					}
-					return failTask(state, errors.New("model response failed"))
+					return a.failOrPauseAcceptance(ctx, state, errors.New("model response failed"))
 				}
 			} else {
-				return failTask(state, responseErr)
+				return a.failOrPauseAcceptance(ctx, state, responseErr)
 			}
 		}
 		if response.Status == "failed" {
-			return failTask(state, errors.New("model response failed"))
+			return a.failOrPauseAcceptance(ctx, state, errors.New("model response failed"))
 		}
 	}
 	if serverCompactionRequested {
@@ -237,8 +302,24 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	}
 	calls := responseFunctionCalls(response.Output)
 	if len(calls) == 0 {
-		state.FinalResponse = response
-		return finishAgent(state), nil
+		switch state.AcceptancePhase {
+		case "criteria":
+			return a.retryAcceptanceFormat(state, response, criteriaNode, "Submit the task criteria with prepare_task_criteria. Ask the user with ask_user if a key ambiguity blocks a correct scope.")
+		case "acceptance":
+			return a.retryAcceptanceFormat(state, response, acceptanceNode, "Submit a structured acceptance report with submit_acceptance, or request more evidence with request_acceptance_evidence.")
+		default:
+			state.FinalResponse = response
+			if a.options.AcceptanceEnabled && !state.TeamBranch {
+				state.AcceptancePhase = "acceptance"
+				state.AcceptanceCandidate = responseText(response.Output)
+				state.AcceptanceCandidateCount++
+				state.AcceptanceCandidateID = fmt.Sprintf("candidate-%d", state.AcceptanceCandidateCount)
+				state.AcceptanceEvidence = append(state.AcceptanceEvidence, modelEvidence("candidate:"+state.AcceptanceCandidateID, state.AcceptanceCandidate))
+				a.observeAcceptance(state, "started", "", "")
+				return graph.To(state, acceptanceNode), nil
+			}
+			return finishAgent(state), nil
+		}
 	}
 	if state.MaxToolRounds > 0 && state.ToolRounds >= state.MaxToolRounds {
 		for _, call := range calls {
@@ -293,6 +374,12 @@ func failTask(state State, err error) (graph.Transition[State], error) {
 func (a *Agent) nextModelTransition(state State) graph.Transition[State] {
 	if state.TeamBranch {
 		return graph.To(state, teamModelNode)
+	}
+	if state.AcceptancePhase == "criteria" {
+		return graph.To(state, criteriaNode)
+	}
+	if state.AcceptancePhase == "acceptance" {
+		return graph.To(state, acceptanceNode)
 	}
 	return graph.To(state, modelNode)
 }

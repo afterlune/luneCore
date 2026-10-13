@@ -71,6 +71,7 @@ type ToolRegistration struct {
 type RegistryOptions struct {
 	Tools              []ToolRegistration
 	CommandExecutor    publictool.CommandExecutor
+	SandboxHelperPath  string
 	AllowLocalCommands bool
 }
 
@@ -355,6 +356,7 @@ func (r *Registry) DefinitionsForCategory(category string) []model.ResponseTool 
 
 // Run executes a named tool with its JSON arguments.
 func (r *Registry) Run(ctx context.Context, name string, arguments json.RawMessage) Result {
+	ctx = r.contextWithPermissionMode(ctx, name)
 	registeredTool, err := r.authorizedTool(ctx, name, arguments)
 	if err != nil {
 		return Result{Err: err}
@@ -379,7 +381,32 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 	}); err != nil {
 		return nil, err
 	}
+	if name == "command" {
+		var request struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(arguments, &request) == nil {
+			if reason := highRiskCommandReason(request.Command); reason != "" && !commandApproved(request.Command, publictool.PlanAuthorizationFromContext(ctx).ApprovedHighRiskCommands) {
+				return nil, &publictool.ExecutionBlockerError{Tool: name, Reason: "high-risk command is not individually approved in the plan: " + reason}
+			}
+		}
+	}
 	return registeredTool, nil
+}
+
+func (r *Registry) contextWithPermissionMode(ctx context.Context, name string) context.Context {
+	if ctx == nil {
+		return nil
+	}
+	if _, ok := permissionModeFromContext(ctx); ok {
+		return ctx
+	}
+	metadata, ok := r.ToolMetadata(name)
+	if !ok {
+		return ctx
+	}
+	mode := permissionModeFromRegistry(ctx, r.permissions, metadata)
+	return WithPermissionMode(ctx, string(mode))
 }
 
 // ExecuteCall runs a function call from a Responses API result and returns the
@@ -396,6 +423,7 @@ func (r *Registry) ExecuteCall(ctx context.Context, call model.OutputFunctionCal
 // graph advances to the next checkpoint.
 func (r *Registry) ExecuteCallRecoverable(ctx context.Context, call model.OutputFunctionCall) (model.InputFunctionCallOutput, error) {
 	ctx = withCallID(ctx, call.CallID)
+	ctx = r.contextWithPermissionMode(ctx, call.Name)
 	identity := publictool.CallIdentityFromContext(ctx)
 	identity.AgentID = model.AgentIDFromContext(ctx)
 	if identity.InvocationID == "" {
@@ -407,6 +435,13 @@ func (r *Registry) ExecuteCallRecoverable(ctx context.Context, call model.Output
 	arguments := json.RawMessage(call.Arguments)
 	registeredTool, permissionErr := r.authorizedTool(ctx, call.Name, arguments)
 	if permissionErr != nil {
+		var blocker *publictool.ExecutionBlockerError
+		if errors.As(permissionErr, &blocker) {
+			if publictool.NoInteractiveDecisions(ctx) {
+				return model.InputFunctionCallOutput{}, blocker
+			}
+			return toolCallOutput(call.CallID, Result{Err: blocker}), nil
+		}
 		return toolCallOutput(call.CallID, Result{Err: permissionErr}), nil
 	}
 	execute := func() model.InputFunctionCallOutput {
@@ -506,7 +541,7 @@ func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry
 		ToolRegistration{Tool: ReadFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
 		ToolRegistration{Tool: WriteFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
 		ToolRegistration{Tool: EditFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
-		ToolRegistration{Tool: CommandTool{Workspace: workspacePath, Executor: registryOptions.CommandExecutor, AllowLocalCommand: registryOptions.AllowLocalCommands}, Metadata: command},
+		ToolRegistration{Tool: CommandTool{Workspace: workspacePath, Executor: registryOptions.CommandExecutor, SandboxHelperPath: registryOptions.SandboxHelperPath, AllowLocalCommand: registryOptions.AllowLocalCommands}, Metadata: command},
 		ToolRegistration{Tool: WebSearchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 		ToolRegistration{Tool: WebFetchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 	)

@@ -20,6 +20,7 @@ type Responder struct {
 	store                 graph.Store[agentgraph.State]
 	limiter               *graph.Limiter
 	execution             *graph.Execution[agentgraph.State]
+	lastState             *agentgraph.State
 	requester             *UsageTrackingRequester
 	historyMu             sync.RWMutex
 	history               *model.ResponseInput // provider-specific model context
@@ -132,6 +133,13 @@ func (r *Responder) SetExecution(execution *graph.Execution[agentgraph.State]) {
 
 func (r *Responder) Execution() *graph.Execution[agentgraph.State] {
 	return r.execution
+}
+
+func (r *Responder) LastState() (agentgraph.State, bool) {
+	if r == nil || r.lastState == nil {
+		return agentgraph.State{}, false
+	}
+	return *r.lastState, true
 }
 
 func (r *Responder) Fork(ctx context.Context, newRunID string, source graph.Checkpoint[agentgraph.State]) (graph.Checkpoint[agentgraph.State], error) {
