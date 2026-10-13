@@ -3,6 +3,7 @@ package core_test
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,30 @@ func (externalProvider) CreateResponse(_ context.Context, request model.ModelReq
 
 func (externalProvider) StreamResponse(ctx context.Context, request model.ModelRequest, profile model.ModelProfile, emit func(model.ModelStreamEvent) error) (*model.ModelResponse, error) {
 	response := externalResponseForRequest(request)
+	if emit != nil {
+		if err := emit(model.ModelStreamEvent{Type: model.ModelStreamCompleted, Response: response}); err != nil {
+			return nil, err
+		}
+	}
+	return response, nil
+}
+
+type personalInstructionsProvider struct {
+	requests []model.ModelRequest
+}
+
+func (*personalInstructionsProvider) Name() string { return "personal" }
+
+func (p *personalInstructionsProvider) CreateResponse(_ context.Context, request model.ModelRequest, _ model.ModelProfile) (*model.ModelResponse, error) {
+	p.requests = append(p.requests, request)
+	return externalResponseForRequest(request), nil
+}
+
+func (p *personalInstructionsProvider) StreamResponse(ctx context.Context, request model.ModelRequest, profile model.ModelProfile, emit func(model.ModelStreamEvent) error) (*model.ModelResponse, error) {
+	response, err := p.CreateResponse(ctx, request, profile)
+	if err != nil {
+		return nil, err
+	}
 	if emit != nil {
 		if err := emit(model.ModelStreamEvent{Type: model.ModelStreamCompleted, Response: response}); err != nil {
 			return nil, err
@@ -147,5 +172,46 @@ func TestExternalGoPackageCanEmbedAndExtendCore(t *testing.T) {
 			t.Fatal("Core did not become idle for Close")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestHostPersonalInstructionsReachOnlyNormalTaskRequests(t *testing.T) {
+	provider := &personalInstructionsProvider{}
+	client, err := core.New(core.Config{
+		Workspace: t.TempDir(), StateDir: t.TempDir(),
+		Memory:               core.MemoryConfig{Disabled: true},
+		PersonalInstructions: "Prefers concise answers.",
+		ModelConfig: &model.Config{
+			Providers:    map[string]model.ProviderConfig{"personal": {Protocol: model.ProtocolResponses}},
+			Models:       map[string]model.ModelProfile{"main": {Provider: "personal", Model: "test-model"}},
+			DefaultModel: "main",
+		},
+		ModelProviders: map[string]model.Provider{"personal": provider},
+	})
+	if err != nil {
+		t.Fatalf("core.New: %v", err)
+	}
+	defer client.Close()
+	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := core.NewTaskInput("hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.RunTask(context.Background(), core.TaskRequest{SessionID: session.ID, Input: input})
+	if err != nil || result.Status != core.TaskCompleted {
+		t.Fatalf("RunTask result=%#v error=%v", result, err)
+	}
+	if len(provider.requests) != 3 {
+		t.Fatalf("model requests = %d, want criteria, execution, and acceptance", len(provider.requests))
+	}
+	if strings.Contains(provider.requests[0].Instructions, "Prefers concise answers.") ||
+		strings.Contains(provider.requests[2].Instructions, "Prefers concise answers.") {
+		t.Fatal("personal instructions appeared in acceptance criteria or review")
+	}
+	if !strings.Contains(provider.requests[1].Instructions, "Prefers concise answers.") {
+		t.Fatal("normal task request is missing host personal instructions")
 	}
 }

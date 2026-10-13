@@ -136,6 +136,7 @@ type State struct {
 	BlockerTool               string                       `json:"blocker_tool,omitempty"`
 	BlockerReason             string                       `json:"blocker_reason,omitempty"`
 	Goal                      string                       `json:"goal,omitempty"`
+	PersonalInstructions      string                       `json:"personal_instructions,omitempty"`
 	ProjectInstructionsReady  bool                         `json:"project_instructions_ready,omitempty"`
 	ProjectInstructions       []ProjectInstruction         `json:"project_instructions,omitempty"`
 	ContextWindow             int64                        `json:"context_window,omitempty"`
@@ -196,6 +197,7 @@ type TaskOptions struct {
 	Model                    string
 	ReasoningEffort          string
 	Goal                     string
+	PersonalInstructions     string
 	ProjectInstructionsReady bool
 	ProjectInstructions      []ProjectInstruction
 	ContextWindow            int64
@@ -388,6 +390,7 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.MaxToolRounds = taskOptions.MaxToolRounds
 	state.TaskSettingsVersion = CurrentTaskSettingsVersion
 	state.Goal = taskOptions.Goal
+	state.PersonalInstructions = taskOptions.PersonalInstructions
 	state.ProjectInstructionsReady = taskOptions.ProjectInstructionsReady
 	state.ProjectInstructions = cloneProjectInstructions(taskOptions.ProjectInstructions)
 	state.ContextWindow = taskOptions.ContextWindow

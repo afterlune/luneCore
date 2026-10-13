@@ -142,8 +142,8 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		}
 		taskOptions = agentgraph.TaskOptions{
 			MaxToolRounds: maxRounds, ReasoningEffort: settings.ReasoningEffort,
-			Model: modelOverride,
-			Goal:  effective.Goal, ContextWindow: effective.ContextWindow,
+			Model: modelOverride, PersonalInstructions: c.personalInstructions,
+			Goal: effective.Goal, ContextWindow: effective.ContextWindow,
 			ReserveOutputTokens: effective.ReserveOutputTokens, AutoCompact: effective.AutoCompact,
 			AutoCompactThreshold:   effective.AutoCompactThreshold,
 			Execution:              agentExecutionOptions(mergeExecutionOptions(c.executionDefaults, executionOptions)),

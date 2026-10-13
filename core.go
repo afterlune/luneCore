@@ -47,7 +47,10 @@ type Config struct {
 	// AcceptanceVerifier optionally overrides the model's acceptance judgment.
 	// Implementations should be idempotent, read-only, and honor ctx cancellation.
 	AcceptanceVerifier acceptance.Verifier
-	Memory             MemoryConfig
+	// PersonalInstructions supplies user-level guidance shared by this Core's sessions.
+	// New tasks snapshot the text for recovery; changes require creating a new Core.
+	PersonalInstructions string
+	Memory               MemoryConfig
 	// MaxConcurrentCallbacks caps callback work across all sessions in this Core.
 	MaxConcurrentCallbacks int
 }
@@ -61,20 +64,21 @@ type MemoryConfig struct {
 }
 
 type Core struct {
-	workspace          string
-	registry           *tool.Registry
-	models             *model.ProviderCatalog
-	taskDefaults       taskSettings
-	attachmentLimits   projectconfig.AttachmentLimits
-	team               *teamExecutor
-	runtime            *agentruntime.Responder
-	mcpManager         *mcp.Manager
-	checkpoints        *sqlite.Store[agentgraph.State]
-	sessions           *session.Store
-	executionDefaults  ExecutionOptions
-	callbackLimiter    *graph.Limiter
-	acceptanceVerifier acceptance.Verifier
-	memoryConfig       MemoryConfig
+	workspace            string
+	registry             *tool.Registry
+	models               *model.ProviderCatalog
+	taskDefaults         taskSettings
+	attachmentLimits     projectconfig.AttachmentLimits
+	team                 *teamExecutor
+	runtime              *agentruntime.Responder
+	mcpManager           *mcp.Manager
+	checkpoints          *sqlite.Store[agentgraph.State]
+	sessions             *session.Store
+	executionDefaults    ExecutionOptions
+	callbackLimiter      *graph.Limiter
+	acceptanceVerifier   acceptance.Verifier
+	personalInstructions string
+	memoryConfig         MemoryConfig
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
@@ -208,25 +212,26 @@ func New(config Config) (_ *Core, err error) {
 			ContextWindow: projectConfig.ContextWindow, ReserveOutputTokens: projectConfig.ReserveOutputTokens,
 			AutoCompact: projectConfig.AutoCompact, AutoCompactThreshold: projectConfig.AutoCompactThreshold,
 		},
-		checkpoints:         checkpoints,
-		sessions:            sessions,
-		executionDefaults:   config.Execution,
-		callbackLimiter:     callbackLimiter,
-		acceptanceVerifier:  config.AcceptanceVerifier,
-		memoryConfig:        config.Memory,
-		liveExecutions:      make(map[string]*graph.Execution[agentgraph.State]),
-		active:              TaskState{Status: TaskIdle},
-		activeTasks:         make(map[string]TaskState),
-		taskCancels:         make(map[string]context.CancelFunc),
-		approvals:           make(map[string]pendingApproval),
-		interactions:        make(map[string]pendingInteraction),
-		interactiveSessions: make(map[string]bool),
-		eventHubs:           make(map[string]*sessionEventHub),
-		queueDraining:       make(map[string]bool),
-		turnWaiters:         make(map[string]chan turnResult),
-		executionRuns:       make(map[string]chan struct{}),
-		interruptRequests:   make(map[string]bool),
-		stateDirLock:        stateLock,
+		checkpoints:          checkpoints,
+		sessions:             sessions,
+		executionDefaults:    config.Execution,
+		callbackLimiter:      callbackLimiter,
+		acceptanceVerifier:   config.AcceptanceVerifier,
+		personalInstructions: config.PersonalInstructions,
+		memoryConfig:         config.Memory,
+		liveExecutions:       make(map[string]*graph.Execution[agentgraph.State]),
+		active:               TaskState{Status: TaskIdle},
+		activeTasks:          make(map[string]TaskState),
+		taskCancels:          make(map[string]context.CancelFunc),
+		approvals:            make(map[string]pendingApproval),
+		interactions:         make(map[string]pendingInteraction),
+		interactiveSessions:  make(map[string]bool),
+		eventHubs:            make(map[string]*sessionEventHub),
+		queueDraining:        make(map[string]bool),
+		turnWaiters:          make(map[string]chan turnResult),
+		executionRuns:        make(map[string]chan struct{}),
+		interruptRequests:    make(map[string]bool),
+		stateDirLock:         stateLock,
 	}
 	if !c.memoryConfig.Disabled {
 		registrations, err := tool.HostToolRegistrations([]publictool.Registration{{

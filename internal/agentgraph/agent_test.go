@@ -48,10 +48,11 @@ func TestLegacyPlanModeCheckpointStillDecodes(t *testing.T) {
 }
 
 type scriptedTeamExecutor struct {
-	profiles    map[string]model.ModelProfile
-	limit       int
-	assignments []TeamAssignment
-	options     []TaskOptions
+	profiles           map[string]model.ModelProfile
+	limit              int
+	assignments        []TeamAssignment
+	options            []TaskOptions
+	branchInstructions []string
 }
 
 type scriptedBranchRequester struct {
@@ -73,6 +74,7 @@ func (t *scriptedTeamExecutor) MaxParallelAgents() int                  { return
 func (t *scriptedTeamExecutor) PrepareBranch(_ context.Context, state State, assignment TeamAssignment, options TaskOptions) (State, error) {
 	t.assignments = append(t.assignments, assignment)
 	t.options = append(t.options, options)
+	t.branchInstructions = append(t.branchInstructions, state.PersonalInstructions)
 	profile := t.profiles[assignment.Model]
 	state.ModelProfile, state.Model, state.Provider = assignment.Model, profile.Model, profile.Provider
 	state.Protocol, state.TeamModel, state.TeamProvider = model.ProtocolResponses, profile.Model, profile.Provider
@@ -389,7 +391,10 @@ func TestProjectInstructionsStayOutOfAcceptancePrompts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, result, err := agent.Start(context.Background(), "project-instruction-acceptance", nil, input, TaskOptions{}, store, graph.Options{})
+	personalInstructions := "Prefers concise answers."
+	_, result, err := agent.Start(context.Background(), "project-instruction-acceptance", nil, input, TaskOptions{
+		PersonalInstructions: personalInstructions,
+	}, store, graph.Options{})
 	if err != nil || result.Status != graph.StatusCompleted {
 		t.Fatalf("Start result=%#v error=%v", result, err)
 	}
@@ -397,11 +402,34 @@ func TestProjectInstructionsStayOutOfAcceptancePrompts(t *testing.T) {
 		t.Fatalf("model requests = %d, want criteria, execution, and acceptance", len(requester.requests))
 	}
 	if strings.Contains(requester.requests[0].Instructions, "Project-only execution guidance") ||
-		strings.Contains(requester.requests[2].Instructions, "Project-only execution guidance") {
-		t.Fatal("project guidance changed acceptance criteria or acceptance review")
+		strings.Contains(requester.requests[0].Instructions, personalInstructions) ||
+		strings.Contains(requester.requests[2].Instructions, "Project-only execution guidance") ||
+		strings.Contains(requester.requests[2].Instructions, personalInstructions) {
+		t.Fatal("guidance changed acceptance criteria or acceptance review")
 	}
-	if !strings.Contains(requester.requests[1].Instructions, "Project-only execution guidance") {
-		t.Fatal("project guidance was not included for task execution")
+	executionInstructions := requester.requests[1].Instructions
+	if !strings.Contains(executionInstructions, "Project-only execution guidance") || !strings.Contains(executionInstructions, personalInstructions) {
+		t.Fatal("project or personal guidance was not included for task execution")
+	}
+	if strings.Index(executionInstructions, personalInstructions) > strings.Index(executionInstructions, "Project instructions from") {
+		t.Fatal("project guidance was not ordered after personal preferences")
+	}
+	if result.Final == nil {
+		t.Fatal("completed task has no final checkpoint")
+	}
+	if result.Final.PersonalInstructions != personalInstructions {
+		t.Fatalf("final checkpoint personal instructions = %q", result.Final.PersonalInstructions)
+	}
+	encoded, err := json.Marshal(result.Final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checkpoint State
+	if err := json.Unmarshal(encoded, &checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.PersonalInstructions != personalInstructions {
+		t.Fatalf("checkpoint personal instructions = %q", checkpoint.PersonalInstructions)
 	}
 }
 
@@ -575,7 +603,8 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 	}
 	_, result, err := agent.Start(context.Background(), "team-agent-run", nil, input, TaskOptions{
 		MaxToolRounds: 7, ReasoningEffort: model.ReasoningEffortHigh,
-		Goal: "parent goal", ContextWindow: 64000, ReserveOutputTokens: 2048,
+		Goal: "parent goal", PersonalInstructions: "personal preferences",
+		ContextWindow: 64000, ReserveOutputTokens: 2048,
 		AutoCompact: true, AutoCompactThreshold: 0.75,
 	}, store, graph.Options{})
 	if err != nil {
@@ -593,6 +622,14 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 	for _, options := range team.options {
 		if options.Goal != "" || options.ContextWindow != 0 || options.ReserveOutputTokens != 0 || options.AutoCompact || options.AutoCompactThreshold != 0 {
 			t.Fatalf("new task settings unexpectedly inherited by team member: %#v", options)
+		}
+		if options.PersonalInstructions != "personal preferences" {
+			t.Fatalf("personal instructions not inherited by team member: %#v", options)
+		}
+	}
+	for _, instructions := range team.branchInstructions {
+		if instructions != "personal preferences" {
+			t.Fatalf("branch state personal instructions = %q", instructions)
 		}
 	}
 	if len(requester.requests) != 2 {

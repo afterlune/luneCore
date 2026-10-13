@@ -154,6 +154,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			taskOptions := TaskOptions{
 				ExecutionID: state.ExecutionID, MaxToolRounds: state.MaxToolRounds,
 				ReasoningEffort: state.ReasoningEffort, PermissionOverride: state.PermissionOverride,
+				PersonalInstructions:     state.PersonalInstructions,
 				ProjectInstructionsReady: state.ProjectInstructionsReady,
 				ProjectInstructions:      cloneProjectInstructions(state.ProjectInstructions),
 				PlanAuthorization:        state.PlanAuthorization, NoInteractiveDecisions: state.NoInteractiveDecisions,
@@ -180,6 +181,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 				branch.PlanAuthorization = state.PlanAuthorization
 				branch.NoInteractiveDecisions = state.NoInteractiveDecisions
 				branch.ReasoningEffort = state.ReasoningEffort
+				branch.PersonalInstructions = state.PersonalInstructions
 				branch.ProjectInstructionsReady = state.ProjectInstructionsReady
 				branch.ProjectInstructions = cloneProjectInstructions(state.ProjectInstructions)
 				branch, branchErr = a.options.Team.PrepareBranch(ctx, branch, assignment, taskOptions)

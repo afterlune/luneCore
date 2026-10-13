@@ -152,6 +152,9 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		}
 	}
 	if state.AcceptancePhase != "criteria" && state.AcceptancePhase != "acceptance" {
+		if personalContext := personalInstructionContext(state.PersonalInstructions); personalContext != "" {
+			request.Instructions += "\n\n" + personalContext
+		}
 		if projectContext := projectInstructionContext(state.ProjectInstructions); projectContext != "" {
 			request.Instructions += "\n\n" + projectContext
 		}
