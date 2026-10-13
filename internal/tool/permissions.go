@@ -57,6 +57,14 @@ type PermissionRequest struct {
 // PermissionApprovalHandler asks the user to allow one tool call.
 type PermissionApprovalHandler func(context.Context, PermissionRequest) bool
 
+type permissionDisposition uint8
+
+const (
+	permissionAllowed permissionDisposition = iota
+	permissionNeedsApproval
+	permissionDenied
+)
+
 type permissionSettings struct {
 	mu      sync.RWMutex
 	mode    PermissionMode
@@ -104,44 +112,64 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	mode, approve, disposition := p.policy(request.Metadata)
+	switch disposition {
+	case permissionAllowed:
+		return ctx.Err()
+	case permissionNeedsApproval:
+		return requestApproval(ctx, approve, request)
+	case permissionDenied:
+		if mode == PermissionModeReadOnly {
+			return fmt.Errorf("tool %q is disabled in read-only mode", request.Tool)
+		}
+		if mode == PermissionModeWorkspace && !request.Metadata.PermissionClass.Valid() {
+			return fmt.Errorf("tool %q is unclassified and disabled in workspace mode", request.Tool)
+		}
+		return fmt.Errorf("unknown permission mode %q", mode)
+	}
+	return fmt.Errorf("unknown permission mode %q", mode)
+}
+
+func (p *permissionSettings) policy(metadata model.ToolMetadata) (PermissionMode, PermissionApprovalHandler, permissionDisposition) {
 	if p == nil {
-		return nil
+		return PermissionModeFullAccess, nil, permissionAllowed
 	}
 	p.mu.RLock()
 	mode, approve := p.mode, p.approve
 	p.mu.RUnlock()
+	return mode, approve, permissionPolicy(mode, metadata.PermissionClass)
+}
 
+func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) permissionDisposition {
 	switch mode {
 	case PermissionModeReadOnly:
-		switch request.Metadata.PermissionClass {
+		switch class {
 		case model.ToolPermissionWorkspaceRead:
-			return ctx.Err()
+			return permissionAllowed
 		case model.ToolPermissionNetwork:
-			return requestApproval(ctx, approve, request)
+			return permissionNeedsApproval
 		default:
-			return fmt.Errorf("tool %q is disabled in read-only mode", request.Tool)
+			return permissionDenied
 		}
 	case PermissionModeWorkspace:
-		switch request.Metadata.PermissionClass {
+		switch class {
 		case model.ToolPermissionWorkspaceRead, model.ToolPermissionWorkspaceWrite:
-			return ctx.Err()
+			return permissionAllowed
 		case model.ToolPermissionCommand, model.ToolPermissionNetwork:
-			return requestApproval(ctx, approve, request)
+			return permissionNeedsApproval
 		default:
-			return fmt.Errorf("tool %q is unclassified and disabled in workspace mode", request.Tool)
+			return permissionDenied
 		}
 	case PermissionModeAsk:
-		if request.Metadata.PermissionClass == model.ToolPermissionWorkspaceRead {
-			return ctx.Err()
+		if class == model.ToolPermissionWorkspaceRead {
+			return permissionAllowed
 		}
-		return requestApproval(ctx, approve, request)
+		return permissionNeedsApproval
 	case PermissionModeFullAccess:
-		// Full access intentionally skips tool approval. CommandTool itself is
-		// unrestricted by the workspace boundary, so the UI describes this risk.
+		return permissionAllowed
 	default:
-		return fmt.Errorf("unknown permission mode %q", mode)
+		return permissionDenied
 	}
-	return ctx.Err()
 }
 
 func requestApproval(ctx context.Context, approve PermissionApprovalHandler, request PermissionRequest) error {

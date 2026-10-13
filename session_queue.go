@@ -49,7 +49,7 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 		return TurnSubmission{}, nil, err
 	}
 	storedRequest, err := json.Marshal(storedTurnRequest{
-		Input: append(json.RawMessage(nil), request.Input.Raw...), PlanMode: request.PlanMode,
+		Input: append(json.RawMessage(nil), request.Input.Raw...),
 		Model: request.Model, MaxToolRounds: request.MaxToolRounds, Execution: request.Execution,
 	})
 	if err != nil {

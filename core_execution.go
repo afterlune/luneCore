@@ -52,7 +52,7 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...Exec
 	return c.waitForTurn(ctx, runtime, submission.ExecutionID, waiter)
 }
 
-func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
+func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
 	if c == nil || ctx == nil {
 		return nil, errors.New("core and context are required")
 	}
@@ -99,7 +99,6 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 			settings.ModelProfile = pendingState.ModelProfile
 		}
 		settings.ReasoningEffort = pendingState.ReasoningEffort
-		planMode = pendingState.PlanMode
 	}
 	profile, ok := c.models.Profile(settings.ModelProfile)
 	if !ok {
@@ -131,7 +130,6 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		if executionOverride {
 			taskOptions.Execution = agentExecutionOptions(executionOptions)
 		}
-		planMode = taskOptions.PlanMode
 		maxRounds = taskOptions.MaxToolRounds
 	} else {
 		effective, resolveErr := c.resolveTaskSettings(settings)
@@ -139,7 +137,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 			return nil, resolveErr
 		}
 		taskOptions = agentgraph.TaskOptions{
-			PlanMode: planMode, MaxToolRounds: maxRounds, ReasoningEffort: settings.ReasoningEffort,
+			MaxToolRounds: maxRounds, ReasoningEffort: settings.ReasoningEffort,
 			Model: modelOverride,
 			Goal:  effective.Goal, ContextWindow: effective.ContextWindow,
 			ReserveOutputTokens: effective.ReserveOutputTokens, AutoCompact: effective.AutoCompact,
@@ -186,7 +184,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 		modelContext = &decoded
 	}
 	taskCtx, cancelTask := context.WithCancel(ctx)
-	taskID, err := c.beginTask(taskCtx, sessionID, queueID, planMode, settings, profile, effectiveModel, taskOptions, saved.UpdatedAt, cancelTask)
+	taskID, err := c.beginTask(taskCtx, sessionID, queueID, settings, profile, effectiveModel, taskOptions, saved.UpdatedAt, cancelTask)
 	if err != nil {
 		cancelTask()
 		return nil, err

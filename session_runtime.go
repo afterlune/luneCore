@@ -46,7 +46,6 @@ const (
 
 type TurnRequest struct {
 	Input         TaskInput
-	PlanMode      bool
 	Model         string
 	MaxToolRounds int
 	Execution     ExecutionOptions
@@ -106,7 +105,6 @@ type SessionRuntime struct {
 
 type storedTurnRequest struct {
 	Input             json.RawMessage  `json:"input"`
-	PlanMode          bool             `json:"plan_mode,omitempty"`
 	Model             string           `json:"model,omitempty"`
 	MaxToolRounds     int              `json:"max_tool_rounds,omitempty"`
 	Execution         ExecutionOptions `json:"execution,omitempty"`

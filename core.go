@@ -248,8 +248,9 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		SupportsInputAudio: profile.SupportsInputAudio, Execution: agentExecutionOptions(taskState.Execution),
-		Team:    c.team,
-		AskUser: true,
+		Team:        c.team,
+		AskUser:     true,
+		ToolVisible: c.registry.ToolVisible,
 		StreamObserverFor: func(state agentgraph.State, event model.ModelStreamEvent) {
 			currentTask := taskState
 			if current, ok := c.StateForSession(taskState.SessionID); ok {

@@ -69,6 +69,8 @@ type AgentOptions struct {
 	Execution          ExecutionOptions
 	Team               TeamExecutor
 	AskUser            bool
+	// ToolVisible filters registered tools for each model request.
+	ToolVisible        func(string) bool
 	StreamObserverFor  func(State, model.ModelStreamEvent)
 	OnBranchStarted    func(context.Context, State)
 	OnBranchFinished   func(context.Context, State, error)
@@ -113,7 +115,6 @@ type State struct {
 	History                  model.ResponseInput        `json:"history"`
 	Transcript               model.ResponseInput        `json:"transcript,omitempty"`
 	CompactionWarningEmitted bool                       `json:"compaction_warning_emitted,omitempty"`
-	PlanMode                 bool                       `json:"plan_mode,omitempty"`
 	SelectedCategory         string                     `json:"selected_category,omitempty"`
 	PendingCalls             []model.OutputFunctionCall `json:"pending_calls,omitempty"`
 	PendingIndex             int                        `json:"pending_index,omitempty"`
@@ -143,7 +144,6 @@ type State struct {
 type TaskOptions struct {
 	ExecutionID   string
 	MaxToolRounds int
-	PlanMode      bool
 	// Model optionally overrides the configured profile's model identifier for this task.
 	Model                string
 	ReasoningEffort      string
@@ -296,7 +296,6 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.ModelOverride = strings.TrimSpace(taskOptions.Model)
 	state.ReasoningEffort = taskOptions.ReasoningEffort
 	state.MaxToolRounds = taskOptions.MaxToolRounds
-	state.PlanMode = taskOptions.PlanMode
 	state.TaskSettingsVersion = CurrentTaskSettingsVersion
 	state.Goal = taskOptions.Goal
 	state.ContextWindow = taskOptions.ContextWindow

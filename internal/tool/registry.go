@@ -270,6 +270,20 @@ func (r *Registry) ToolMetadata(name string) (model.ToolMetadata, bool) {
 	return metadata, ok
 }
 
+// ToolVisible reports whether the active permission mode allows the tool
+// directly or permits it after approval.
+func (r *Registry) ToolVisible(name string) bool {
+	metadata, ok := r.ToolMetadata(name)
+	if !ok {
+		return false
+	}
+	r.mu.RLock()
+	permissions := r.permissions
+	r.mu.RUnlock()
+	_, _, disposition := permissions.policy(metadata)
+	return disposition != permissionDenied
+}
+
 // Definitions returns function-tool definitions suitable for ResponseRequest.Tools.
 func (r *Registry) Definitions() []model.ResponseTool {
 	if r == nil {

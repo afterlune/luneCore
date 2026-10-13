@@ -73,7 +73,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			branches := make([]graph.Branch[State], 0, len(assignments))
 			taskOptions := TaskOptions{
 				ExecutionID: state.ExecutionID, MaxToolRounds: state.MaxToolRounds,
-				PlanMode: state.PlanMode, ReasoningEffort: state.ReasoningEffort,
+				ReasoningEffort: state.ReasoningEffort,
 			}
 			for _, assignment := range assignments {
 				input, inputErr := model.NewResponseInput(assignment.Task)
@@ -91,7 +91,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 				branch.TeamBranch = true
 				branch.TeamRunID, branch.TeamDispatchID = state.TeamDispatchID, ""
 				branch.TaskSettingsVersion = CurrentTaskSettingsVersion
-				branch.MaxToolRounds, branch.PlanMode = state.MaxToolRounds, state.PlanMode
+				branch.MaxToolRounds = state.MaxToolRounds
 				branch.Execution = state.Execution
 				branch.ReasoningEffort = state.ReasoningEffort
 				branch, branchErr = a.options.Team.PrepareBranch(ctx, branch, assignment, taskOptions)
@@ -103,10 +103,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			return graph.FanOut(state, branches...), nil
 		}
 	case a.categorized != nil && call.Name == model.CategorySelectorName:
-		categories := a.categories
-		if state.PlanMode {
-			categories = a.readOnlyCategories()
-		}
+		categories := a.visibleCategories()
 		category, err := model.ParseCategorySelection(call.Arguments, categories)
 		text := "Category selected. Its tools will be available in the next request."
 		if err != nil {
@@ -120,11 +117,6 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			slog.InfoContext(ctx, "tool category selected", "selected_category", category)
 		}
 		output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(text)}
-	case state.PlanMode && !isReadOnlyTool(a.tools, call.Name):
-		output = model.InputFunctionCallOutput{
-			CallID: call.CallID,
-			Output: model.NewToolOutputText("Tool is not available in plan mode."),
-		}
 	case !contains(state.VisibleTools, call.Name):
 		expectedCategory := a.categoryForTool(call.Name)
 		slog.WarnContext(ctx, "tool call is not in the visible tool set",
@@ -191,7 +183,7 @@ func (a *Agent) nextToolTransition(state State) graph.Transition[State] {
 	return a.nextModelTransition(state)
 }
 
-func (a *Agent) visibleTools(state State, category string, planMode bool) ([]model.ResponseTool, []string, error) {
+func (a *Agent) visibleTools(state State, category string) ([]model.ResponseTool, []string, error) {
 	addRuntimeTools := func(definitions []model.ResponseTool) []model.ResponseTool {
 		if a.options.Team != nil && len(a.options.Team.Profiles()) > 0 && a.options.Team.MaxParallelAgents() > 0 {
 			definitions = append(definitions, teamDispatchDefinition(a.options.Team))
@@ -202,41 +194,45 @@ func (a *Agent) visibleTools(state State, category string, planMode bool) ([]mod
 		return definitions
 	}
 	if a.categorized == nil {
-		definitions := a.tools.Definitions()
-		if planMode {
-			definitions = readOnlyDefinitions(a.tools, definitions)
-		}
+		definitions := a.visibleDefinitions(a.tools.Definitions())
 		definitions = addRuntimeTools(definitions)
 		return definitions, toolNames(definitions), nil
 	}
-	categories := a.categories
-	if planMode {
-		categories = a.readOnlyCategories()
-	}
+	categories := a.visibleCategories()
 	selector, err := model.CategorySelectorDefinition(categories)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build category selector: %w", err)
 	}
 	definitions := []model.ResponseTool{selector}
 	if category != "" {
-		definitions = append(definitions, a.categorized.DefinitionsForCategory(category)...)
-		if planMode {
-			definitions = readOnlyDefinitions(a.tools, definitions)
-			definitions = append([]model.ResponseTool{selector}, definitions...)
-		}
+		definitions = append(definitions, a.visibleDefinitions(a.categorized.DefinitionsForCategory(category))...)
 	}
 	definitions = addRuntimeTools(definitions)
 	return definitions, toolNames(definitions), nil
 }
 
-func (a *Agent) readOnlyCategories() []model.ToolCategory {
+func (a *Agent) visibleCategories() []model.ToolCategory {
 	var categories []model.ToolCategory
 	for _, category := range a.categories {
-		if len(readOnlyDefinitions(a.tools, a.categorized.DefinitionsForCategory(category.Name))) > 0 {
+		if len(a.visibleDefinitions(a.categorized.DefinitionsForCategory(category.Name))) > 0 {
 			categories = append(categories, category)
 		}
 	}
 	return categories
+}
+
+func (a *Agent) visibleDefinitions(definitions []model.ResponseTool) []model.ResponseTool {
+	if a.options.ToolVisible == nil {
+		return definitions
+	}
+	visible := make([]model.ResponseTool, 0, len(definitions))
+	for _, definition := range definitions {
+		function, ok := definition.(model.FunctionTool)
+		if !ok || a.options.ToolVisible(function.Name) {
+			visible = append(visible, definition)
+		}
+	}
+	return visible
 }
 
 func (a *Agent) categoryForTool(name string) string {
@@ -263,22 +259,6 @@ func unavailableToolMessage(name, category string, categorized bool) string {
 			name, model.CategorySelectorName)
 	}
 	return fmt.Sprintf("Tool %q is not available in this request. Only call tools listed in the current request.", name)
-}
-
-func readOnlyDefinitions(tools model.ToolExecutor, definitions []model.ResponseTool) []model.ResponseTool {
-	filtered := make([]model.ResponseTool, 0, len(definitions))
-	for _, definition := range definitions {
-		function, ok := definition.(model.FunctionTool)
-		if ok && isReadOnlyTool(tools, function.Name) {
-			filtered = append(filtered, definition)
-		}
-	}
-	return filtered
-}
-
-func isReadOnlyTool(tools model.ToolExecutor, name string) bool {
-	metadata, ok := tools.ToolMetadata(name)
-	return ok && metadata.IsReadOnly()
 }
 
 func toolNames(definitions []model.ResponseTool) []string {

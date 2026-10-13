@@ -25,17 +25,6 @@ func (r *Responder) PendingHistoryFor(ctx context.Context, sessionID string) (*m
 	return model.NewResponseInputItems(responseHistoryItems(&state.History)...), nil
 }
 
-func (r *Responder) PendingPlanModeFor(ctx context.Context, sessionID string) (bool, error) {
-	state, ok, err := r.PendingStateFor(ctx, sessionID)
-	if err != nil {
-		return false, err
-	}
-	if !ok {
-		return false, nil
-	}
-	return state.PlanMode, nil
-}
-
 func (r *Responder) PendingStateFor(ctx context.Context, sessionID string) (agentgraph.State, bool, error) {
 	return r.PendingStateForRunID(ctx, r.CheckpointID(sessionID))
 }

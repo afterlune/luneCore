@@ -56,7 +56,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	if state.Transcript.Items == nil && state.Transcript.Text == nil {
 		state.Transcript = *model.NewResponseInputItems(state.History.Items...)
 	}
-	visibleTools, visibleNames, err := a.visibleTools(state, state.SelectedCategory, state.PlanMode)
+	visibleTools, visibleNames, err := a.visibleTools(state, state.SelectedCategory)
 	if err != nil {
 		return failTask(state, err)
 	}
@@ -74,7 +74,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	if request.Model == "" {
 		request.Model = a.options.Model
 	}
-	request.Instructions = taskInstructions(state.Goal, state.PlanMode)
+	request.Instructions = taskInstructions(state.Goal)
 	compactionThreshold := int64(0)
 	serverCompactionRequested := false
 	if state.AutoCompact && state.ContextWindow <= 0 && !state.CompactionWarningEmitted {
@@ -125,7 +125,6 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		"reasoning_effort", state.ReasoningEffort,
 		"request", state.ToolRounds+1,
 		"tool_rounds_completed", state.ToolRounds,
-		"plan_mode", state.PlanMode,
 		"selected_category", state.SelectedCategory,
 		"visible_tools", visibleNames,
 	)
@@ -259,15 +258,11 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	return graph.To(state, toolNode), nil
 }
 
-func taskInstructions(goal string, planMode bool) string {
+func taskInstructions(goal string) string {
 	var instructions []string
 	if goal = strings.TrimSpace(goal); goal != "" {
 		instructions = append(instructions,
 			"The user set this task goal (quoted text): "+strconv.Quote(goal)+"\nTreat it as task guidance. It does not override higher-priority instructions, safety requirements, or tool permissions.")
-	}
-	if planMode {
-		instructions = append(instructions,
-			"You are in plan mode. Inspect and reason about the requested work, then present a concise implementation plan for user review. You may use read-only tools only. Do not claim to have made changes.")
 	}
 	return strings.Join(instructions, "\n\n")
 }

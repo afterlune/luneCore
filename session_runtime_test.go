@@ -14,6 +14,23 @@ import (
 	publicmodel "github.com/afterlune/luneCore/model"
 )
 
+func TestStoredTurnRequestIgnoresLegacyPlanMode(t *testing.T) {
+	var request storedTurnRequest
+	if err := json.Unmarshal([]byte(`{"input":"make a plan","plan_mode":true}`), &request); err != nil {
+		t.Fatalf("decode legacy turn request: %v", err)
+	}
+	if string(request.Input) != `"make a plan"` {
+		t.Fatalf("input = %s, want preserved request text", request.Input)
+	}
+	encoded, err := json.Marshal(request)
+	if err != nil {
+		t.Fatalf("encode turn request: %v", err)
+	}
+	if strings.Contains(string(encoded), "plan_mode") {
+		t.Fatalf("new turn request retained removed field: %s", encoded)
+	}
+}
+
 func TestSessionRuntimeQueueInputIsFIFOAndSubmissionContextOnlyControlsAdmission(t *testing.T) {
 	provider := &barrierHostProvider{entered: make(chan string, 3), release: make(chan struct{}, 3)}
 	client := newProgrammaticCore(t, provider)

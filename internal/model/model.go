@@ -52,13 +52,13 @@ const (
 	ToolPermissionNetwork        ToolPermissionClass = "network"
 )
 
-// ToolMetadata keeps discovery, permission, and plan-mode classification next
-// to the tool registration that owns it. An empty permission class is treated
-// as unclassified and must fail closed where the active mode requires it.
+// ToolMetadata keeps discovery, side-effect, and permission hints next to the
+// tool registration that owns them. An empty permission class is treated as
+// unclassified and must fail closed where the active mode requires it.
 type ToolMetadata struct {
 	Category        ToolCategory
 	PermissionClass ToolPermissionClass
-	ReadOnly        bool
+	ReadOnly        bool // Side-effect hint; permission decisions use PermissionClass.
 }
 
 // Valid reports whether the class is recognized by the permission system.
@@ -69,11 +69,6 @@ func (c ToolPermissionClass) Valid() bool {
 	default:
 		return false
 	}
-}
-
-// IsReadOnly is true only for explicitly classified read-only tools.
-func (m ToolMetadata) IsReadOnly() bool {
-	return m.PermissionClass.Valid() && m.ReadOnly
 }
 
 // CategorizedToolExecutor optionally exposes tools one category at a time.

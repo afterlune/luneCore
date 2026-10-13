@@ -29,6 +29,24 @@ type scriptedRequester struct {
 	next      int
 }
 
+func TestLegacyPlanModeCheckpointStillDecodes(t *testing.T) {
+	codec := checkpoint.JSON[State]{}
+	state, err := codec.Unmarshal([]byte(`{"plan_mode":true,"task_settings_version":5,"goal":"create a plan"}`))
+	if err != nil {
+		t.Fatalf("decode legacy checkpoint: %v", err)
+	}
+	if state.TaskSettingsVersion != CurrentTaskSettingsVersion || state.Goal != "create a plan" {
+		t.Fatalf("decoded legacy checkpoint = %#v", state)
+	}
+	encoded, err := codec.Append(nil, state)
+	if err != nil {
+		t.Fatalf("encode checkpoint: %v", err)
+	}
+	if bytes.Contains(encoded, []byte(`"plan_mode"`)) {
+		t.Fatalf("checkpoint retained removed field: %s", encoded)
+	}
+}
+
 type scriptedTeamExecutor struct {
 	profiles    map[string]model.ModelProfile
 	limit       int
@@ -156,7 +174,7 @@ func toolRegistration(registeredTool tool.Tool, category model.ToolCategory, per
 	}
 }
 
-func TestPlanModeUsesRegisteredReadOnlyMetadata(t *testing.T) {
+func TestToolVisibilityFollowsPermissionMode(t *testing.T) {
 	customRead := &namedRecordingTool{name: "custom_read"}
 	customWrite := &namedRecordingTool{name: "custom_write"}
 	networkRead := &namedRecordingTool{name: "network_lookup"}
@@ -170,11 +188,11 @@ func TestPlanModeUsesRegisteredReadOnlyMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := New(&scriptedRequester{}, registry)
+	agent, err := NewWithOptions(&scriptedRequester{}, registry, AgentOptions{ToolVisible: registry.ToolVisible})
 	if err != nil {
 		t.Fatal(err)
 	}
-	definitions, _, err := agent.visibleTools(State{AgentID: "lead"}, "", true)
+	definitions, _, err := agent.visibleTools(State{AgentID: "lead"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,17 +204,35 @@ func TestPlanModeUsesRegisteredReadOnlyMetadata(t *testing.T) {
 	}
 	for _, name := range []string{"custom_read", "network_lookup"} {
 		if !visible[name] {
-			t.Errorf("Plan Mode did not expose explicitly read-only tool %q", name)
+			t.Errorf("read-only mode did not expose usable tool %q", name)
 		}
 	}
 	for _, name := range []string{"custom_write", "unclassified_read"} {
 		if visible[name] {
-			t.Errorf("Plan Mode exposed non-read-only or unclassified tool %q", name)
+			t.Errorf("read-only mode exposed denied tool %q", name)
+		}
+	}
+	if err := registry.SetPermissionMode(tool.PermissionModeAsk); err != nil {
+		t.Fatal(err)
+	}
+	definitions, _, err = agent.visibleTools(State{AgentID: "lead"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible = map[string]bool{}
+	for _, definition := range definitions {
+		if function, ok := definition.(model.FunctionTool); ok {
+			visible[function.Name] = true
+		}
+	}
+	for _, name := range []string{"custom_write", "unclassified_read"} {
+		if !visible[name] {
+			t.Errorf("ask mode did not expose approval-gated tool %q", name)
 		}
 	}
 }
 
-func TestTaskGoalIsAppliedWithoutWeakeningPlanInstructions(t *testing.T) {
+func TestTaskGoalIsAppliedWithoutForcingPlanInstructions(t *testing.T) {
 	requester := &scriptedRequester{responses: []*model.Response{
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"plan ready"}]}]}`),
 	}}
@@ -216,8 +252,8 @@ func TestTaskGoalIsAppliedWithoutWeakeningPlanInstructions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, result, err := agent.Start(context.Background(), "goal-plan-instructions", nil, input, TaskOptions{
-		Goal: "Map the public API and summarize its dependencies.", PlanMode: true,
+	_, result, err := agent.Start(context.Background(), "goal-instructions", nil, input, TaskOptions{
+		Goal: "Map the public API and summarize its dependencies.",
 	}, store, graph.Options{})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
@@ -229,13 +265,13 @@ func TestTaskGoalIsAppliedWithoutWeakeningPlanInstructions(t *testing.T) {
 	for _, expected := range []string{
 		"Map the public API and summarize its dependencies.",
 		"does not override higher-priority instructions",
-		"You are in plan mode.",
-		"You may use read-only tools only.",
-		"Do not claim to have made changes.",
 	} {
 		if !strings.Contains(instructions, expected) {
 			t.Errorf("instructions %q are missing %q", instructions, expected)
 		}
+	}
+	if strings.Contains(instructions, "You are in plan mode.") {
+		t.Errorf("task instructions force planning: %q", instructions)
 	}
 }
 
@@ -452,7 +488,7 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, result, err := agent.Start(context.Background(), "team-agent-run", nil, input, TaskOptions{
-		PlanMode: true, MaxToolRounds: 7, ReasoningEffort: model.ReasoningEffortHigh,
+		MaxToolRounds: 7, ReasoningEffort: model.ReasoningEffortHigh,
 		Goal: "parent goal", ContextWindow: 64000, ReserveOutputTokens: 2048,
 		AutoCompact: true, AutoCompactThreshold: 0.75,
 	}, store, graph.Options{})
@@ -465,7 +501,7 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 	if len(team.assignments) != 2 || team.assignments[0].Model != "research" || team.assignments[1].Model != "lead" {
 		t.Fatalf("team assignments = %#v", team.assignments)
 	}
-	if len(team.options) != 2 || !team.options[0].PlanMode || team.options[0].MaxToolRounds != 7 || team.options[0].ReasoningEffort != model.ReasoningEffortHigh {
+	if len(team.options) != 2 || team.options[0].MaxToolRounds != 7 || team.options[0].ReasoningEffort != model.ReasoningEffortHigh {
 		t.Fatalf("worker options = %#v", team.options)
 	}
 	for _, options := range team.options {
@@ -674,7 +710,7 @@ func teamResponseHistoryText(input *model.ResponseInput) string {
 	return string(encoded)
 }
 
-func TestAgentCanAskUserDuringPlanMode(t *testing.T) {
+func TestAgentCanAskUserDuringTask(t *testing.T) {
 	registry, err := tool.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -698,7 +734,7 @@ func TestAgentCanAskUserDuringPlanMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, waiting, err := agent.Start(context.Background(), "ask-user-plan", nil, input, TaskOptions{PlanMode: true}, store, graph.Options{})
+	execution, waiting, err := agent.Start(context.Background(), "ask-user-task", nil, input, TaskOptions{}, store, graph.Options{})
 	if err != nil || waiting.Status != graph.StatusWaiting {
 		t.Fatalf("Start = status %q, error %v", waiting.Status, err)
 	}
@@ -736,7 +772,7 @@ func TestAgentCanAskUserDuringPlanMode(t *testing.T) {
 		}
 	}
 	if !foundAskUser {
-		t.Fatalf("plan-mode tools = %#v, missing %q", requester.requests[0].Tools, askUserToolName)
+		t.Fatalf("task tools = %#v, missing %q", requester.requests[0].Tools, askUserToolName)
 	}
 	encodedInput, err := json.Marshal(requester.requests[1].Input)
 	if err != nil {
@@ -1278,7 +1314,7 @@ func mustMarshal(t *testing.T, value any) []byte {
 	return encoded
 }
 
-func TestPlanModeExposesExplorationToolsAndBlocksWrites(t *testing.T) {
+func TestReadOnlyPermissionExposesExplorationToolsAndBlocksWrites(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(workspace, "src"), 0o700); err != nil {
 		t.Fatal(err)
@@ -1291,7 +1327,7 @@ func TestPlanModeExposesExplorationToolsAndBlocksWrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer registry.Close()
-	if err := registry.SetPermissionMode(tool.PermissionModeFullAccess); err != nil {
+	if err := registry.SetPermissionMode(tool.PermissionModeReadOnly); err != nil {
 		t.Fatal(err)
 	}
 	requester := &scriptedRequester{responses: []*model.Response{
@@ -1299,7 +1335,7 @@ func TestPlanModeExposesExplorationToolsAndBlocksWrites(t *testing.T) {
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"list_1","name":"list_dir","arguments":"{}"},{"type":"function_call","call_id":"glob_1","name":"glob","arguments":"{\"pattern\":\"**/*.go\"}"},{"type":"function_call","call_id":"grep_1","name":"grep","arguments":"{\"pattern\":\"target\"}"},{"type":"function_call","call_id":"write_1","name":"write_file","arguments":"{\"path\":\"blocked.txt\",\"content\":\"no\"}"}]}`),
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"plan ready"}]}]}`),
 	}}
-	agent, err := New(requester, registry)
+	agent, err := NewWithOptions(requester, registry, AgentOptions{ToolVisible: registry.ToolVisible})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -1311,7 +1347,7 @@ func TestPlanModeExposesExplorationToolsAndBlocksWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, result, err := agent.Start(context.Background(), "plan-exploration-tools", nil, input, TaskOptions{PlanMode: true}, store, graph.Options{})
+	_, result, err := agent.Start(context.Background(), "readonly-exploration-tools", nil, input, TaskOptions{}, store, graph.Options{})
 	if err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -1327,12 +1363,12 @@ func TestPlanModeExposesExplorationToolsAndBlocksWrites(t *testing.T) {
 	}
 	for _, name := range []string{"list_dir", "glob", "grep", "read_file", model.CategorySelectorName} {
 		if !visible[name] {
-			t.Errorf("Plan mode did not expose %q: %#v", name, visible)
+			t.Errorf("read-only mode did not expose %q: %#v", name, visible)
 		}
 	}
 	for _, name := range []string{"write_file", "edit_file", "command"} {
 		if visible[name] {
-			t.Errorf("Plan mode exposed %q", name)
+			t.Errorf("read-only mode exposed denied tool %q", name)
 		}
 	}
 	if _, err := os.Stat(filepath.Join(workspace, "blocked.txt")); !errors.Is(err, os.ErrNotExist) {
@@ -1342,7 +1378,7 @@ func TestPlanModeExposesExplorationToolsAndBlocksWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, output := range []string{"src", "src/main.go", "src/main.go:2:// target", "Tool is not available in plan mode."} {
+	for _, output := range []string{"src", "src/main.go", "src/main.go:2:// target", "which is not visible in this request"} {
 		if !strings.Contains(string(encoded), output) {
 			t.Errorf("tool output %q missing from history: %s", output, encoded)
 		}

@@ -185,8 +185,8 @@ func (c *Core) resolveTaskSettings(settings SessionSettings) (taskSettings, erro
 
 func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 	return agentgraph.TaskOptions{
-		ExecutionID: state.ExecutionID,
-		PlanMode:    state.PlanMode, MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
+		ExecutionID:   state.ExecutionID,
+		MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
 		Goal: state.Goal, ContextWindow: state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,
 		AutoCompact: state.AutoCompact, AutoCompactThreshold: state.AutoCompactThreshold,
 		Execution: state.Execution,

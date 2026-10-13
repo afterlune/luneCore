@@ -109,7 +109,7 @@ func (c *Core) drainQueue(sessionID string) {
 		c.mu.Lock()
 		c.executionRuns[queued.ExecutionID] = runDone
 		c.mu.Unlock()
-		response, runErr := c.run(ctx, sessionID, request.PlanMode, request.MaxToolRounds, request.Model, request.Execution, request.ExecutionOverride, request.Resume, input, queued.QueueID, queued.ExecutionID)
+		response, runErr := c.run(ctx, sessionID, request.MaxToolRounds, request.Model, request.Execution, request.ExecutionOverride, request.Resume, input, queued.QueueID, queued.ExecutionID)
 		c.mu.Lock()
 		if c.executionRuns[queued.ExecutionID] == runDone {
 			delete(c.executionRuns, queued.ExecutionID)
@@ -383,7 +383,7 @@ func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (json.Ra
 		}
 	}()
 	submission, waiter, err := c.submitTurn(ctx, request.SessionID, TurnRequest{
-		Input: request.Input, PlanMode: request.PlanMode, Model: request.Model, MaxToolRounds: request.MaxToolRounds,
+		Input: request.Input, Model: request.Model, MaxToolRounds: request.MaxToolRounds,
 		Execution: request.Execution,
 	}, StartIfIdle, true)
 	if err != nil {

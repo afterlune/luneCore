@@ -90,7 +90,7 @@ func (c *Core) resolveApproval(sessionID, id string, allowed bool) error {
 	return nil
 }
 
-func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, planMode bool, settings SessionSettings, profile model.ModelProfile, modelName string, taskOptions agentgraph.TaskOptions, expectedUpdatedAt time.Time, cancel context.CancelFunc) (string, error) {
+func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, settings SessionSettings, profile model.ModelProfile, modelName string, taskOptions agentgraph.TaskOptions, expectedUpdatedAt time.Time, cancel context.CancelFunc) (string, error) {
 	if ctx == nil {
 		return "", errors.New("context is nil")
 	}
@@ -137,8 +137,8 @@ func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, planMod
 		Status: TaskRunning, SessionID: sessionID, TaskID: id, ExecutionID: taskOptions.ExecutionID, QueueID: queueID, ContextWindow: taskOptions.ContextWindow,
 		ReserveOutputTokens: taskOptions.ReserveOutputTokens, AutoCompact: taskOptions.AutoCompact,
 		AutoCompactThreshold: taskOptions.AutoCompactThreshold, Goal: taskOptions.Goal, MaxToolRounds: taskOptions.MaxToolRounds,
-		ModelOverride: taskOptions.Model, PlanMode: planMode,
-		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: modelName,
+		ModelOverride: taskOptions.Model,
+		ModelProfile:  settings.ModelProfile, Provider: profile.Provider, Model: modelName,
 		ReasoningEffort: settings.ReasoningEffort, Execution: coreExecutionOptions(taskOptions.Execution),
 	}
 	if c.activeTasks == nil {

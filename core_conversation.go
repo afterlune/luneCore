@@ -71,7 +71,7 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		ContextWindow: effective.ContextWindow, ReserveOutputTokens: effective.ReserveOutputTokens,
 		AutoCompact: effective.AutoCompact, AutoCompactThreshold: effective.AutoCompactThreshold,
 	}
-	taskID, err := c.beginTask(ctx, sessionID, "", false, settings, profile, profile.Model, compactOptions, saved.UpdatedAt, nil)
+	taskID, err := c.beginTask(ctx, sessionID, "", settings, profile, profile.Model, compactOptions, saved.UpdatedAt, nil)
 	if err != nil {
 		return 0, err
 	}

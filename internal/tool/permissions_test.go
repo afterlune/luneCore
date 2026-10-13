@@ -89,6 +89,9 @@ func TestPermissionModesAuthorizeToolsAsDesigned(t *testing.T) {
 			})
 
 			for _, name := range toolNames {
+				if visible := registry.ToolVisible(name); visible != test.allowed[name] {
+					t.Errorf("%s visible = %v, want %v for %s mode", name, visible, test.allowed[name], test.name)
+				}
 				result := registry.Run(context.Background(), name, json.RawMessage(`{}`))
 				wantAllowed := test.allowed[name]
 				if wantAllowed && result.Err != nil {
@@ -113,6 +116,35 @@ func TestPermissionModesAuthorizeToolsAsDesigned(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPermissionChangeIsRecheckedBeforeExecution(t *testing.T) {
+	registeredTool := &permissionTestTool{name: "write_file"}
+	registry, err := NewRegistry(ToolRegistration{
+		Tool:     registeredTool,
+		Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionWorkspaceWrite},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(PermissionModeWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	if !registry.ToolVisible("write_file") {
+		t.Fatal("workspace mode hid workspace writes")
+	}
+	if err := registry.SetPermissionMode(PermissionModeReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	if registry.ToolVisible("write_file") {
+		t.Fatal("read-only mode exposed workspace writes")
+	}
+	if result := registry.Run(context.Background(), "write_file", json.RawMessage(`{}`)); result.Err == nil {
+		t.Fatal("write succeeded after switching to read-only mode")
+	}
+	if registeredTool.calls != 0 {
+		t.Fatalf("write tool ran %d times after permission change", registeredTool.calls)
 	}
 }
 

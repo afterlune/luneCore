@@ -373,7 +373,6 @@ func ParseTaskInput(line string) (TaskInput, error) {
 type TaskRequest struct {
 	SessionID string
 	Input     TaskInput
-	PlanMode  bool
 	// Model optionally overrides the selected profile's API model identifier for this task.
 	Model         string
 	MaxToolRounds int
@@ -394,7 +393,6 @@ type TaskState struct {
 	Goal                 string
 	MaxToolRounds        int
 	ModelOverride        string
-	PlanMode             bool
 	ModelProfile         string
 	Provider             string
 	Model                string
