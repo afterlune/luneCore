@@ -57,7 +57,7 @@ type Core struct {
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
-	stateDirLock   *stateDirectoryLock
+	stateDirLock   *session.DirectoryLock
 
 	mu                  sync.RWMutex
 	runtimeConfigMu     sync.RWMutex
@@ -113,7 +113,7 @@ func New(config Config) (_ *Core, err error) {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
-	stateLock, err := acquireStateDirectoryLock(stateDir)
+	stateLock, err := session.AcquireStateDirectoryLock(stateDir)
 	if err != nil {
 		return nil, fmt.Errorf("acquire StateDir lock: %w", err)
 	}
@@ -125,7 +125,7 @@ func New(config Config) (_ *Core, err error) {
 			}
 		}
 	}()
-	projectConfig, err := loadProjectConfig(workspace, config.ModelConfig, config.ModelProviders)
+	projectConfig, err := projectconfig.LoadForRuntime(workspace, config.ModelConfig, config.ModelProviders)
 	if err != nil {
 		return nil, err
 	}

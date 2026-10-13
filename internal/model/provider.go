@@ -2,21 +2,18 @@ package model
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"strings"
+
+	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 // Provider is the network boundary for one model API. Request/response values
 // are the agent's shared conversation contract; implementations translate
 // them to the provider's native wire format.
-type Provider interface {
-	Name() string
-	CreateResponse(context.Context, ModelRequest, ModelProfile) (*ModelResponse, error)
-	StreamResponse(context.Context, ModelRequest, ModelProfile, func(ModelStreamEvent) error) (*ModelResponse, error)
-}
+type Provider = publicmodel.Provider
 
 // ResponsesRequest is the wire request shared by Responses-compatible APIs.
 type ResponsesRequest ModelRequest
@@ -49,29 +46,20 @@ func providerEndpoint(protocol, baseURL string) (string, error) {
 	}
 }
 
-type ModelStreamEventType string
+type ModelStreamEventType = publicmodel.ModelStreamEventType
 
 const (
-	ModelStreamTextDelta      ModelStreamEventType = "text_delta"
-	ModelStreamReasoningDelta ModelStreamEventType = "reasoning_delta"
-	ModelStreamToolStarted    ModelStreamEventType = "tool_started"
-	ModelStreamToolDelta      ModelStreamEventType = "tool_arguments_delta"
-	ModelStreamCompleted      ModelStreamEventType = "completed"
-	ModelStreamFailed         ModelStreamEventType = "failed"
+	ModelStreamTextDelta      = publicmodel.ModelStreamTextDelta
+	ModelStreamReasoningDelta = publicmodel.ModelStreamReasoningDelta
+	ModelStreamToolStarted    = publicmodel.ModelStreamToolStarted
+	ModelStreamToolDelta      = publicmodel.ModelStreamToolDelta
+	ModelStreamCompleted      = publicmodel.ModelStreamCompleted
+	ModelStreamFailed         = publicmodel.ModelStreamFailed
 )
 
 // ModelStreamEvent is the provider-neutral streaming surface consumed by
 // Agent and Core.
-type ModelStreamEvent struct {
-	Type        ModelStreamEventType
-	ItemID      string
-	OutputIndex *int
-	Delta       string
-	ToolCall    *OutputFunctionCall
-	Response    *Response
-	Error       *ResponseError
-	Raw         json.RawMessage
-}
+type ModelStreamEvent = publicmodel.ModelStreamEvent
 
 type ProviderCatalog struct {
 	config    Config

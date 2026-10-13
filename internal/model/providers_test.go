@@ -8,7 +8,79 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	publicmodel "github.com/afterlune/luneCore/model"
 )
+
+type hostProviderProbe struct {
+	request  publicmodel.ModelRequest
+	response *publicmodel.ModelResponse
+}
+
+func (p *hostProviderProbe) Name() string { return "host" }
+
+func (p *hostProviderProbe) CreateResponse(_ context.Context, request publicmodel.ModelRequest, _ publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
+	p.request = request
+	return p.response, nil
+}
+
+func (p *hostProviderProbe) StreamResponse(ctx context.Context, request publicmodel.ModelRequest, profile publicmodel.ModelProfile, emit func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {
+	response, err := p.CreateResponse(ctx, request, profile)
+	if err != nil {
+		return nil, err
+	}
+	if emit != nil {
+		if err := emit(publicmodel.ModelStreamEvent{Type: publicmodel.ModelStreamCompleted, Response: response}); err != nil {
+			return nil, err
+		}
+	}
+	return response, nil
+}
+
+func TestHostProviderUsesSharedResponseDTOs(t *testing.T) {
+	probe := &hostProviderProbe{response: &publicmodel.ModelResponse{Status: "completed"}}
+	catalog, err := NewProviderCatalogWithHostProviders(Config{
+		Providers: map[string]ProviderConfig{"host": {Protocol: ProtocolResponses, BaseURL: "https://host.invalid"}},
+		Models:    map[string]ModelProfile{"main": {Provider: "host", Model: "host-model"}}, DefaultModel: "main",
+	}, map[string]publicmodel.Provider{"host": probe})
+	if err != nil {
+		t.Fatalf("create provider catalog: %v", err)
+	}
+	provider := catalog.providers["host"]
+	if _, ok := provider.(hostProvider); !ok {
+		t.Fatal("host provider is missing the isolation adapter")
+	}
+	request := ModelRequest{Input: NewResponseInputItems(
+		InputReasoning{EncryptedContent: "opaque-state"},
+		InputFunctionCallOutput{CallID: "call-1", TranscriptOnly: []ContentPart{InputText{Text: "host-only"}}},
+	)}
+	response, err := provider.CreateResponse(context.Background(), request, ModelProfile{Provider: "host", Model: "host-model"})
+	if err != nil {
+		t.Fatalf("create response: %v", err)
+	}
+	if response == probe.response || response.Status != probe.response.Status {
+		t.Fatalf("host provider response = %#v, want an isolated copy of %#v", response, probe.response)
+	}
+	reasoning, ok := probe.request.Input.Items[0].(publicmodel.InputReasoning)
+	if !ok || reasoning.EncryptedContent != "opaque-state" {
+		t.Fatalf("host provider request = %#v, encrypted content was not preserved", probe.request.Input)
+	}
+	transcriptOnly, ok := probe.request.Input.Items[1].(publicmodel.InputFunctionCallOutput)
+	if !ok || len(transcriptOnly.TranscriptOnly) != 0 {
+		t.Fatalf("host provider received transcript-only content: %#v", probe.request.Input.Items[1])
+	}
+
+	var event ModelStreamEvent
+	if _, err := provider.StreamResponse(context.Background(), request, ModelProfile{Provider: "host", Model: "host-model"}, func(got ModelStreamEvent) error {
+		event = got
+		return nil
+	}); err != nil {
+		t.Fatalf("stream response: %v", err)
+	}
+	if event.Type != ModelStreamCompleted || event.Response == nil || event.Response.Status != probe.response.Status {
+		t.Fatalf("host stream event = %#v", event)
+	}
+}
 
 func TestResolveModelIDUsesOverrideAndProfileFallback(t *testing.T) {
 	profile := ModelProfile{Model: "configured-model"}

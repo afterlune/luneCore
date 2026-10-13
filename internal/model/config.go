@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/url"
 	"strings"
+
+	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 const (
@@ -27,12 +29,7 @@ type ProviderConfig struct {
 
 // ModelProfile binds a provider model ID to a stable catalog name. Agent runs
 // receive a profile at start and keep it for their lifetime.
-type ModelProfile struct {
-	Provider           string `json:"provider"`
-	Model              string `json:"model"`
-	MaxOutputTokens    int64  `json:"maxOutputTokens,omitempty"`
-	SupportsInputAudio bool   `json:"supportsInputAudio,omitempty"`
-}
+type ModelProfile = publicmodel.ModelProfile
 
 // Config contains the model catalog settings consumed by ProviderCatalog.
 type Config struct {

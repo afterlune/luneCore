@@ -1,4 +1,4 @@
-package core
+package session
 
 import (
 	"errors"
@@ -9,11 +9,14 @@ import (
 
 const stateDirectoryLockName = ".lune-core.lock"
 
-type stateDirectoryLock struct {
+// ErrStateDirInUse indicates that another Core instance already owns the state directory.
+var ErrStateDirInUse = errors.New("state directory is already in use by another Core instance")
+
+type DirectoryLock struct {
 	file *os.File
 }
 
-func acquireStateDirectoryLock(stateDir string) (*stateDirectoryLock, error) {
+func AcquireStateDirectoryLock(stateDir string) (*DirectoryLock, error) {
 	path := filepath.Join(stateDir, stateDirectoryLockName)
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
@@ -23,10 +26,10 @@ func acquireStateDirectoryLock(stateDir string) (*stateDirectoryLock, error) {
 		closeErr := file.Close()
 		return nil, errors.Join(err, closeErr)
 	}
-	return &stateDirectoryLock{file: file}, nil
+	return &DirectoryLock{file: file}, nil
 }
 
-func (lock *stateDirectoryLock) Close() error {
+func (lock *DirectoryLock) Close() error {
 	if lock == nil || lock.file == nil {
 		return nil
 	}

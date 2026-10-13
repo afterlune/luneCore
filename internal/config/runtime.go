@@ -1,4 +1,4 @@
-package core
+package config
 
 import (
 	"errors"
@@ -7,20 +7,21 @@ import (
 	"path/filepath"
 	"strings"
 
-	projectconfig "github.com/afterlune/luneCore/internal/config"
 	"github.com/afterlune/luneCore/internal/model"
 	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 const hostProviderPlaceholder = "host-provider"
 
-func loadProjectConfig(workspace string, supplied *publicmodel.Config, hostProviders map[string]publicmodel.Provider) (projectconfig.Config, error) {
-	loaded, err := projectconfig.Load(filepath.Join(workspace, projectconfig.FileName))
+// LoadForRuntime combines workspace config with explicit host configuration and
+// providers, then validates the effective runtime settings.
+func LoadForRuntime(workspace string, supplied *publicmodel.Config, hostProviders map[string]publicmodel.Provider) (Config, error) {
+	loaded, err := Load(filepath.Join(workspace, FileName))
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) || supplied == nil {
-			return projectconfig.Config{}, err
+			return Config{}, err
 		}
-		loaded = projectconfig.Config{AutoCompact: true, AutoCompactThreshold: projectconfig.DefaultAutoCompactThreshold}
+		loaded = Config{AutoCompact: true, AutoCompactThreshold: DefaultAutoCompactThreshold}
 	}
 	if supplied != nil {
 		if loaded.Providers == nil {
@@ -53,7 +54,7 @@ func loadProjectConfig(workspace string, supplied *publicmodel.Config, hostProvi
 	}
 	for name, provider := range hostProviders {
 		if provider == nil || strings.TrimSpace(name) == "" || provider.Name() != name {
-			return projectconfig.Config{}, fmt.Errorf("host model provider %q has an invalid name", name)
+			return Config{}, fmt.Errorf("host model provider %q has an invalid name", name)
 		}
 		configured, ok := loaded.Providers[name]
 		if !ok {
@@ -71,10 +72,10 @@ func loadProjectConfig(workspace string, supplied *publicmodel.Config, hostProvi
 		loaded.Providers[name] = configured
 	}
 	if loaded.AutoCompact && loaded.AutoCompactThreshold == 0 {
-		loaded.AutoCompactThreshold = projectconfig.DefaultAutoCompactThreshold
+		loaded.AutoCompactThreshold = DefaultAutoCompactThreshold
 	}
 	if err := loaded.Validate(); err != nil {
-		return projectconfig.Config{}, fmt.Errorf("validate runtime configuration: %w", err)
+		return Config{}, fmt.Errorf("validate runtime configuration: %w", err)
 	}
 	return loaded, nil
 }

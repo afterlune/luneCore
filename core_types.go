@@ -9,6 +9,7 @@ import (
 
 	"github.com/afterlune/luneCore/internal/agentruntime"
 	projectconfig "github.com/afterlune/luneCore/internal/config"
+	"github.com/afterlune/luneCore/internal/session"
 )
 
 const (
@@ -18,7 +19,7 @@ const (
 )
 
 // ErrStateDirInUse indicates that another Core instance already owns the state directory.
-var ErrStateDirInUse = errors.New("state directory is already in use by another Core instance")
+var ErrStateDirInUse = session.ErrStateDirInUse
 
 const (
 	DefaultAttachmentMaxFileBytes  = projectconfig.DefaultAttachmentMaxFileBytes

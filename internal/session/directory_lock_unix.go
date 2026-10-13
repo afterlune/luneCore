@@ -1,6 +1,6 @@
 //go:build unix
 
-package core
+package session
 
 import (
 	"errors"
