@@ -11,6 +11,7 @@ import (
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
+	runtimepermission "github.com/afterlune/luneCore/internal/tool"
 	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
 )
@@ -52,7 +53,7 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...Exec
 	return c.waitForTurn(ctx, runtime, submission.ExecutionID, waiter)
 }
 
-func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
+func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, permissionOverride string, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
 	if c == nil || ctx == nil {
 		return nil, errors.New("core and context are required")
 	}
@@ -63,6 +64,9 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		return nil, errors.New("maximum tool rounds must not be negative")
 	}
 	if err := validateExecutionOptions(executionOptions); err != nil {
+		return nil, err
+	}
+	if err := validatePermissionOverride(permissionOverride); err != nil {
 		return nil, err
 	}
 	if executionID != "" && c.takeInterruptRequest(executionID) {
@@ -143,6 +147,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 			ReserveOutputTokens: effective.ReserveOutputTokens, AutoCompact: effective.AutoCompact,
 			AutoCompactThreshold: effective.AutoCompactThreshold,
 			Execution:            agentExecutionOptions(mergeExecutionOptions(c.executionDefaults, executionOptions)),
+			PermissionOverride:   permissionOverride,
 		}
 	}
 	if resume {
@@ -196,6 +201,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		SessionID: sessionID, TaskID: taskState.TaskID, RunID: c.runtime.CheckpointID(sessionID),
 		ExecutionID: taskOptions.ExecutionID, AgentID: "lead",
 	})
+	ctx = runtimepermission.WithPermissionMode(ctx, taskOptions.PermissionOverride)
 	if resume {
 		if recoveryErr := c.checkToolRecovery(ctx, sessionID, taskState); recoveryErr != nil {
 			status := TaskFailed

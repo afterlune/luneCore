@@ -109,7 +109,7 @@ func (c *Core) drainQueue(sessionID string) {
 		c.mu.Lock()
 		c.executionRuns[queued.ExecutionID] = runDone
 		c.mu.Unlock()
-		response, runErr := c.run(ctx, sessionID, request.MaxToolRounds, request.Model, request.Execution, request.ExecutionOverride, request.Resume, input, queued.QueueID, queued.ExecutionID)
+		response, runErr := c.run(ctx, sessionID, request.MaxToolRounds, request.Model, request.Execution, request.ExecutionOverride, request.PermissionOverride, request.Resume, input, queued.QueueID, queued.ExecutionID)
 		c.mu.Lock()
 		if c.executionRuns[queued.ExecutionID] == runDone {
 			delete(c.executionRuns, queued.ExecutionID)

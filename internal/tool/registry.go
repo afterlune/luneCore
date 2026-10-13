@@ -273,6 +273,12 @@ func (r *Registry) ToolMetadata(name string) (model.ToolMetadata, bool) {
 // ToolVisible reports whether the active permission mode allows the tool
 // directly or permits it after approval.
 func (r *Registry) ToolVisible(name string) bool {
+	return r.ToolVisibleForMode(name, "")
+}
+
+// ToolVisibleForMode reports whether a tool is available under the supplied
+// task-scoped mode. An empty mode uses the registry's active mode.
+func (r *Registry) ToolVisibleForMode(name, mode string) bool {
 	metadata, ok := r.ToolMetadata(name)
 	if !ok {
 		return false
@@ -280,7 +286,12 @@ func (r *Registry) ToolVisible(name string) bool {
 	r.mu.RLock()
 	permissions := r.permissions
 	r.mu.RUnlock()
-	_, _, disposition := permissions.policy(metadata)
+	var disposition permissionDisposition
+	if mode == "" {
+		_, _, disposition = permissions.policy(metadata)
+	} else {
+		disposition = permissionPolicy(PermissionMode(mode), metadata.PermissionClass)
+	}
 	return disposition != permissionDenied
 }
 

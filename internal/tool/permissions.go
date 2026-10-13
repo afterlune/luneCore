@@ -57,6 +57,25 @@ type PermissionRequest struct {
 // PermissionApprovalHandler asks the user to allow one tool call.
 type PermissionApprovalHandler func(context.Context, PermissionRequest) bool
 
+type permissionModeContextKey struct{}
+
+// WithPermissionMode scopes an execution-only permission override to a tool call.
+// An empty mode leaves the registry's active mode in effect.
+func WithPermissionMode(ctx context.Context, mode string) context.Context {
+	if ctx == nil || mode == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, permissionModeContextKey{}, PermissionMode(mode))
+}
+
+func permissionModeFromContext(ctx context.Context) (PermissionMode, bool) {
+	if ctx == nil {
+		return "", false
+	}
+	mode, ok := ctx.Value(permissionModeContextKey{}).(PermissionMode)
+	return mode, ok
+}
+
 type permissionDisposition uint8
 
 const (
@@ -113,6 +132,10 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 		return err
 	}
 	mode, approve, disposition := p.policy(request.Metadata)
+	if override, ok := permissionModeFromContext(ctx); ok {
+		mode = override
+		disposition = permissionPolicy(mode, request.Metadata.PermissionClass)
+	}
 	switch disposition {
 	case permissionAllowed:
 		return ctx.Err()

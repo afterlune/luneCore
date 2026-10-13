@@ -72,9 +72,12 @@ type RuntimeState struct {
 }
 
 type TurnResult struct {
-	ExecutionID  string
-	Status       TaskStatus
-	Response     json.RawMessage
+	ExecutionID string
+	Status      TaskStatus
+	Response    json.RawMessage
+	// ProposedPlan is set only for a completed response containing one complete
+	// proposed-plan block. Hosts can offer handoff choices when it is non-nil.
+	ProposedPlan *ProposedPlan
 	BudgetReason BudgetReason
 }
 
@@ -104,12 +107,13 @@ type SessionRuntime struct {
 }
 
 type storedTurnRequest struct {
-	Input             json.RawMessage  `json:"input"`
-	Model             string           `json:"model,omitempty"`
-	MaxToolRounds     int              `json:"max_tool_rounds,omitempty"`
-	Execution         ExecutionOptions `json:"execution,omitempty"`
-	ExecutionOverride bool             `json:"execution_override,omitempty"`
-	Resume            bool             `json:"resume,omitempty"`
+	Input              json.RawMessage  `json:"input"`
+	Model              string           `json:"model,omitempty"`
+	MaxToolRounds      int              `json:"max_tool_rounds,omitempty"`
+	Execution          ExecutionOptions `json:"execution,omitempty"`
+	ExecutionOverride  bool             `json:"execution_override,omitempty"`
+	PermissionOverride string           `json:"permission_override,omitempty"`
+	Resume             bool             `json:"resume,omitempty"`
 }
 
 type turnResult struct {
@@ -203,10 +207,16 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 					return TurnResult{}, ctx.Err()
 				}
 			}
+			response := append(json.RawMessage(nil), stored.Response...)
+			var plan *ProposedPlan
+			if TaskStatus(stored.Status) == TaskCompleted {
+				plan = extractProposedPlan(response)
+			}
 			return TurnResult{
 				ExecutionID:  stored.ExecutionID,
 				Status:       TaskStatus(stored.Status),
-				Response:     append(json.RawMessage(nil), stored.Response...),
+				Response:     response,
+				ProposedPlan: plan,
 				BudgetReason: BudgetReason(stored.BudgetReason),
 			}, nil
 		}

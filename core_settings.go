@@ -189,7 +189,8 @@ func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 		MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
 		Goal: state.Goal, ContextWindow: state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,
 		AutoCompact: state.AutoCompact, AutoCompactThreshold: state.AutoCompactThreshold,
-		Execution: state.Execution,
+		Execution:          state.Execution,
+		PermissionOverride: state.PermissionOverride,
 	}
 }
 
@@ -201,6 +202,13 @@ func validateExecutionOptions(options ExecutionOptions) error {
 		return errors.New("execution timeouts must not be negative")
 	}
 	return nil
+}
+
+func validatePermissionOverride(mode string) error {
+	if mode == "" || PermissionMode(mode) == PermissionWorkspace {
+		return nil
+	}
+	return fmt.Errorf("unsupported task permission override %q", mode)
 }
 
 func mergeExecutionOptions(defaults, overrides ExecutionOptions) ExecutionOptions {

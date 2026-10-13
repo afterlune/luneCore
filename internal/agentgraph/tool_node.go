@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/afterlune/luneCore/internal/model"
+	runtimepermission "github.com/afterlune/luneCore/internal/tool"
 	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
 )
@@ -73,7 +74,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			branches := make([]graph.Branch[State], 0, len(assignments))
 			taskOptions := TaskOptions{
 				ExecutionID: state.ExecutionID, MaxToolRounds: state.MaxToolRounds,
-				ReasoningEffort: state.ReasoningEffort,
+				ReasoningEffort: state.ReasoningEffort, PermissionOverride: state.PermissionOverride,
 			}
 			for _, assignment := range assignments {
 				input, inputErr := model.NewResponseInput(assignment.Task)
@@ -93,17 +94,23 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 				branch.TaskSettingsVersion = CurrentTaskSettingsVersion
 				branch.MaxToolRounds = state.MaxToolRounds
 				branch.Execution = state.Execution
+				branch.PermissionOverride = state.PermissionOverride
 				branch.ReasoningEffort = state.ReasoningEffort
 				branch, branchErr = a.options.Team.PrepareBranch(ctx, branch, assignment, taskOptions)
 				if branchErr != nil {
 					return graph.Transition[State]{}, branchErr
 				}
+				branch.PermissionOverride = state.PermissionOverride
 				branches = append(branches, graph.Branch[State]{Target: teamModelNode, State: branch, EntryTimeout: a.options.Execution.TeamEntryTimeout})
 			}
 			return graph.FanOut(state, branches...), nil
 		}
 	case a.categorized != nil && call.Name == model.CategorySelectorName:
-		categories := a.visibleCategories()
+		permissionMode := state.PermissionOverride
+		if permissionMode == "" && a.options.CurrentPermissionMode != nil {
+			permissionMode = a.options.CurrentPermissionMode()
+		}
+		categories := a.visibleCategories(permissionMode)
 		category, err := model.ParseCategorySelection(call.Arguments, categories)
 		text := "Category selected. Its tools will be available in the next request."
 		if err != nil {
@@ -130,7 +137,8 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			Output: model.NewToolOutputText(unavailableToolMessage(call.Name, expectedCategory, a.categorized != nil)),
 		}
 	default:
-		toolContext := model.WithAgentID(ctx, state.AgentID)
+		toolContext := runtimepermission.WithPermissionMode(ctx, state.PermissionOverride)
+		toolContext = model.WithAgentID(toolContext, state.AgentID)
 		toolContext = model.WithInputAudioSupport(toolContext, state.SupportsInputAudio)
 		identity := publictool.CallIdentityFromContext(toolContext)
 		identity.RunID = state.RunID
@@ -183,7 +191,13 @@ func (a *Agent) nextToolTransition(state State) graph.Transition[State] {
 	return a.nextModelTransition(state)
 }
 
-func (a *Agent) visibleTools(state State, category string) ([]model.ResponseTool, []string, error) {
+func (a *Agent) visibleTools(state State, category, permissionMode string) ([]model.ResponseTool, []string, error) {
+	if permissionMode == "" {
+		permissionMode = state.PermissionOverride
+	}
+	if permissionMode == "" && a.options.CurrentPermissionMode != nil {
+		permissionMode = a.options.CurrentPermissionMode()
+	}
 	addRuntimeTools := func(definitions []model.ResponseTool) []model.ResponseTool {
 		if a.options.Team != nil && len(a.options.Team.Profiles()) > 0 && a.options.Team.MaxParallelAgents() > 0 {
 			definitions = append(definitions, teamDispatchDefinition(a.options.Team))
@@ -194,41 +208,49 @@ func (a *Agent) visibleTools(state State, category string) ([]model.ResponseTool
 		return definitions
 	}
 	if a.categorized == nil {
-		definitions := a.visibleDefinitions(a.tools.Definitions())
+		definitions := a.visibleDefinitions(a.tools.Definitions(), permissionMode)
 		definitions = addRuntimeTools(definitions)
 		return definitions, toolNames(definitions), nil
 	}
-	categories := a.visibleCategories()
+	categories := a.visibleCategories(permissionMode)
 	selector, err := model.CategorySelectorDefinition(categories)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build category selector: %w", err)
 	}
 	definitions := []model.ResponseTool{selector}
 	if category != "" {
-		definitions = append(definitions, a.visibleDefinitions(a.categorized.DefinitionsForCategory(category))...)
+		definitions = append(definitions, a.visibleDefinitions(a.categorized.DefinitionsForCategory(category), permissionMode)...)
 	}
 	definitions = addRuntimeTools(definitions)
 	return definitions, toolNames(definitions), nil
 }
 
-func (a *Agent) visibleCategories() []model.ToolCategory {
+func (a *Agent) visibleCategories(permissionMode string) []model.ToolCategory {
 	var categories []model.ToolCategory
 	for _, category := range a.categories {
-		if len(a.visibleDefinitions(a.categorized.DefinitionsForCategory(category.Name))) > 0 {
+		if len(a.visibleDefinitions(a.categorized.DefinitionsForCategory(category.Name), permissionMode)) > 0 {
 			categories = append(categories, category)
 		}
 	}
 	return categories
 }
 
-func (a *Agent) visibleDefinitions(definitions []model.ResponseTool) []model.ResponseTool {
-	if a.options.ToolVisible == nil {
+func (a *Agent) visibleDefinitions(definitions []model.ResponseTool, permissionMode string) []model.ResponseTool {
+	if a.options.ToolVisibleForMode == nil && a.options.ToolVisible == nil {
 		return definitions
 	}
 	visible := make([]model.ResponseTool, 0, len(definitions))
 	for _, definition := range definitions {
 		function, ok := definition.(model.FunctionTool)
-		if !ok || a.options.ToolVisible(function.Name) {
+		isVisible := !ok
+		if ok {
+			if a.options.ToolVisibleForMode != nil {
+				isVisible = a.options.ToolVisibleForMode(function.Name, permissionMode)
+			} else {
+				isVisible = a.options.ToolVisible(function.Name)
+			}
+		}
+		if isVisible {
 			visible = append(visible, definition)
 		}
 	}

@@ -15,6 +15,10 @@ import (
 )
 
 func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool) (TurnSubmission, <-chan turnResult, error) {
+	return c.submitTurnWithPermission(ctx, sessionID, request, mode, wait, "")
+}
+
+func (c *Core) submitTurnWithPermission(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, permissionOverride string) (TurnSubmission, <-chan turnResult, error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return TurnSubmission{}, nil, errors.New("core, context, and session id are required")
 	}
@@ -37,6 +41,9 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 	if err := validateExecutionOptions(request.Execution); err != nil {
 		return TurnSubmission{}, nil, err
 	}
+	if err := validatePermissionOverride(permissionOverride); err != nil {
+		return TurnSubmission{}, nil, err
+	}
 	if _, err := c.GetSession(ctx, sessionID); err != nil {
 		return TurnSubmission{}, nil, err
 	}
@@ -51,6 +58,7 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 	storedRequest, err := json.Marshal(storedTurnRequest{
 		Input: append(json.RawMessage(nil), request.Input.Raw...),
 		Model: request.Model, MaxToolRounds: request.MaxToolRounds, Execution: request.Execution,
+		PermissionOverride: permissionOverride,
 	})
 	if err != nil {
 		return TurnSubmission{}, nil, fmt.Errorf("encode queued turn: %w", err)

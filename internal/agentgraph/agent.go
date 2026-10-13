@@ -70,12 +70,14 @@ type AgentOptions struct {
 	Team               TeamExecutor
 	AskUser            bool
 	// ToolVisible filters registered tools for each model request.
-	ToolVisible        func(string) bool
-	StreamObserverFor  func(State, model.ModelStreamEvent)
-	OnBranchStarted    func(context.Context, State)
-	OnBranchFinished   func(context.Context, State, error)
-	StreamObserver     func(model.ModelStreamEvent)
-	CompactionObserver func(ContextCompactionEvent)
+	ToolVisible           func(string) bool
+	ToolVisibleForMode    func(string, string) bool
+	CurrentPermissionMode func() string
+	StreamObserverFor     func(State, model.ModelStreamEvent)
+	OnBranchStarted       func(context.Context, State)
+	OnBranchFinished      func(context.Context, State, error)
+	StreamObserver        func(model.ModelStreamEvent)
+	CompactionObserver    func(ContextCompactionEvent)
 }
 
 type ContextCompactionEvent struct {
@@ -107,6 +109,7 @@ type State struct {
 	ReasoningEffort          string                     `json:"reasoning_effort,omitempty"`
 	TaskSettingsVersion      int                        `json:"task_settings_version,omitempty"`
 	Execution                ExecutionOptions           `json:"execution,omitempty"`
+	PermissionOverride       string                     `json:"permission_override,omitempty"`
 	Goal                     string                     `json:"goal,omitempty"`
 	ContextWindow            int64                      `json:"context_window,omitempty"`
 	ReserveOutputTokens      int64                      `json:"reserve_output_tokens,omitempty"`
@@ -153,6 +156,7 @@ type TaskOptions struct {
 	AutoCompact          bool
 	AutoCompactThreshold float64
 	Execution            ExecutionOptions
+	PermissionOverride   string
 }
 
 // ExecutionOptions contains the small set of controls that affect one Agent run.
@@ -303,6 +307,7 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.AutoCompact = taskOptions.AutoCompact
 	state.AutoCompactThreshold = taskOptions.AutoCompactThreshold
 	state.Execution = taskOptions.Execution
+	state.PermissionOverride = taskOptions.PermissionOverride
 	return a.runner.Start(ctx, runID, state, store, options)
 }
 

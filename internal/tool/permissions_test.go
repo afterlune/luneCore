@@ -148,6 +148,39 @@ func TestPermissionChangeIsRecheckedBeforeExecution(t *testing.T) {
 	}
 }
 
+func TestTaskPermissionOverrideIsScopedToOneCall(t *testing.T) {
+	registeredTool := &permissionTestTool{name: "write_file"}
+	registry, err := NewRegistry(ToolRegistration{
+		Tool:     registeredTool,
+		Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionWorkspaceWrite},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(PermissionModeReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	if registry.ToolVisible("write_file") || registry.ToolVisibleForMode("write_file", "read-only") {
+		t.Fatal("read-only mode exposed a workspace write")
+	}
+	if !registry.ToolVisibleForMode("write_file", "workspace") {
+		t.Fatal("workspace override hid a workspace write")
+	}
+	ctx := WithPermissionMode(context.Background(), "workspace")
+	if result := registry.Run(ctx, "write_file", json.RawMessage(`{}`)); result.Err != nil {
+		t.Fatalf("scoped workspace call failed: %v", result.Err)
+	}
+	if registry.PermissionMode() != PermissionModeReadOnly || registry.ToolVisible("write_file") {
+		t.Fatalf("task override changed global permission mode to %q", registry.PermissionMode())
+	}
+	if result := registry.Run(context.Background(), "write_file", json.RawMessage(`{}`)); result.Err == nil {
+		t.Fatal("workspace write succeeded without the scoped override")
+	}
+	if registeredTool.calls != 1 {
+		t.Fatalf("write tool ran %d times, want exactly once", registeredTool.calls)
+	}
+}
+
 func TestWorkspaceModeRejectsUnclassifiedToolWithoutPrompting(t *testing.T) {
 	registeredTool := &permissionTestTool{name: "custom_tool"}
 	registry, err := NewRegistry(ToolRegistration{Tool: registeredTool})
