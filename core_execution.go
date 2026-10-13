@@ -169,6 +169,14 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 			}
 		}
 	}
+	if !resume {
+		instructions, instructionErr := c.initialProjectInstructions(ctx)
+		if instructionErr != nil {
+			return nil, fmt.Errorf("load workspace AGENTS.md: %w", instructionErr)
+		}
+		taskOptions.ProjectInstructionsReady = true
+		taskOptions.ProjectInstructions = instructions
+	}
 	var transcript *model.ResponseInput
 	if len(saved.History) > 0 && string(saved.History) != "null" {
 		var decoded model.ResponseInput

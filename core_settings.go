@@ -187,7 +187,9 @@ func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 	return agentgraph.TaskOptions{
 		ExecutionID:   state.ExecutionID,
 		MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
-		Goal: state.Goal, ContextWindow: state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,
+		Goal: state.Goal, ProjectInstructionsReady: state.ProjectInstructionsReady,
+		ProjectInstructions: append([]agentgraph.ProjectInstruction(nil), state.ProjectInstructions...),
+		ContextWindow:       state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,
 		AutoCompact: state.AutoCompact, AutoCompactThreshold: state.AutoCompactThreshold,
 		Execution:          state.Execution,
 		PermissionOverride: state.PermissionOverride,

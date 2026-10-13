@@ -48,6 +48,28 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 	if state.PendingIndex < 0 || state.PendingIndex >= len(state.PendingCalls) {
 		return graph.Transition[State]{}, errors.New("pending tool-call index is out of range")
 	}
+	if a.options.ProjectInstructionsForTool != nil {
+		working := state
+		newInstructions := false
+		var loadErr error
+		for _, pending := range state.PendingCalls[state.PendingIndex:] {
+			additions, err := a.options.ProjectInstructionsForTool(ctx, working, pending)
+			if err != nil {
+				loadErr = err
+				break
+			}
+			var added bool
+			working.ProjectInstructions, added = mergeProjectInstructions(working.ProjectInstructions, additions)
+			newInstructions = newInstructions || added
+		}
+		state.ProjectInstructions = working.ProjectInstructions
+		if loadErr != nil {
+			return a.replyWithoutToolCalls(state, "No tools in this call were run because project instructions could not be loaded: "+loadErr.Error()), nil
+		}
+		if newInstructions {
+			return a.replyWithoutToolCalls(state, "New project instructions were loaded. No tools in this call were run. Reconsider the requested actions under the project instructions, then retry any tools that are still needed."), nil
+		}
+	}
 	call := state.PendingCalls[state.PendingIndex]
 	var output model.InputFunctionCallOutput
 	evidenceEligible := false
@@ -132,7 +154,9 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			taskOptions := TaskOptions{
 				ExecutionID: state.ExecutionID, MaxToolRounds: state.MaxToolRounds,
 				ReasoningEffort: state.ReasoningEffort, PermissionOverride: state.PermissionOverride,
-				PlanAuthorization: state.PlanAuthorization, NoInteractiveDecisions: state.NoInteractiveDecisions,
+				ProjectInstructionsReady: state.ProjectInstructionsReady,
+				ProjectInstructions:      cloneProjectInstructions(state.ProjectInstructions),
+				PlanAuthorization:        state.PlanAuthorization, NoInteractiveDecisions: state.NoInteractiveDecisions,
 			}
 			for _, assignment := range assignments {
 				input, inputErr := model.NewResponseInput(assignment.Task)
@@ -156,6 +180,8 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 				branch.PlanAuthorization = state.PlanAuthorization
 				branch.NoInteractiveDecisions = state.NoInteractiveDecisions
 				branch.ReasoningEffort = state.ReasoningEffort
+				branch.ProjectInstructionsReady = state.ProjectInstructionsReady
+				branch.ProjectInstructions = cloneProjectInstructions(state.ProjectInstructions)
 				branch, branchErr = a.options.Team.PrepareBranch(ctx, branch, assignment, taskOptions)
 				if branchErr != nil {
 					return graph.Transition[State]{}, branchErr
@@ -233,6 +259,16 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 	}
 	state = appendToolOutput(state, output)
 	return a.nextToolTransition(state), nil
+}
+
+func (a *Agent) replyWithoutToolCalls(state State, message string) graph.Transition[State] {
+	for index := state.PendingIndex; index < len(state.PendingCalls); index++ {
+		call := state.PendingCalls[index]
+		state = appendToolOutput(state, model.InputFunctionCallOutput{
+			CallID: call.CallID, Output: model.NewToolOutputText(message),
+		})
+	}
+	return a.nextToolTransition(state)
 }
 
 func (a *Agent) blockExecution(ctx context.Context, state State, callID, toolName, reason string) graph.Transition[State] {

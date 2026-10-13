@@ -39,6 +39,17 @@ func (a *Agent) requestTeam(ctx context.Context, call graph.CallInfo, state Stat
 
 func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State) (graph.Transition[State], error) {
 	ensureTranscript(&state)
+	loadProjectInstructions := !state.ProjectInstructionsReady &&
+		state.AcceptancePhase != "criteria" && state.AcceptancePhase != "acceptance" &&
+		a.options.ProjectInstructionsForTask != nil
+	if loadProjectInstructions {
+		instructions, err := a.options.ProjectInstructionsForTask(ctx, state)
+		if err != nil {
+			return failTask(state, fmt.Errorf("load workspace project instructions: %w", err))
+		}
+		state.ProjectInstructions, _ = mergeProjectInstructions(state.ProjectInstructions, instructions)
+		state.ProjectInstructionsReady = true
+	}
 	requestCtx := ctx
 	cancelRequest := func() {}
 	if state.AcceptancePhase == "acceptance" && state.Execution.ModelTimeout > 0 {
@@ -138,6 +149,11 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 			} else if summary != "" {
 				request.Instructions += "\n\n" + summary
 			}
+		}
+	}
+	if state.AcceptancePhase != "criteria" && state.AcceptancePhase != "acceptance" {
+		if projectContext := projectInstructionContext(state.ProjectInstructions); projectContext != "" {
+			request.Instructions += "\n\n" + projectContext
 		}
 	}
 	if state.NoInteractiveDecisions {

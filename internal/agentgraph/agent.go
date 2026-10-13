@@ -67,26 +67,28 @@ type TeamExecutor interface {
 }
 
 type AgentOptions struct {
-	ID                 string
-	Name               string
-	Profile            string
-	Provider           string
-	Protocol           string
-	ServerCompaction   bool
-	SupportsInputAudio bool
-	Model              string
-	Execution          ExecutionOptions
-	Team               TeamExecutor
-	AskUser            bool
-	AcceptanceEnabled  bool
-	AcceptanceVerifier acceptance.Verifier
-	AcceptanceObserver func(State, string, string, string)
-	MemoryEnabled      bool
-	MemoryRequester    Requester
-	MemorySummaryFor   func(context.Context, State) (string, error)
-	MemoryWriter       func(context.Context, State, []memory.Candidate) ([]string, error)
-	MemoryObserver     func(State, string, []string, error)
-	BlockerObserver    func(context.Context, State, string, string)
+	ID                         string
+	Name                       string
+	Profile                    string
+	Provider                   string
+	Protocol                   string
+	ServerCompaction           bool
+	SupportsInputAudio         bool
+	Model                      string
+	Execution                  ExecutionOptions
+	Team                       TeamExecutor
+	AskUser                    bool
+	AcceptanceEnabled          bool
+	AcceptanceVerifier         acceptance.Verifier
+	AcceptanceObserver         func(State, string, string, string)
+	MemoryEnabled              bool
+	MemoryRequester            Requester
+	MemorySummaryFor           func(context.Context, State) (string, error)
+	MemoryWriter               func(context.Context, State, []memory.Candidate) ([]string, error)
+	MemoryObserver             func(State, string, []string, error)
+	ProjectInstructionsForTask func(context.Context, State) ([]ProjectInstruction, error)
+	ProjectInstructionsForTool func(context.Context, State, model.OutputFunctionCall) ([]ProjectInstruction, error)
+	BlockerObserver            func(context.Context, State, string, string)
 	// ToolVisible filters registered tools for each model request.
 	ToolVisible           func(string) bool
 	ToolVisibleForMode    func(string, string) bool
@@ -134,6 +136,8 @@ type State struct {
 	BlockerTool               string                       `json:"blocker_tool,omitempty"`
 	BlockerReason             string                       `json:"blocker_reason,omitempty"`
 	Goal                      string                       `json:"goal,omitempty"`
+	ProjectInstructionsReady  bool                         `json:"project_instructions_ready,omitempty"`
+	ProjectInstructions       []ProjectInstruction         `json:"project_instructions,omitempty"`
 	ContextWindow             int64                        `json:"context_window,omitempty"`
 	ReserveOutputTokens       int64                        `json:"reserve_output_tokens,omitempty"`
 	AutoCompact               bool                         `json:"auto_compact,omitempty"`
@@ -189,17 +193,19 @@ type TaskOptions struct {
 	ExecutionID   string
 	MaxToolRounds int
 	// Model optionally overrides the configured profile's model identifier for this task.
-	Model                  string
-	ReasoningEffort        string
-	Goal                   string
-	ContextWindow          int64
-	ReserveOutputTokens    int64
-	AutoCompact            bool
-	AutoCompactThreshold   float64
-	Execution              ExecutionOptions
-	PermissionOverride     string
-	PlanAuthorization      publictool.PlanAuthorization
-	NoInteractiveDecisions bool
+	Model                    string
+	ReasoningEffort          string
+	Goal                     string
+	ProjectInstructionsReady bool
+	ProjectInstructions      []ProjectInstruction
+	ContextWindow            int64
+	ReserveOutputTokens      int64
+	AutoCompact              bool
+	AutoCompactThreshold     float64
+	Execution                ExecutionOptions
+	PermissionOverride       string
+	PlanAuthorization        publictool.PlanAuthorization
+	NoInteractiveDecisions   bool
 }
 
 // ExecutionOptions contains the small set of controls that affect one Agent run.
@@ -382,6 +388,8 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.MaxToolRounds = taskOptions.MaxToolRounds
 	state.TaskSettingsVersion = CurrentTaskSettingsVersion
 	state.Goal = taskOptions.Goal
+	state.ProjectInstructionsReady = taskOptions.ProjectInstructionsReady
+	state.ProjectInstructions = cloneProjectInstructions(taskOptions.ProjectInstructions)
 	state.ContextWindow = taskOptions.ContextWindow
 	state.ReserveOutputTokens = taskOptions.ReserveOutputTokens
 	state.AutoCompact = taskOptions.AutoCompact
