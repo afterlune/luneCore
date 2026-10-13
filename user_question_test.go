@@ -137,7 +137,7 @@ func TestUserQuestionAnswerResumesAfterCoreRestart(t *testing.T) {
 		t.Fatalf("WaitTurn while waiting for clarification = %#v, error=%v", paused.result, paused.err)
 	}
 	client.mu.RLock()
-	liveExecution := client.liveExecutions[client.runtime.checkpointID(saved.ID)]
+	liveExecution := client.liveExecutions[client.runtime.CheckpointID(saved.ID)]
 	client.mu.RUnlock()
 	if liveExecution == nil {
 		t.Fatal("paused task did not retain its live Graph execution")

@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
+	"github.com/afterlune/luneCore/internal/agentruntime"
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/tool"
 )
@@ -58,10 +59,7 @@ func (t *teamExecutor) Requester(_ context.Context, state agentgraph.State) (age
 	if err != nil {
 		return nil, err
 	}
-	requester := &usageTrackingRequester{
-		inner: client, agentID: state.AgentID, profile: state.ModelProfile,
-		providerName: state.Provider, modelName: state.Model,
-	}
+	requester := agentruntime.NewUsageTrackingRequester(client, state.AgentID, state.ModelProfile, state.Provider, state.Model)
 	requester.SetContextAgentUsageObserver(t.core.onAgentUsageContext)
 	return requester, nil
 }

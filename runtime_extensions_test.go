@@ -255,7 +255,7 @@ func TestTaskBudgetReasonPersistsAndRecoveryCanRaiseLimit(t *testing.T) {
 	if !ok || state.Status != TaskPaused || state.ExecutionID == "" {
 		t.Fatalf("paused state = %#v, found=%t", state, ok)
 	}
-	checkpoint, err := client.checkpoints.Load(context.Background(), client.runtime.checkpointID(saved.ID))
+	checkpoint, err := client.checkpoints.Load(context.Background(), client.runtime.CheckpointID(saved.ID))
 	if err != nil || checkpoint.Steps != 2 {
 		t.Fatalf("checkpoint steps = %d, error=%v; want task override to replace host default", checkpoint.Steps, err)
 	}
@@ -334,7 +334,7 @@ func TestForkPausedTaskClonesCheckpointAndDurableReceipts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ForkPausedTask: %v", err)
 	}
-	forkRunID := client.runtime.checkpointID(fork.ID)
+	forkRunID := client.runtime.CheckpointID(fork.ID)
 	forkCheckpoint, err := client.checkpoints.Load(ctx, forkRunID)
 	if err != nil {
 		t.Fatal(err)
@@ -565,7 +565,7 @@ func TestUnknownToolOutcomeCanBeSkippedAndReplayedWithoutExecution(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID := client.runtime.checkpointID(saved.ID)
+	runID := client.runtime.CheckpointID(saved.ID)
 	executionID := "execution-test"
 	invocationID := "tool-unknown-outcome"
 	call := model.OutputFunctionCall{CallID: "call-unknown", Name: "read_file", Arguments: `{}`}

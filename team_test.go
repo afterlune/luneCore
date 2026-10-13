@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
+	"github.com/afterlune/luneCore/internal/agentruntime"
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
 	"github.com/afterlune/luneCore/internal/tool"
@@ -135,7 +136,7 @@ func TestTeamBranchesRunConcurrentlyAndJoinInAssignmentOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	requester := &usageTrackingRequester{inner: requesterClient, agentID: "lead", profile: "lead", providerName: profile.Provider, modelName: profile.Model}
+	requester := agentruntime.NewUsageTrackingRequester(requesterClient, "lead", "lead", profile.Provider, profile.Model)
 	agent, err := agentgraph.NewWithOptions(requester, registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "lead", Provider: profile.Provider, Model: profile.Model,
 		Protocol: model.ProtocolResponses, Team: core.team,

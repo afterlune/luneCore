@@ -164,7 +164,7 @@ func TestResumeRejectsCheckpointWithoutTaskSettingsSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runID := client.runtime.checkpointID(saved.ID)
+	runID := client.runtime.CheckpointID(saved.ID)
 	if err := client.checkpoints.Create(context.Background(), graph.Checkpoint[agentgraph.State]{
 		FormatVersion: graph.CheckpointFormatVersion,
 		RunID:         runID,
@@ -272,7 +272,7 @@ func TestRewindSessionPreservesWholeTurnsAndRejectsPausedTasks(t *testing.T) {
 		t.Fatal("zero rewind should be rejected")
 	}
 
-	checkpointID := client.runtime.checkpointID(saved.ID)
+	checkpointID := client.runtime.CheckpointID(saved.ID)
 	createBareTestCheckpoint(t, client, checkpointID)
 	if _, err := client.RewindSession(ctx, saved.ID, 1); err == nil || !strings.Contains(err.Error(), "paused") {
 		t.Fatalf("rewind with pending task error = %v", err)
@@ -289,7 +289,7 @@ func TestDeleteSessionDeletesItsGraphCheckpoint(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	parentID := client.runtime.checkpointID(saved.ID)
+	parentID := client.runtime.CheckpointID(saved.ID)
 	createBareTestCheckpoint(t, client, parentID)
 	client.mu.Lock()
 	client.active = TaskState{Status: TaskRunning, SessionID: saved.ID}

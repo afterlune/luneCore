@@ -1,4 +1,4 @@
-package core
+package agentruntime
 
 import (
 	"context"
@@ -29,7 +29,7 @@ func TestUsageTrackingRequesterReportsTextInputEstimate(t *testing.T) {
 		}},
 		Usage: model.ResponseUsage{OutputTokens: 3, TotalTokens: 3},
 	}}}
-	tracked := &usageTrackingRequester{
+	tracked := &UsageTrackingRequester{
 		inner: inner, agentID: "lead", profile: "primary", providerName: "provider-a", modelName: "model-a",
 	}
 	var observedEstimate int64
@@ -98,7 +98,7 @@ func TestGraphResponderClearsFailedModelTaskAndContinues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := &graphResponder{agent: agent, store: store}
+	runtime := &Responder{agent: agent, store: store}
 	failedInput, err := model.NewResponseInput("will fail")
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +141,7 @@ func TestGraphResponderCarriesHistoryBetweenCompletedTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime := &graphResponder{agent: agent, store: store}
+	runtime := &Responder{agent: agent, store: store}
 	firstInput, err := model.NewResponseInput("first question")
 	if err != nil {
 		t.Fatal(err)
@@ -366,13 +366,13 @@ func TestGraphResponderCompactNoOpAndFailurePreserveHistory(t *testing.T) {
 	}
 }
 
-func newCompactionRuntime(t *testing.T, requester *graphScriptedRequester) (*graphResponder, *usageTrackingRequester) {
+func newCompactionRuntime(t *testing.T, requester *graphScriptedRequester) (*Responder, *UsageTrackingRequester) {
 	t.Helper()
 	registry, err := tool.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	tracked := &usageTrackingRequester{inner: requester}
+	tracked := &UsageTrackingRequester{inner: requester}
 	agent, err := agentgraph.New(tracked, registry)
 	if err != nil {
 		t.Fatal(err)
@@ -381,7 +381,7 @@ func newCompactionRuntime(t *testing.T, requester *graphScriptedRequester) (*gra
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &graphResponder{agent: agent, store: store, requester: tracked}, tracked
+	return &Responder{agent: agent, store: store, requester: tracked}, tracked
 }
 
 func graphResponse(t *testing.T, raw string) *model.Response {

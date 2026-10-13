@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/afterlune/luneCore/internal/agentruntime"
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
 	"github.com/afterlune/luneCore/internal/tool"
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-var ErrToolInvocationPersistence = errors.New("tool invocation could not be durably recorded")
+var ErrToolInvocationPersistence = agentruntime.ErrToolInvocationPersistence
 
 type storedToolCallOutput struct {
 	CallID         string           `json:"call_id"`
