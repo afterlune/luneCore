@@ -3,6 +3,7 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"os"
 	"os/exec"
@@ -15,7 +16,7 @@ func configureMCPProcess(command *exec.Cmd) {
 	command.WaitDelay = time.Second
 }
 
-func terminateMCPProcess(command *exec.Cmd) error {
+func terminateMCPProcess(ctx context.Context, command *exec.Cmd) error {
 	if command.Process == nil {
 		return os.ErrProcessDone
 	}

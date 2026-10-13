@@ -180,6 +180,8 @@ If the process stops while a tool may have caused a side effect, recovery expose
 
 Use `Core.ForkPausedTask` to clone a paused checkpoint into a new session. The clone stays paused; recover it independently with its new session runtime. Its tool and user-answer receipts are copied under the new run identity so replay does not repeat completed side effects.
 
+Disconnected MCP stdio calls are not automatically replayed. Reconnection refreshes the tools for future calls. Canceling one request leaves the shared MCP server running; closing a stdio transport allows 1.5 seconds for graceful exit before terminating the process tree, with a total shutdown wait of at most 3 seconds.
+
 Task concurrency is coordinated within each Core instance. The `StateDir` lock prevents another Core instance from opening the same directory concurrently.
 
 Public consumers should import the root `core` package plus `model` and `tool` only when implementing host extensions. The `internal` packages remain implementation details.

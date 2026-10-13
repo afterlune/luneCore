@@ -56,19 +56,22 @@ type ServerStatus struct {
 }
 
 type Manager struct {
-	mu        sync.Mutex
-	connectMu sync.Mutex
-	logger    *slog.Logger
-	workspace string
-	stateFile string
-	servers   map[string]projectconfig.MCPServerConfig
-	registry  *tool.Registry
-	limits    Limits
-	interact  InteractionHandler
-	enabled   map[string]bool
-	instances map[string]*serverInstance
-	errors    map[string]string
-	closed    bool
+	mu          sync.Mutex
+	connectGate chan struct{}
+	stateMu     sync.Mutex
+	generations map[string]uint64
+	connecting  map[string]context.CancelFunc
+	logger      *slog.Logger
+	workspace   string
+	stateFile   string
+	servers     map[string]projectconfig.MCPServerConfig
+	registry    *tool.Registry
+	limits      Limits
+	interact    InteractionHandler
+	enabled     map[string]bool
+	instances   map[string]*serverInstance
+	errors      map[string]string
+	closed      bool
 }
 
 type serverInstance struct {
@@ -111,8 +114,11 @@ func NewManager(options Options) (*Manager, error) {
 		options.Limits.MaxTotalBytes = 20 << 20
 	}
 	manager := &Manager{
-		logger:    options.Logger,
-		workspace: options.Workspace, stateFile: filepath.Join(options.StateDir, "mcp-enabled.json"),
+		logger:      options.Logger,
+		connectGate: make(chan struct{}, 1),
+		generations: make(map[string]uint64),
+		connecting:  make(map[string]context.CancelFunc),
+		workspace:   options.Workspace, stateFile: filepath.Join(options.StateDir, "mcp-enabled.json"),
 		servers: options.Servers, registry: options.Registry, limits: options.Limits,
 		interact: options.RequestInteraction, enabled: make(map[string]bool),
 		instances: make(map[string]*serverInstance), errors: make(map[string]string),
@@ -152,33 +158,24 @@ func (manager *Manager) Enable(name string) error {
 		manager.mu.Unlock()
 		return err
 	}
-	manager.mu.Lock()
-	manager.enabled[name] = true
-	delete(manager.errors, name)
-	manager.mu.Unlock()
 	if err := manager.writeEnabled(); err != nil {
-		manager.mu.Lock()
-		manager.enabled[name] = false
-		instance := manager.instances[name]
-		delete(manager.instances, name)
-		manager.mu.Unlock()
-		manager.unregister(instance)
-		if instance != nil {
-			_ = instance.client.Close()
-		}
-		return err
+		return errors.Join(err, manager.Disable(name))
 	}
 	return nil
 }
 
 func (manager *Manager) Disable(name string) error {
 	manager.mu.Lock()
+	manager.generations[name]++
+	if cancel := manager.connecting[name]; cancel != nil {
+		cancel()
+	}
 	instance := manager.instances[name]
 	delete(manager.instances, name)
 	delete(manager.enabled, name)
 	delete(manager.errors, name)
-	manager.mu.Unlock()
 	manager.unregister(instance)
+	manager.mu.Unlock()
 	var closeErr error
 	if instance != nil {
 		closeErr = instance.client.Close()
@@ -234,15 +231,18 @@ func (manager *Manager) Close() error {
 		return nil
 	}
 	manager.closed = true
+	for _, cancel := range manager.connecting {
+		cancel()
+	}
 	instances := make([]*serverInstance, 0, len(manager.instances))
 	for _, instance := range manager.instances {
 		instances = append(instances, instance)
+		manager.unregister(instance)
 	}
 	manager.instances = make(map[string]*serverInstance)
 	manager.mu.Unlock()
 	var failures []error
 	for _, instance := range instances {
-		manager.unregister(instance)
 		if err := instance.client.Close(); err != nil {
 			failures = append(failures, err)
 		}
@@ -251,20 +251,33 @@ func (manager *Manager) Close() error {
 }
 
 func (manager *Manager) connect(name string) error {
-	return manager.connectServer(name, false)
+	return manager.connectServer(context.Background(), name, false)
 }
 
 func (manager *Manager) reconnect(name string) error {
-	return manager.connectServer(name, true)
+	return manager.connectServer(context.Background(), name, true)
 }
 
-func (manager *Manager) connectServer(name string, force bool) error {
-	manager.connectMu.Lock()
-	defer manager.connectMu.Unlock()
+func (manager *Manager) connectServer(ctx context.Context, name string, force bool) error {
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 	manager.mu.Lock()
-	if manager.closed {
+	generation := manager.generations[name]
+	manager.mu.Unlock()
+	select {
+	case manager.connectGate <- struct{}{}:
+		defer func() { <-manager.connectGate }()
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	manager.mu.Lock()
+	if manager.closed || manager.generations[name] != generation || (!force && !manager.enabled[name]) {
 		manager.mu.Unlock()
-		return errors.New("MCP manager is closed")
+		return errors.New("MCP server is disabled or its connection attempt was invalidated")
+	}
+	if err := ctx.Err(); err != nil {
+		manager.mu.Unlock()
+		return err
 	}
 	existing := manager.instances[name]
 	if existing != nil {
@@ -274,15 +287,32 @@ func (manager *Manager) connectServer(name string, force bool) error {
 			return nil
 		}
 		delete(manager.instances, name)
+		manager.unregister(existing)
 	}
 	config, exists := manager.servers[name]
+	manager.connecting[name] = cancel
 	manager.mu.Unlock()
+	defer func() { manager.mu.Lock(); delete(manager.connecting, name); manager.mu.Unlock() }()
 	if existing != nil {
-		manager.unregister(existing)
-		_ = existing.client.Close()
+		if old, ok := existing.client.(*stdioTransport); ok {
+			err := old.closeContext(ctx)
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			select {
+			case <-old.processDone:
+			default:
+				return err
+			}
+		} else {
+			_ = existing.client.Close()
+		}
 	}
 	if !exists {
 		return fmt.Errorf("unknown MCP server %q", name)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 	var client transport
 	switch config.Transport {
@@ -299,40 +329,49 @@ func (manager *Manager) connectServer(name string, force bool) error {
 	}
 	instance := &serverInstance{client: client, config: config, owner: manager}
 	instance.category = model.ToolCategory{Name: "mcp", Description: "Tools provided by enabled MCP servers."}
-	listContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	tools, err := manager.listTools(listContext, name, instance)
+	tools, err := manager.listTools(ctx, name, instance)
 	if err != nil {
-		_ = client.Close()
+		_ = closeConnection(ctx, client)
 		return err
 	}
 	instance.tools = tools
+	manager.mu.Lock()
+	if manager.closed || manager.generations[name] != generation || ctx.Err() != nil {
+		manager.mu.Unlock()
+		_ = closeConnection(ctx, client)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		return errors.New("MCP connection attempt was invalidated")
+	}
 	registered := make([]*remoteTool, 0, len(tools))
 	for _, remote := range tools {
 		remote.server = instance
 		metadata := model.ToolMetadata{Category: instance.category, PermissionClass: model.ToolPermissionNetwork, ReadOnly: remote.readOnly}
 		if err := manager.registry.Register(tool.ToolRegistration{Tool: remote, Metadata: metadata}); err != nil {
-			for _, tool := range registered {
-				manager.registry.Unregister(tool.registeredID)
+			for _, registeredTool := range registered {
+				manager.registry.Unregister(registeredTool.registeredID)
 			}
-			_ = client.Close()
+			manager.mu.Unlock()
+			_ = closeConnection(ctx, client)
 			return fmt.Errorf("register MCP tool %q: %w", remote.remoteName, err)
 		}
 		registered = append(registered, remote)
 	}
-	manager.mu.Lock()
-	if manager.closed {
-		manager.mu.Unlock()
-		for _, remote := range registered {
-			manager.registry.Unregister(remote.registeredID)
-		}
-		_ = client.Close()
-		return errors.New("MCP manager closed while connecting")
-	}
 	manager.instances[name] = instance
+	if force {
+		manager.enabled[name] = true
+	}
 	delete(manager.errors, name)
 	manager.mu.Unlock()
 	return nil
+}
+
+func closeConnection(ctx context.Context, client transport) error {
+	if stdio, ok := client.(*stdioTransport); ok {
+		return stdio.closeContext(ctx)
+	}
+	return client.Close()
 }
 
 func instanceClient(instance *serverInstance) transport {
@@ -418,6 +457,8 @@ func (manager *Manager) readEnabled() error {
 }
 
 func (manager *Manager) writeEnabled() error {
+	manager.stateMu.Lock()
+	defer manager.stateMu.Unlock()
 	manager.mu.Lock()
 	names := make([]string, 0, len(manager.enabled))
 	for name, enabled := range manager.enabled {
@@ -562,7 +603,7 @@ func (remote *remoteTool) Run(ctx context.Context, arguments json.RawMessage) to
 		if remote.server.owner == nil {
 			return tool.Result{Err: errors.New("MCP stdio server exited and cannot be restarted")}
 		}
-		if err := remote.server.owner.connect(remote.serverName); err != nil {
+		if err := remote.server.owner.connectServer(ctx, remote.serverName, false); err != nil {
 			remote.server.owner.mu.Lock()
 			remote.server.owner.errors[remote.serverName] = err.Error()
 			remote.server.owner.mu.Unlock()

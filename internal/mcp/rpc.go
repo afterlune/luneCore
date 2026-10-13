@@ -11,9 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/textproto"
-	"os"
-	"os/exec"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,163 +66,6 @@ func requestParams(params map[string]any) map[string]any {
 	return params
 }
 
-type stdioTransport struct {
-	cmd      *exec.Cmd
-	stdin    io.WriteCloser
-	pending  map[uint64]chan rpcResponse
-	mu       sync.Mutex
-	writeMu  sync.Mutex
-	sequence atomic.Uint64
-	closed   chan struct{}
-	closeMu  sync.Once
-}
-
-func (client *stdioTransport) Alive() bool {
-	if client == nil {
-		return false
-	}
-	select {
-	case <-client.closed:
-		return false
-	default:
-		return true
-	}
-}
-
-func startStdio(config projectconfig.MCPServerConfig, workspace string) (*stdioTransport, error) {
-	cmd := exec.Command(config.Command, config.Args...)
-	cmd.Dir = workspace
-	cmd.Env = mergeEnvironment(os.Environ(), config.Env)
-	cmd.Stderr = io.Discard
-	configureMCPProcess(cmd)
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return nil, fmt.Errorf("open MCP stdio output: %w", err)
-	}
-	stdin, err := cmd.StdinPipe()
-	if err != nil {
-		return nil, fmt.Errorf("open MCP stdio input: %w", err)
-	}
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("start MCP stdio server: %w", err)
-	}
-	client := &stdioTransport{cmd: cmd, stdin: stdin, pending: make(map[uint64]chan rpcResponse), closed: make(chan struct{})}
-	go client.readLoop(stdout)
-	return client, nil
-}
-
-func mergeEnvironment(parent []string, overrides map[string]string) []string {
-	merged := make(map[string]string, len(parent)+len(overrides))
-	for _, entry := range parent {
-		key, value, ok := strings.Cut(entry, "=")
-		if ok {
-			merged[key] = value
-		}
-	}
-	for key, value := range overrides {
-		for existing := range merged {
-			if strings.EqualFold(existing, key) {
-				delete(merged, existing)
-			}
-		}
-		merged[key] = value
-	}
-	keys := make([]string, 0, len(merged))
-	for key := range merged {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	result := make([]string, 0, len(merged))
-	for _, key := range keys {
-		value := merged[key]
-		result = append(result, key+"="+value)
-	}
-	return result
-}
-
-func (client *stdioTransport) readLoop(stdout io.Reader) {
-	defer close(client.closed)
-	scanner := bufio.NewScanner(stdout)
-	scanner.Buffer(make([]byte, 64*1024), 32<<20)
-	for scanner.Scan() {
-		line := append([]byte(nil), scanner.Bytes()...)
-		var response rpcResponse
-		if json.Unmarshal(line, &response) != nil || len(response.ID) == 0 {
-			continue
-		}
-		var id uint64
-		if json.Unmarshal(response.ID, &id) != nil {
-			continue
-		}
-		client.mu.Lock()
-		pending := client.pending[id]
-		client.mu.Unlock()
-		if pending != nil {
-			select {
-			case pending <- response:
-			default:
-			}
-		}
-	}
-	client.failPending(errors.New("MCP stdio server closed its output"))
-}
-
-func (client *stdioTransport) failPending(err error) {
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	for id, pending := range client.pending {
-		delete(client.pending, id)
-		select {
-		case pending <- rpcResponse{Error: &rpcError{Code: -32000, Message: err.Error()}}:
-		default:
-		}
-	}
-}
-
-func (client *stdioTransport) Request(ctx context.Context, method string, params map[string]any, _ string, _ []headerBinding) (json.RawMessage, error) {
-	requestContext, cancel := context.WithTimeout(ctx, requestTimeout)
-	defer cancel()
-	id := client.sequence.Add(1)
-	request := rpcRequest{JSONRPC: "2.0", ID: id, Method: method, Params: requestParams(params)}
-	body, err := json.Marshal(request)
-	if err != nil {
-		return nil, err
-	}
-	pending := make(chan rpcResponse, 1)
-	client.mu.Lock()
-	select {
-	case <-client.closed:
-		client.mu.Unlock()
-		return nil, errors.New("MCP stdio server is not running")
-	default:
-	}
-	client.pending[id] = pending
-	client.mu.Unlock()
-	client.writeMu.Lock()
-	_, writeErr := client.stdin.Write(append(body, '\n'))
-	client.writeMu.Unlock()
-	if writeErr != nil {
-		client.mu.Lock()
-		delete(client.pending, id)
-		client.mu.Unlock()
-		return nil, fmt.Errorf("write MCP stdio request: %w", writeErr)
-	}
-	select {
-	case response := <-pending:
-		return responseResult(response)
-	case <-requestContext.Done():
-		client.mu.Lock()
-		delete(client.pending, id)
-		client.mu.Unlock()
-		return nil, requestContext.Err()
-	case <-client.closed:
-		client.mu.Lock()
-		delete(client.pending, id)
-		client.mu.Unlock()
-		return nil, errors.New("MCP stdio server exited while handling the request")
-	}
-}
-
 func responseResult(response rpcResponse) (json.RawMessage, error) {
 	if response.Error != nil {
 		return nil, fmt.Errorf("MCP request failed (%d): %s", response.Error.Code, response.Error.Message)
@@ -234,26 +74,6 @@ func responseResult(response rpcResponse) (json.RawMessage, error) {
 		return nil, errors.New("MCP server returned an invalid response")
 	}
 	return append(json.RawMessage(nil), response.Result...), nil
-}
-
-func (client *stdioTransport) Close() error {
-	if client == nil {
-		return nil
-	}
-	var closeErr error
-	client.closeMu.Do(func() {
-		_ = client.stdin.Close()
-		select {
-		case <-client.closed:
-		case <-time.After(1500 * time.Millisecond):
-			_ = terminateMCPProcess(client.cmd)
-			<-client.closed
-		}
-		if client.cmd.ProcessState == nil {
-			closeErr = client.cmd.Wait()
-		}
-	})
-	return closeErr
 }
 
 type httpTransport struct {

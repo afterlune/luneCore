@@ -3,6 +3,7 @@
 package mcp
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -17,12 +18,12 @@ func configureMCPProcess(command *exec.Cmd) {
 	command.WaitDelay = time.Second
 }
 
-func terminateMCPProcess(command *exec.Cmd) error {
+func terminateMCPProcess(ctx context.Context, command *exec.Cmd) error {
 	if command.Process == nil {
 		return os.ErrProcessDone
 	}
 	if systemRoot := os.Getenv("SystemRoot"); systemRoot != "" {
-		taskkill := exec.Command(filepath.Join(systemRoot, "System32", "taskkill.exe"), "/F", "/T", "/PID", strconv.Itoa(command.Process.Pid))
+		taskkill := exec.CommandContext(ctx, filepath.Join(systemRoot, "System32", "taskkill.exe"), "/F", "/T", "/PID", strconv.Itoa(command.Process.Pid))
 		taskkill.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 		if err := taskkill.Run(); err == nil {
 			return nil

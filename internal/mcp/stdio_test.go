@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
+	"time"
 
 	projectconfig "github.com/afterlune/luneCore/internal/config"
 	"github.com/afterlune/luneCore/internal/model"
@@ -17,6 +19,33 @@ func TestMCPStdioHelper(t *testing.T) {
 	if os.Getenv("LUNE_MCP_STDIO_HELPER") != "1" {
 		return
 	}
+	mode := os.Getenv("LUNE_MCP_STDIO_MODE")
+	if mode == "hold_stdout" {
+		time.Sleep(2 * time.Second)
+		return
+	}
+	if mode == "inherited" {
+		child := exec.Command(os.Args[0], "-test.run=^TestMCPStdioHelper$")
+		child.Env = mergeEnvironment(os.Environ(), map[string]string{"LUNE_MCP_STDIO_MODE": "hold_stdout"})
+		child.Stdout = os.Stdout
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if path := os.Getenv("LUNE_MCP_STDIO_STARTS"); path != "" {
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, _ = file.WriteString("start\n")
+		_ = file.Close()
+	}
+	if mode == "stubborn" {
+		time.Sleep(30 * time.Second)
+		return
+	}
+	var deferred []byte
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		var request struct {
@@ -28,8 +57,12 @@ func TestMCPStdioHelper(t *testing.T) {
 		if json.Unmarshal(scanner.Bytes(), &request) != nil {
 			continue
 		}
+		if request.Method == "test/no_response" {
+			return
+		}
 		result := map[string]any{
 			"method":   request.Method,
+			"token":    request.Params["token"],
 			"parent":   os.Getenv("LUNE_MCP_STDIO_PARENT"),
 			"override": os.Getenv("LUNE_MCP_STDIO_OVERRIDE"),
 		}
@@ -45,12 +78,46 @@ func TestMCPStdioHelper(t *testing.T) {
 			}
 		}
 		if request.Method == "tools/call" {
+			if path := os.Getenv("LUNE_MCP_STDIO_CALLS"); path != "" {
+				file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+				if err != nil {
+					t.Fatal(err)
+				}
+				_, _ = file.WriteString("call\n")
+				_ = file.Close()
+			}
 			result["resultType"] = "complete"
 			result["content"] = []any{map[string]any{"type": "text", "text": "call completed"}}
 		}
 		response, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
+		if request.Method == "test/error" {
+			response, _ = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -1, "message": "expected error"}})
+		}
+		if request.Method == "test/delay" || request.Method == "test/reverse" && deferred == nil {
+			deferred = response
+			if path := os.Getenv("LUNE_MCP_STDIO_SEEN"); path != "" {
+				_ = os.WriteFile(path, []byte("seen"), 0600)
+			}
+			continue
+		}
+		if request.Method == "test/release" && deferred != nil {
+			_, _ = os.Stdout.Write(append(deferred, '\n'))
+			deferred = nil
+		}
 		_, _ = os.Stdout.Write(append(response, '\n'))
-		if exitAfterResponse {
+		if request.Method == "test/close_input" {
+			_ = os.Stdin.Close()
+			if path := os.Getenv("LUNE_MCP_STDIO_SEEN"); path != "" {
+				_ = os.WriteFile(path, []byte("seen"), 0600)
+			}
+			time.Sleep(30 * time.Second)
+			return
+		}
+		if request.Method == "test/reverse" && deferred != nil {
+			_, _ = os.Stdout.Write(append(deferred, '\n'))
+			deferred = nil
+		}
+		if exitAfterResponse || request.Method == "test/final_exit" {
 			return
 		}
 	}
@@ -88,6 +155,12 @@ func TestManagerRestartsExitedStdioForFutureCallsOnly(t *testing.T) {
 	definitions := registry.DefinitionsForCategory("mcp")
 	if len(definitions) != 1 {
 		t.Fatalf("initial tools = %#v", definitions)
+	}
+	manager.mu.Lock()
+	original := manager.instances["local"].client.(*stdioTransport)
+	manager.mu.Unlock()
+	if !waitUntil(original.closed, time.Now().Add(5*time.Second)) || !waitUntil(original.processDone, time.Now().Add(5*time.Second)) {
+		t.Fatal("original MCP process did not exit")
 	}
 	first := definitions[0].(model.FunctionTool)
 	firstResult := registry.ExecuteCall(context.Background(), model.OutputFunctionCall{CallID: "first", Name: first.Name, Arguments: `{}`})
