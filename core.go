@@ -58,6 +58,14 @@ const (
 
 type TaskStatus string
 
+// BudgetReason identifies the per-call execution limit that paused a task.
+type BudgetReason string
+
+const (
+	BudgetMaxSteps       BudgetReason = "max_steps"
+	BudgetMaxInvocations BudgetReason = "max_invocations"
+)
+
 const (
 	TaskIdle      TaskStatus = "idle"
 	TaskQueued    TaskStatus = "queued"
@@ -108,6 +116,7 @@ type Event struct {
 	ExecutionID          string
 	SessionID            string
 	Status               TaskStatus
+	BudgetReason         BudgetReason
 	ContextWindow        int64
 	EstimatedInputTokens int64
 	Tool                 ToolCall
@@ -395,6 +404,7 @@ type TaskRequest struct {
 	// Model optionally overrides the selected profile's API model identifier for this task.
 	Model         string
 	MaxToolRounds int
+	Execution     ExecutionOptions
 }
 
 type TaskState struct {
@@ -416,6 +426,37 @@ type TaskState struct {
 	Provider             string
 	Model                string
 	ReasoningEffort      string
+	Execution            ExecutionOptions
+}
+
+// ExecutionOptions configures limits and timeouts for one Agent run. Config
+// values become host defaults; task request values override only non-zero fields.
+// Recovery options replace the saved set, so zero restores runtime defaults.
+type ExecutionOptions struct {
+	MaxSteps         int           `json:"max_steps,omitempty"`
+	MaxInvocations   int           `json:"max_invocations,omitempty"`
+	MaxConcurrency   int           `json:"max_concurrency,omitempty"`
+	ModelTimeout     time.Duration `json:"model_timeout,omitempty"`
+	ToolTimeout      time.Duration `json:"tool_timeout,omitempty"`
+	JoinTimeout      time.Duration `json:"join_timeout,omitempty"`
+	TeamEntryTimeout time.Duration `json:"team_entry_timeout,omitempty"`
+	TeamQuorum       int           `json:"team_quorum,omitempty"`
+}
+
+func agentExecutionOptions(options ExecutionOptions) agentgraph.ExecutionOptions {
+	return agentgraph.ExecutionOptions{
+		MaxSteps: options.MaxSteps, MaxInvocations: options.MaxInvocations, MaxConcurrency: options.MaxConcurrency,
+		ModelTimeout: options.ModelTimeout, ToolTimeout: options.ToolTimeout, JoinTimeout: options.JoinTimeout,
+		TeamEntryTimeout: options.TeamEntryTimeout, TeamQuorum: options.TeamQuorum,
+	}
+}
+
+func coreExecutionOptions(options agentgraph.ExecutionOptions) ExecutionOptions {
+	return ExecutionOptions{
+		MaxSteps: options.MaxSteps, MaxInvocations: options.MaxInvocations, MaxConcurrency: options.MaxConcurrency,
+		ModelTimeout: options.ModelTimeout, ToolTimeout: options.ToolTimeout, JoinTimeout: options.JoinTimeout,
+		TeamEntryTimeout: options.TeamEntryTimeout, TeamQuorum: options.TeamQuorum,
+	}
 }
 
 // Config constructs an embedded runtime. ModelConfig values override matching
@@ -429,19 +470,24 @@ type Config struct {
 	Tools             []publictool.Registration
 	CommandExecutor   publictool.CommandExecutor
 	AllowLocalCommand bool
+	Execution         ExecutionOptions
+	// MaxConcurrentCallbacks caps callback work across all sessions in this Core.
+	MaxConcurrentCallbacks int
 }
 
 type Core struct {
-	workspace        string
-	registry         *tool.Registry
-	models           *model.ProviderCatalog
-	taskDefaults     taskSettings
-	attachmentLimits projectconfig.AttachmentLimits
-	team             *teamExecutor
-	runtime          *graphResponder
-	mcpManager       *mcp.Manager
-	checkpoints      *sqlite.Store[agentgraph.State]
-	sessions         *session.Store
+	workspace         string
+	registry          *tool.Registry
+	models            *model.ProviderCatalog
+	taskDefaults      taskSettings
+	attachmentLimits  projectconfig.AttachmentLimits
+	team              *teamExecutor
+	runtime           *graphResponder
+	mcpManager        *mcp.Manager
+	checkpoints       *sqlite.Store[agentgraph.State]
+	sessions          *session.Store
+	executionDefaults ExecutionOptions
+	callbackLimiter   *graph.Limiter
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
@@ -466,6 +512,19 @@ type Core struct {
 }
 
 func New(config Config) (_ *Core, err error) {
+	if err := validateExecutionOptions(config.Execution); err != nil {
+		return nil, fmt.Errorf("invalid execution defaults: %w", err)
+	}
+	if config.MaxConcurrentCallbacks < 0 {
+		return nil, errors.New("maximum concurrent callbacks must not be negative")
+	}
+	var callbackLimiter *graph.Limiter
+	if config.MaxConcurrentCallbacks > 0 {
+		callbackLimiter, err = graph.NewLimiter(config.MaxConcurrentCallbacks)
+		if err != nil {
+			return nil, fmt.Errorf("create callback limiter: %w", err)
+		}
+	}
 	workspace := config.Workspace
 	if workspace == "" {
 		workspace, err = os.Getwd()
@@ -524,7 +583,7 @@ func New(config Config) (_ *Core, err error) {
 	if err != nil {
 		return nil, err
 	}
-	checkpoints, err := sqlite.Open[agentgraph.State](context.Background(), filepath.Join(stateDir, "checkpoints-v7.db"), checkpoint.JSON[agentgraph.State]{})
+	checkpoints, err := sqlite.Open[agentgraph.State](context.Background(), filepath.Join(stateDir, "checkpoints-v8.db"), checkpoint.JSON[agentgraph.State]{})
 	if err != nil {
 		return nil, fmt.Errorf("open task checkpoints: %w", err)
 	}
@@ -555,6 +614,8 @@ func New(config Config) (_ *Core, err error) {
 		},
 		checkpoints:         checkpoints,
 		sessions:            sessions,
+		executionDefaults:   config.Execution,
+		callbackLimiter:     callbackLimiter,
 		liveExecutions:      make(map[string]*graph.Execution[agentgraph.State]),
 		active:              TaskState{Status: TaskIdle},
 		activeTasks:         make(map[string]TaskState),
@@ -623,9 +684,9 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
-		SupportsInputAudio: profile.SupportsInputAudio,
-		Team:               c.team,
-		AskUser:            true,
+		SupportsInputAudio: profile.SupportsInputAudio, Execution: agentExecutionOptions(taskState.Execution),
+		Team:    c.team,
+		AskUser: true,
 		StreamObserverFor: func(state agentgraph.State, event model.ModelStreamEvent) {
 			currentTask := taskState
 			if current, ok := c.StateForSession(taskState.SessionID); ok {
@@ -648,6 +709,9 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 			status := TaskCompleted
 			if branchErr != nil {
 				status = TaskFailed
+				if errors.Is(branchErr, context.Canceled) {
+					status = TaskCancelled
+				}
 			}
 			c.emit(Event{Kind: EventAgentFinished, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 				AgentID: state.AgentID, AgentName: state.AgentName, AgentRole: "worker", TeamRunID: state.TeamRunID,
@@ -677,7 +741,7 @@ func (c *Core) configureRuntime(profileID, reasoningEffort string, taskState Tas
 	if err != nil {
 		return nil, model.ModelProfile{}, err
 	}
-	runtime := &graphResponder{store: c.checkpoints}
+	runtime := &graphResponder{store: c.checkpoints, limiter: c.callbackLimiter}
 	runtime.SetRunModel(agent, requester, profile.Model, reasoningEffort)
 	return runtime, profile, nil
 }
@@ -1155,7 +1219,46 @@ func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 		PlanMode:    state.PlanMode, MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
 		Goal: state.Goal, ContextWindow: state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,
 		AutoCompact: state.AutoCompact, AutoCompactThreshold: state.AutoCompactThreshold,
+		Execution: state.Execution,
 	}
+}
+
+func validateExecutionOptions(options ExecutionOptions) error {
+	if options.MaxSteps < 0 || options.MaxInvocations < 0 || options.MaxConcurrency < 0 || options.TeamQuorum < 0 {
+		return errors.New("execution limits must not be negative")
+	}
+	if options.ModelTimeout < 0 || options.ToolTimeout < 0 || options.JoinTimeout < 0 || options.TeamEntryTimeout < 0 {
+		return errors.New("execution timeouts must not be negative")
+	}
+	return nil
+}
+
+func mergeExecutionOptions(defaults, overrides ExecutionOptions) ExecutionOptions {
+	if overrides.MaxSteps != 0 {
+		defaults.MaxSteps = overrides.MaxSteps
+	}
+	if overrides.MaxInvocations != 0 {
+		defaults.MaxInvocations = overrides.MaxInvocations
+	}
+	if overrides.MaxConcurrency != 0 {
+		defaults.MaxConcurrency = overrides.MaxConcurrency
+	}
+	if overrides.ModelTimeout != 0 {
+		defaults.ModelTimeout = overrides.ModelTimeout
+	}
+	if overrides.ToolTimeout != 0 {
+		defaults.ToolTimeout = overrides.ToolTimeout
+	}
+	if overrides.JoinTimeout != 0 {
+		defaults.JoinTimeout = overrides.JoinTimeout
+	}
+	if overrides.TeamEntryTimeout != 0 {
+		defaults.TeamEntryTimeout = overrides.TeamEntryTimeout
+	}
+	if overrides.TeamQuorum != 0 {
+		defaults.TeamQuorum = overrides.TeamQuorum
+	}
+	return defaults
 }
 
 func checkpointSettingsVersionError(version int) error {
@@ -1199,7 +1302,7 @@ func (c *Core) RunTask(ctx context.Context, request TaskRequest) (json.RawMessag
 	return c.runSynchronous(ctx, request)
 }
 
-func (c *Core) ResumeTask(ctx context.Context, sessionID string) (json.RawMessage, error) {
+func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...ExecutionOptions) (json.RawMessage, error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return nil, errors.New("core, context, and session id are required")
 	}
@@ -1221,7 +1324,7 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string) (json.RawMessag
 		for range events {
 		}
 	}()
-	submission, waiter, err := c.recoverSession(ctx, sessionID, true)
+	submission, waiter, err := c.recoverSession(ctx, sessionID, true, options...)
 	if err != nil {
 		return nil, err
 	}
@@ -1229,7 +1332,7 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string) (json.RawMessag
 	return c.waitForTurn(ctx, runtime, submission.ExecutionID, waiter)
 }
 
-func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRounds int, modelOverride string, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
+func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
 	if c == nil || ctx == nil {
 		return nil, errors.New("core and context are required")
 	}
@@ -1238,6 +1341,9 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	}
 	if maxRounds < 0 {
 		return nil, errors.New("maximum tool rounds must not be negative")
+	}
+	if err := validateExecutionOptions(executionOptions); err != nil {
+		return nil, err
 	}
 	if executionID != "" && c.takeInterruptRequest(executionID) {
 		return nil, context.Canceled
@@ -1302,6 +1408,9 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	var taskOptions agentgraph.TaskOptions
 	if resume {
 		taskOptions = taskOptionsFromState(pendingState)
+		if executionOverride {
+			taskOptions.Execution = agentExecutionOptions(executionOptions)
+		}
 		planMode = taskOptions.PlanMode
 		maxRounds = taskOptions.MaxToolRounds
 	} else {
@@ -1315,6 +1424,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 			Goal:  effective.Goal, ContextWindow: effective.ContextWindow,
 			ReserveOutputTokens: effective.ReserveOutputTokens, AutoCompact: effective.AutoCompact,
 			AutoCompactThreshold: effective.AutoCompactThreshold,
+			Execution:            agentExecutionOptions(mergeExecutionOptions(c.executionDefaults, executionOptions)),
 		}
 	}
 	if resume {
@@ -1439,7 +1549,7 @@ func (c *Core) run(ctx context.Context, sessionID string, planMode bool, maxRoun
 	status := TaskCompleted
 	taskErr := err
 	if pausedByGraph {
-		status, taskErr = TaskPaused, nil
+		status, taskErr = TaskPaused, err
 	} else if err != nil {
 		status = TaskFailed
 		if ctx.Err() != nil {
@@ -1580,7 +1690,7 @@ func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, planMod
 		AutoCompactThreshold: taskOptions.AutoCompactThreshold, Goal: taskOptions.Goal, MaxToolRounds: taskOptions.MaxToolRounds,
 		ModelOverride: taskOptions.Model, PlanMode: planMode,
 		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: modelName,
-		ReasoningEffort: settings.ReasoningEffort,
+		ReasoningEffort: settings.ReasoningEffort, Execution: coreExecutionOptions(taskOptions.Execution),
 	}
 	if c.activeTasks == nil {
 		c.activeTasks = make(map[string]TaskState)
@@ -1623,6 +1733,7 @@ func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
 	c.active = state
 	c.mu.Unlock()
 	event := Event{Kind: EventTaskFinished, TaskID: state.TaskID, ExecutionID: state.ExecutionID, QueueID: state.QueueID, SessionID: sessionID, Status: status,
+		BudgetReason:  budgetReasonFromError(err),
 		ContextWindow: state.ContextWindow, Err: errorString(err), ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model}
 	if state.QueueID != "" {
 		if status != TaskPaused {
@@ -1631,7 +1742,7 @@ func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
 			return
 		}
 		persistErr := c.persistQueuedEvent(context.Background(), event, func(payload json.RawMessage) (int64, error) {
-			return c.sessions.PauseQueuedTurn(context.Background(), sessionID, state.QueueID, state.ExecutionID, string(TaskPaused), payload)
+			return c.sessions.PauseQueuedTurnWithReason(context.Background(), sessionID, state.QueueID, state.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload)
 		})
 		if persistErr != nil {
 			slog.Warn("persist paused queued task", "error", persistErr)
@@ -1787,6 +1898,146 @@ func (c *Core) ForkSession(ctx context.Context, sessionID string) (Session, erro
 		return Session{}, err
 	}
 	return c.createSession(ctx, saved.History, saved.Settings)
+}
+
+// ForkPausedTask clones a paused, nonterminal task checkpoint into a sibling
+// session. The returned session remains paused until Recover is called.
+func (c *Core) ForkPausedTask(ctx context.Context, sessionID string) (Session, error) {
+	if c == nil || ctx == nil || sessionID == "" {
+		return Session{}, errors.New("core, context, and session id are required")
+	}
+	c.runtimeConfigMu.RLock()
+	defer c.runtimeConfigMu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed {
+		return Session{}, errors.New("core is closed")
+	}
+	if c.sessionIsRunningLocked(sessionID) || c.queueDraining[sessionID] {
+		return Session{}, errors.New("cannot fork a task while its session is running")
+	}
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+
+	saved, err := c.GetSession(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	sourceRunID := c.runtime.checkpointID(sessionID)
+	sourceCheckpoint, err := c.checkpoints.Load(ctx, sourceRunID)
+	if err != nil {
+		return Session{}, fmt.Errorf("load paused task checkpoint: %w", err)
+	}
+	if sourceCheckpoint.Completed {
+		return Session{}, graph.ErrRunCompleted
+	}
+	var pending agentgraph.State
+	foundPending := false
+	for _, invocation := range sourceCheckpoint.Invocations {
+		switch invocation.Status {
+		case graph.InvocationEnded, graph.InvocationFailed, graph.InvocationJoined:
+			continue
+		default:
+			pending, foundPending = invocation.State, true
+			break
+		}
+		if foundPending {
+			break
+		}
+	}
+	if !foundPending || pending.ExecutionID == "" || pending.TaskSettingsVersion != agentgraph.CurrentTaskSettingsVersion {
+		return Session{}, errors.New("session does not contain a forkable paused task")
+	}
+	queuedTurns, err := c.sessions.QueuedTurns(ctx, sessionID)
+	if err != nil {
+		return Session{}, err
+	}
+	var sourceTurn *session.QueuedTurn
+	for i := range queuedTurns {
+		if queuedTurns[i].ExecutionID == pending.ExecutionID && queuedTurns[i].Status == session.QueuedTurnPaused {
+			sourceTurn = &queuedTurns[i]
+			break
+		}
+	}
+	if sourceTurn == nil {
+		return Session{}, errors.New("paused task is missing its durable turn record")
+	}
+	var turnRequest storedTurnRequest
+	if err := json.Unmarshal(sourceTurn.Request, &turnRequest); err != nil {
+		return Session{}, fmt.Errorf("decode paused task request: %w", err)
+	}
+	if turnRequest.ExecutionOverride {
+		pending.Execution = agentExecutionOptions(turnRequest.Execution)
+	}
+	turnRequest.Resume = true
+	requestJSON, err := json.Marshal(turnRequest)
+	if err != nil {
+		return Session{}, fmt.Errorf("encode forked task request: %w", err)
+	}
+	newExecutionID, err := newID()
+	if err != nil {
+		return Session{}, err
+	}
+	newQueueID, err := newID()
+	if err != nil {
+		return Session{}, err
+	}
+	forkedSession, err := c.createSession(ctx, saved.History, saved.Settings)
+	if err != nil {
+		return Session{}, err
+	}
+	newRunID := c.runtime.checkpointID(forkedSession.ID)
+	rollback := func(cause error) (Session, error) {
+		if deleteErr := c.checkpoints.Delete(context.Background(), newRunID); deleteErr != nil && !errors.Is(deleteErr, checkpoint.ErrNotFound) {
+			cause = errors.Join(cause, deleteErr)
+		}
+		cause = errors.Join(cause, c.sessions.DeleteToolInvocationsForSession(context.Background(), forkedSession.ID))
+		cause = errors.Join(cause, c.sessions.DeleteGraphResumeInputs(context.Background(), forkedSession.ID, newRunID))
+		if _, deleteErr := c.sessions.Delete(context.Background(), forkedSession.ID, c.workspace); deleteErr != nil {
+			cause = errors.Join(cause, deleteErr)
+		}
+		return Session{}, cause
+	}
+	profileID := pending.ModelProfile
+	if profileID == "" {
+		profileID = saved.Settings.ModelProfile
+	}
+	forkRuntime, _, err := c.configureRuntime(profileID, pending.ReasoningEffort, TaskState{SessionID: forkedSession.ID, Execution: coreExecutionOptions(pending.Execution)})
+	if err != nil {
+		return rollback(fmt.Errorf("prepare paused task fork: %w", err))
+	}
+	forkedCheckpoint, err := forkRuntime.agent.Fork(ctx, newRunID, sourceCheckpoint)
+	if err != nil {
+		return rollback(fmt.Errorf("clone paused task checkpoint: %w", err))
+	}
+	for i := range forkedCheckpoint.Invocations {
+		state := agentgraph.RekeyForkState(forkedCheckpoint.Invocations[i].State, newRunID, newExecutionID)
+		state.Execution = pending.Execution
+		forkedCheckpoint.Invocations[i].State = state
+	}
+	if forkedCheckpoint.Final != nil {
+		state := agentgraph.RekeyForkState(*forkedCheckpoint.Final, newRunID, newExecutionID)
+		state.Execution = pending.Execution
+		forkedCheckpoint.Final = &state
+	}
+	if err := c.checkpoints.Create(ctx, forkedCheckpoint); err != nil {
+		return rollback(fmt.Errorf("save forked task checkpoint: %w", err))
+	}
+	var budgetReason string
+	result, found, resultErr := c.sessions.TurnResult(ctx, sessionID, pending.ExecutionID)
+	if resultErr != nil {
+		return rollback(fmt.Errorf("read paused turn result: %w", resultErr))
+	}
+	if found {
+		budgetReason = result.BudgetReason
+	}
+	event := Event{Kind: EventTaskFinished, SessionID: forkedSession.ID, QueueID: newQueueID, ExecutionID: newExecutionID,
+		Status: TaskPaused, BudgetReason: BudgetReason(budgetReason)}
+	if err := c.sessions.ForkPausedTask(ctx, sessionID, sourceRunID, pending.ExecutionID, forkedSession.ID, newRunID,
+		newExecutionID, newQueueID, requestJSON, mustMarshalEvent(event)); err != nil {
+		return rollback(fmt.Errorf("copy paused task receipts: %w", err))
+	}
+	return forkedSession, nil
 }
 
 func (c *Core) LatestSession(ctx context.Context) (Session, bool, error) {

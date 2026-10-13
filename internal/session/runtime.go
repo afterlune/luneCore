@@ -35,11 +35,12 @@ type RuntimeEvent struct {
 }
 
 type TurnResult struct {
-	SessionID   string
-	ExecutionID string
-	Status      string
-	Response    json.RawMessage
-	UpdatedAt   time.Time
+	SessionID    string
+	ExecutionID  string
+	Status       string
+	Response     json.RawMessage
+	BudgetReason string
+	UpdatedAt    time.Time
 }
 
 func (s *Store) EnqueueTurn(ctx context.Context, queued QueuedTurn, event json.RawMessage) (QueuedTurn, int64, error) {
@@ -246,6 +247,10 @@ func (s *Store) SetQueuedTurnWithEvent(ctx context.Context, sessionID, queueID, 
 // PauseQueuedTurn stores the resumable state and the observable paused result
 // together. Recovering the turn clears this result before it is queued again.
 func (s *Store) PauseQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, event json.RawMessage) (int64, error) {
+	return s.PauseQueuedTurnWithReason(ctx, sessionID, queueID, executionID, status, "", event)
+}
+
+func (s *Store) PauseQueuedTurnWithReason(ctx context.Context, sessionID, queueID, executionID, status, budgetReason string, event json.RawMessage) (int64, error) {
 	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
 		return 0, errors.New("session store, turn identity, status, and valid event JSON are required")
 	}
@@ -266,7 +271,7 @@ func (s *Store) PauseQueuedTurn(ctx context.Context, sessionID, queueID, executi
 	if updated == 0 {
 		return 0, fmt.Errorf("queued turn %q does not exist in session %q", queueID, sessionID)
 	}
-	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, nil, time.Now()); err != nil {
+	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, nil, time.Now(), budgetReason); err != nil {
 		return 0, err
 	}
 	cursor, err := appendRuntimeEventTx(ctx, tx, sessionID, event, time.Now())
@@ -343,15 +348,19 @@ func (s *Store) CompleteQueuedTurn(ctx context.Context, sessionID, queueID, exec
 	return cursor, nil
 }
 
-func upsertTurnResultTx(ctx context.Context, tx *sql.Tx, sessionID, executionID, status string, response json.RawMessage, now time.Time) error {
+func upsertTurnResultTx(ctx context.Context, tx *sql.Tx, sessionID, executionID, status string, response json.RawMessage, now time.Time, budgetReasons ...string) error {
 	var payload any
 	if len(response) > 0 {
 		payload = []byte(response)
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO turn_results(session_id, execution_id, status, response, updated_at)
-		VALUES(?, ?, ?, ?, ?)
-		ON CONFLICT(session_id, execution_id) DO UPDATE SET status = excluded.status, response = excluded.response, updated_at = excluded.updated_at`,
-		sessionID, executionID, status, payload, now.UnixNano()); err != nil {
+	budgetReason := ""
+	if len(budgetReasons) > 0 {
+		budgetReason = budgetReasons[0]
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO turn_results(session_id, execution_id, status, response, budget_reason, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?)
+		ON CONFLICT(session_id, execution_id) DO UPDATE SET status = excluded.status, response = excluded.response, budget_reason = excluded.budget_reason, updated_at = excluded.updated_at`,
+		sessionID, executionID, status, payload, budgetReason, now.UnixNano()); err != nil {
 		return fmt.Errorf("persist turn result: %w", err)
 	}
 	return nil
@@ -364,9 +373,9 @@ func (s *Store) TurnResult(ctx context.Context, sessionID, executionID string) (
 	var result TurnResult
 	var response []byte
 	var updatedAt int64
-	err := s.db.QueryRowContext(ctx, `SELECT session_id, execution_id, status, response, updated_at
+	err := s.db.QueryRowContext(ctx, `SELECT session_id, execution_id, status, response, budget_reason, updated_at
 		FROM turn_results WHERE session_id = ? AND execution_id = ?`, sessionID, executionID).
-		Scan(&result.SessionID, &result.ExecutionID, &result.Status, &response, &updatedAt)
+		Scan(&result.SessionID, &result.ExecutionID, &result.Status, &response, &result.BudgetReason, &updatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TurnResult{}, false, nil
 	}

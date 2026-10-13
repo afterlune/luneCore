@@ -69,7 +69,7 @@ The workspace may supply `config.json` for model profiles and project runtime se
 }
 ```
 
-Core stores sessions, queued turns, the safe runtime event log, Graph checkpoints, and tool invocation records under `StateDir` (default `.luneagent`). Team branches share the agent run's Graph checkpoint. The current checkpoint format is stored in `checkpoints-v7.db`. Older `checkpoints.db` and `team_runs.db` files are left untouched for rollback; this version does not recover paused runs from those files. Enabled MCP-server state uses the same directory. Open a session-bound runtime for asynchronous control:
+Core stores sessions, queued turns, the safe runtime event log, Graph checkpoints, and tool invocation records under `StateDir` (default `.luneagent`). Team branches share the agent run's Graph checkpoint. Graph format 8 checkpoints are stored in `checkpoints-v8.db`; older checkpoint files are left untouched and are not migrated. Enabled MCP-server state uses the same directory. Open a session-bound runtime for asynchronous control:
 
 ```go
 runtime, err := client.OpenSessionRuntime(ctx, session.ID)
@@ -110,7 +110,9 @@ Hosts can provide a model catalog through `core.Config.ModelConfig`, custom impl
 
 Implement model providers with the public `model.Provider` interface and register tools with the public `tool.Tool` interface. Provider methods receive normalized request, response, and stream types; the runtime owns history, tool execution, and checkpointing. Provider implementations must support concurrent calls from different sessions. Every registered tool must declare a category, permission class, and JSON parameter schema. The built-in lead-agent tool name `ask_user` is reserved.
 
-The `delegate_team` tool runs member agents as `luneGraph` fan-out branches in the same run. Branch results join in assignment order after every member finishes; member failures are returned to the lead for synthesis. `maxParallelAgents` bounds branch concurrency.
+The `delegate_team` tool runs member agents as `luneGraph` fan-out branches in the same run. By default, results join in assignment order after every member finishes. Set `Config.Execution.TeamQuorum` for a host default, or pass `minimum_successes` for one delegation; `null` inherits the host default and `0` waits for every member. Reaching the threshold cancels unfinished branches, and their results are marked incomplete for the lead. `maxParallelAgents` bounds branch concurrency.
+
+`Config.Execution` sets host defaults for `MaxSteps`, `MaxInvocations`, `MaxConcurrency`, `ModelTimeout`, `ToolTimeout`, `JoinTimeout`, and `TeamEntryTimeout`; `TaskRequest.Execution` and `TurnRequest.Execution` can override non-zero values for one task. `Config.MaxConcurrentCallbacks` optionally caps callback work across all sessions. `TeamEntryTimeout` only bounds a worker's first model callback. A budget pause reports `TurnResult.BudgetReason`; pass replacement execution options to `SessionRuntime.Recover` or `ResumeTask` to continue with a larger budget.
 
 Hosts can set `core.Config.CommandExecutor` to run commands through their own sandbox or process manager. Direct local shell execution is disabled by default; set `AllowLocalCommand` only when the host intentionally permits it. The runtime applies the selected permission mode and surfaces approval requests through `SessionRuntime`.
 
@@ -121,6 +123,8 @@ A Core can run tasks for different sessions concurrently. A session runtime seri
 Call `runtime.Interrupt(executionID)` to interrupt a running turn or remove it before it starts. Cancellation is cooperative, so host providers and tools should honor their context. A turn with a saved checkpoint remains paused and blocks later queue entries until `runtime.Recover` or `runtime.DiscardPaused`. `Close` waits for queued work to finish starting, and returns an error while a task is running.
 
 If the process stops while a tool may have caused a side effect, recovery exposes a `PendingToolRecovery` request through `runtime.PendingRequests`. Choose `ToolRecoveryRetry` or `ToolRecoverySkip` with `runtime.ResolveToolRecovery`, then call `runtime.Recover`. Completed tool results are replayed from the invocation ledger without running the tool again. Recovery covers parent and team-worker calls. `runtime.SetUserInteractionAvailable(true)` enables MCP user interaction for that session while a runtime event subscriber is attached.
+
+Use `Core.ForkPausedTask` to clone a paused checkpoint into a new session. The clone stays paused; recover it independently with its new session runtime. Its tool and user-answer receipts are copied under the new run identity so replay does not repeat completed side effects.
 
 Task concurrency is coordinated within each Core instance. The `StateDir` lock prevents another Core instance from opening the same directory concurrently.
 

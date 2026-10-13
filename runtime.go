@@ -22,6 +22,7 @@ const (
 type graphResponder struct {
 	agent                 *agentgraph.Agent
 	store                 graph.Store[agentgraph.State]
+	limiter               *graph.Limiter
 	execution             *graph.Execution[agentgraph.State]
 	requester             *usageTrackingRequester
 	historyMu             sync.RWMutex
@@ -499,12 +500,20 @@ func assistantResponseText(response *model.Response) string {
 }
 
 func (r *graphResponder) options() graph.Options {
-	return graph.Options{Observer: graph.ObserverFunc(logGraphEvent), MaxConcurrency: r.agent.MaxConcurrency()}
+	maxConcurrency := r.taskOptions.Execution.MaxConcurrency
+	if maxConcurrency == 0 {
+		maxConcurrency = r.agent.MaxConcurrency()
+	}
+	return graph.Options{
+		Observer: graph.ObserverFunc(logGraphEvent), Limiter: r.limiter,
+		MaxSteps: r.taskOptions.Execution.MaxSteps, MaxInvocations: r.taskOptions.Execution.MaxInvocations,
+		MaxConcurrency: maxConcurrency,
+	}
 }
 
 func logGraphEvent(ctx context.Context, event graph.Event) {
 	level := slog.LevelDebug
-	if event.Operation == graph.OperationStart || event.Operation == graph.OperationResume || event.Operation == graph.OperationRecover {
+	if event.Operation == graph.OperationStart || event.Operation == graph.OperationResume || event.Operation == graph.OperationAdvance || event.Operation == graph.OperationRecover {
 		level = slog.LevelInfo
 	}
 	if event.Err != nil {
@@ -587,8 +596,15 @@ func (r *graphResponder) finish(result graph.Result[agentgraph.State], runErr er
 		}
 	}
 	if result.Status == graph.StatusCancelled || result.Status == graph.StatusBudget || result.Status == graph.StatusWaiting {
-		slog.Warn("agent task remains resumable", "run_id", r.runID(), "status", result.Status)
+		attrs := []any{"run_id", r.runID(), "status", result.Status}
+		if result.BudgetReason != "" {
+			attrs = append(attrs, "budget_reason", string(result.BudgetReason))
+		}
+		slog.Warn("agent task remains resumable", attrs...)
 		if result.Status == graph.StatusWaiting || result.Status == graph.StatusBudget {
+			if result.Status == graph.StatusBudget {
+				return nil, &TaskPausedError{BudgetReason: BudgetReason(result.BudgetReason)}
+			}
 			return nil, ErrTaskPaused
 		}
 	}

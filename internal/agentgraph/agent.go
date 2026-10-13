@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/afterlune/luneCore/internal/model"
 	publictool "github.com/afterlune/luneCore/tool"
@@ -30,7 +31,7 @@ const (
 const UserQuestionContinuation = "user_question"
 
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
-const CurrentTaskSettingsVersion = 4
+const CurrentTaskSettingsVersion = 5
 
 // Requester sends one Responses API request without managing history or tools.
 type Requester interface {
@@ -71,6 +72,7 @@ type AgentOptions struct {
 	ServerCompaction   bool
 	SupportsInputAudio bool
 	Model              string
+	Execution          ExecutionOptions
 	Team               TeamExecutor
 	AskUser            bool
 	StreamObserverFor  func(State, model.ModelStreamEvent)
@@ -108,6 +110,7 @@ type State struct {
 	ModelOverride            string                     `json:"model_override,omitempty"`
 	ReasoningEffort          string                     `json:"reasoning_effort,omitempty"`
 	TaskSettingsVersion      int                        `json:"task_settings_version,omitempty"`
+	Execution                ExecutionOptions           `json:"execution,omitempty"`
 	Goal                     string                     `json:"goal,omitempty"`
 	ContextWindow            int64                      `json:"context_window,omitempty"`
 	ReserveOutputTokens      int64                      `json:"reserve_output_tokens,omitempty"`
@@ -135,6 +138,7 @@ type State struct {
 	TeamRunID                string                     `json:"team_run_id,omitempty"`
 	TeamDispatchID           string                     `json:"team_dispatch_id,omitempty"`
 	TeamAssignments          []TeamAssignment           `json:"team_assignments,omitempty"`
+	TeamMinimumSuccesses     int                        `json:"team_minimum_successes,omitempty"`
 	UserQuestion             string                     `json:"user_question,omitempty"`
 	UserQuestionOptions      []string                   `json:"user_question_options,omitempty"`
 	UserAnswer               string                     `json:"user_answer,omitempty"`
@@ -154,6 +158,20 @@ type TaskOptions struct {
 	ReserveOutputTokens  int64
 	AutoCompact          bool
 	AutoCompactThreshold float64
+	Execution            ExecutionOptions
+}
+
+// ExecutionOptions contains the small set of controls that affect one Agent run.
+// Zero values retain luneGraph's default or unlimited behavior.
+type ExecutionOptions struct {
+	MaxSteps         int           `json:"max_steps,omitempty"`
+	MaxInvocations   int           `json:"max_invocations,omitempty"`
+	MaxConcurrency   int           `json:"max_concurrency,omitempty"`
+	ModelTimeout     time.Duration `json:"model_timeout,omitempty"`
+	ToolTimeout      time.Duration `json:"tool_timeout,omitempty"`
+	JoinTimeout      time.Duration `json:"join_timeout,omitempty"`
+	TeamEntryTimeout time.Duration `json:"team_entry_timeout,omitempty"`
+	TeamQuorum       int           `json:"team_quorum,omitempty"`
 }
 
 // Agent runs one model request or one tool call per graph step.
@@ -204,22 +222,22 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	}
 
 	workflow := graph.New[State](modelNode)
-	if err := workflow.AddNode(graph.NodeSpec[State]{Name: modelNode, Run: agent.requestLead, OnError: graph.FailExecution}); err != nil {
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: modelNode, Run: agent.requestLead, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
 		return nil, fmt.Errorf("add model node: %w", err)
 	}
-	if err := workflow.AddNode(graph.NodeSpec[State]{Name: toolNode, Run: agent.executeLeadTool, OnError: graph.FailExecution}); err != nil {
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: toolNode, Run: agent.executeLeadTool, OnError: graph.FailExecution, Timeout: options.Execution.ToolTimeout}); err != nil {
 		return nil, fmt.Errorf("add tool node: %w", err)
 	}
-	if err := workflow.AddNode(graph.NodeSpec[State]{Name: teamModelNode, Run: agent.requestTeam, OnError: graph.FailInvocation}); err != nil {
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: teamModelNode, Run: agent.requestTeam, OnError: graph.FailInvocation, Timeout: options.Execution.ModelTimeout}); err != nil {
 		return nil, fmt.Errorf("add team model node: %w", err)
 	}
-	if err := workflow.AddNode(graph.NodeSpec[State]{Name: teamToolNode, Run: agent.executeTeamTool, OnError: graph.FailInvocation}); err != nil {
+	if err := workflow.AddNode(graph.NodeSpec[State]{Name: teamToolNode, Run: agent.executeTeamTool, OnError: graph.FailInvocation, Timeout: options.Execution.ToolTimeout}); err != nil {
 		return nil, fmt.Errorf("add team tool node: %w", err)
 	}
-	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamJoinNode, From: toolNode, Merge: agent.mergeTeam, OnError: graph.FailExecution}); err != nil {
+	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamJoinNode, From: toolNode, Merge: agent.mergeTeam, OnError: graph.FailExecution, Timeout: options.Execution.JoinTimeout, CanMerge: agent.teamQuorumReached}); err != nil {
 		return nil, fmt.Errorf("add team join: %w", err)
 	}
-	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamBranchJoinNode, From: teamToolNode, Merge: agent.mergeTeam, OnError: graph.FailInvocation}); err != nil {
+	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamBranchJoinNode, From: teamToolNode, Merge: agent.mergeTeam, OnError: graph.FailInvocation, Timeout: options.Execution.JoinTimeout, CanMerge: agent.teamQuorumReached}); err != nil {
 		return nil, fmt.Errorf("add team branch join: %w", err)
 	}
 	if err := graph.RegisterJSONContinuation[State, string](workflow, UserQuestionContinuation, func(_ context.Context, _ graph.CallInfo, state State, answer string) (State, error) {
@@ -291,6 +309,7 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.ReserveOutputTokens = taskOptions.ReserveOutputTokens
 	state.AutoCompact = taskOptions.AutoCompact
 	state.AutoCompactThreshold = taskOptions.AutoCompactThreshold
+	state.Execution = taskOptions.Execution
 	return a.runner.Start(ctx, runID, state, store, options)
 }
 
@@ -300,6 +319,26 @@ func (a *Agent) Resume(ctx context.Context, checkpoint graph.Checkpoint[State], 
 
 func (a *Agent) Recover(ctx context.Context, runID string, inputs []graph.ResumeInput, store graph.Store[State], options graph.Options) (*graph.Execution[State], graph.Result[State], error) {
 	return a.runner.Recover(ctx, runID, inputs, store, options)
+}
+
+func (a *Agent) Fork(ctx context.Context, newRunID string, source graph.Checkpoint[State]) (graph.Checkpoint[State], error) {
+	return a.runner.Fork(ctx, newRunID, source, nil)
+}
+
+func RekeyForkState(state State, runID, executionID string) State {
+	oldRunID, oldExecutionID := state.RunID, state.ExecutionID
+	state.RunID, state.ExecutionID = runID, executionID
+	state.TeamDispatchID = rekeyTeamRunID(state.TeamDispatchID, oldRunID, oldExecutionID, runID, executionID)
+	state.TeamRunID = rekeyTeamRunID(state.TeamRunID, oldRunID, oldExecutionID, runID, executionID)
+	return state
+}
+
+func rekeyTeamRunID(value, oldRunID, oldExecutionID, runID, executionID string) string {
+	oldPrefix := oldRunID + ":" + oldExecutionID + ":"
+	if strings.HasPrefix(value, oldPrefix) {
+		return runID + ":" + executionID + ":" + strings.TrimPrefix(value, oldPrefix)
+	}
+	return value
 }
 
 func (a *Agent) MaxConcurrency() int {
@@ -677,11 +716,20 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			return graph.Wait(state, UserQuestionContinuation, toolNode), nil
 		}
 	case call.Name == teamDispatchToolName && a.options.Team != nil:
-		assignments, err := parseTeamAssignments(call.Arguments, a.options.Team)
+		assignments, minimumSuccesses, err := parseTeamAssignments(call.Arguments, a.options.Team)
 		if err != nil {
 			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Team request rejected: " + err.Error())}
 		} else {
+			quorum := a.options.Execution.TeamQuorum
+			if minimumSuccesses != nil {
+				quorum = *minimumSuccesses
+			}
+			if quorum < 0 || quorum > len(assignments) {
+				output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(fmt.Sprintf("Team request rejected: minimum success threshold must be between 0 and %d", len(assignments)))}
+				break
+			}
 			state.TeamAssignments = append([]TeamAssignment(nil), assignments...)
+			state.TeamMinimumSuccesses = quorum
 			state.TeamDispatchID = state.RunID + ":" + state.ExecutionID + ":" + info.CallID
 			branches := make([]graph.Branch[State], 0, len(assignments))
 			taskOptions := TaskOptions{
@@ -705,12 +753,13 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 				branch.TeamRunID, branch.TeamDispatchID = state.TeamDispatchID, ""
 				branch.TaskSettingsVersion = CurrentTaskSettingsVersion
 				branch.MaxToolRounds, branch.PlanMode = state.MaxToolRounds, state.PlanMode
+				branch.Execution = state.Execution
 				branch.ReasoningEffort = state.ReasoningEffort
 				branch, branchErr = a.options.Team.PrepareBranch(ctx, branch, assignment, taskOptions)
 				if branchErr != nil {
 					return graph.Transition[State]{}, branchErr
 				}
-				branches = append(branches, graph.Branch[State]{Target: teamModelNode, State: branch})
+				branches = append(branches, graph.Branch[State]{Target: teamModelNode, State: branch, EntryTimeout: a.options.Execution.TeamEntryTimeout})
 			}
 			return graph.FanOut(state, branches...), nil
 		}
@@ -838,6 +887,16 @@ func (a *Agent) mergeTeam(ctx context.Context, _ graph.CallInfo, parent State, b
 				}
 				a.options.OnBranchFinished(ctx, branch.State, branchErr)
 			}
+		} else if branch.Pending() {
+			member = TeamMemberResult{ID: assignment.ID, Model: assignment.Model, Error: "cancelled after the minimum success threshold was reached"}
+			if profile, ok := a.options.Team.Profiles()[assignment.Model]; ok {
+				member.Provider, member.Model = profile.Provider, profile.Model
+			}
+			if a.options.OnBranchFinished != nil {
+				pending := branch.State
+				pending.TeamRunID = parent.TeamDispatchID
+				a.options.OnBranchFinished(ctx, pending, context.Canceled)
+			}
 		} else {
 			member.Error = branch.Error
 			if member.Error == "" {
@@ -864,7 +923,21 @@ func (a *Agent) mergeTeam(ctx context.Context, _ graph.CallInfo, parent State, b
 	call := parent.PendingCalls[parent.PendingIndex]
 	parent = appendToolOutput(parent, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(formatTeamResults(results))})
 	parent.TeamAssignments, parent.TeamDispatchID = nil, ""
+	parent.TeamMinimumSuccesses = 0
 	return parent, nil
+}
+
+func (a *Agent) teamQuorumReached(parent State, branches []graph.BranchResult[State]) bool {
+	if parent.TeamMinimumSuccesses <= 0 {
+		return false
+	}
+	var successful int
+	for _, branch := range branches {
+		if branch.OK() && branch.State.TeamError == "" {
+			successful++
+		}
+	}
+	return successful >= parent.TeamMinimumSuccesses
 }
 
 func ensureTranscript(state *State) {
@@ -1065,7 +1138,8 @@ func parseUserQuestion(arguments string) (string, []string, error) {
 }
 
 type teamDispatchRequest struct {
-	Tasks []TeamAssignment `json:"tasks"`
+	Tasks            []TeamAssignment `json:"tasks"`
+	MinimumSuccesses *int             `json:"minimum_successes,omitempty"`
 }
 
 func teamDispatchDefinition(team TeamExecutor) model.FunctionTool {
@@ -1093,33 +1167,43 @@ func teamDispatchDefinition(team TeamExecutor) model.FunctionTool {
 					"additionalProperties": false,
 				},
 			},
+			"minimum_successes": map[string]any{
+				"anyOf": []any{
+					map[string]any{"type": "integer", "minimum": 0},
+					map[string]any{"type": "null"},
+				},
+				"description": "Minimum successful members before results can merge. Use null to inherit the host default; zero waits for every member.",
+			},
 		},
-		"required":             []string{"tasks"},
+		"required":             []string{"tasks", "minimum_successes"},
 		"additionalProperties": false,
 	})
 	strict := true
 	return model.FunctionTool{
 		Name: teamDispatchToolName,
 		Description: "Delegate independent work to multiple team members at once. Choose each member's model profile from the listed catalog. " +
-			"Members have isolated context, share the workspace and current permissions, and return results for you to synthesize. Use this only when tasks can proceed independently.",
+			"Members have isolated context, share the workspace and current permissions, and return results for you to synthesize. Use this only when tasks can proceed independently. Set minimum_successes to null to use the host default or zero to wait for every member.",
 		Parameters: parameters,
 		Strict:     &strict,
 	}
 }
 
-func parseTeamAssignments(arguments string, team TeamExecutor) ([]TeamAssignment, error) {
+func parseTeamAssignments(arguments string, team TeamExecutor) ([]TeamAssignment, *int, error) {
 	decoder := json.NewDecoder(strings.NewReader(arguments))
 	decoder.DisallowUnknownFields()
 	var request teamDispatchRequest
 	if err := decoder.Decode(&request); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		return nil, errors.New("expected one JSON object")
+		return nil, nil, errors.New("expected one JSON object")
 	}
 	limit := team.MaxParallelAgents()
 	if len(request.Tasks) == 0 || len(request.Tasks) > limit {
-		return nil, fmt.Errorf("team task count must be between 1 and %d", limit)
+		return nil, nil, fmt.Errorf("team task count must be between 1 and %d", limit)
+	}
+	if request.MinimumSuccesses != nil && (*request.MinimumSuccesses < 0 || *request.MinimumSuccesses > len(request.Tasks)) {
+		return nil, nil, fmt.Errorf("minimum_successes must be between 0 and %d", len(request.Tasks))
 	}
 	profiles := team.Profiles()
 	seen := make(map[string]struct{}, len(request.Tasks))
@@ -1129,17 +1213,17 @@ func parseTeamAssignments(arguments string, team TeamExecutor) ([]TeamAssignment
 		task.Model = strings.TrimSpace(task.Model)
 		task.Task = strings.TrimSpace(task.Task)
 		if task.ID == "" || task.Task == "" {
-			return nil, errors.New("each team task requires a non-empty id and task")
+			return nil, nil, errors.New("each team task requires a non-empty id and task")
 		}
 		if _, exists := seen[task.ID]; exists {
-			return nil, fmt.Errorf("team member id %q is repeated", task.ID)
+			return nil, nil, fmt.Errorf("team member id %q is repeated", task.ID)
 		}
 		seen[task.ID] = struct{}{}
 		if _, exists := profiles[task.Model]; !exists {
-			return nil, fmt.Errorf("unknown team model profile %q", task.Model)
+			return nil, nil, fmt.Errorf("unknown team model profile %q", task.Model)
 		}
 	}
-	return request.Tasks, nil
+	return request.Tasks, request.MinimumSuccesses, nil
 }
 
 func formatTeamResults(results []TeamMemberResult) string {

@@ -22,6 +22,22 @@ var (
 	ErrTurnNotFound = errors.New("execution id does not exist in this session")
 )
 
+// TaskPausedError identifies a resumable task pause and its optional budget cause.
+type TaskPausedError struct {
+	BudgetReason BudgetReason
+}
+
+func (e *TaskPausedError) Error() string { return ErrTaskPaused.Error() }
+func (e *TaskPausedError) Unwrap() error { return ErrTaskPaused }
+
+func budgetReasonFromError(err error) BudgetReason {
+	var paused *TaskPausedError
+	if errors.As(err, &paused) {
+		return paused.BudgetReason
+	}
+	return ""
+}
+
 type SubmissionMode string
 
 const (
@@ -41,6 +57,7 @@ type TurnRequest struct {
 	PlanMode      bool
 	Model         string
 	MaxToolRounds int
+	Execution     ExecutionOptions
 }
 
 type TurnSubmission struct {
@@ -64,9 +81,10 @@ type RuntimeState struct {
 }
 
 type TurnResult struct {
-	ExecutionID string
-	Status      TaskStatus
-	Response    json.RawMessage
+	ExecutionID  string
+	Status       TaskStatus
+	Response     json.RawMessage
+	BudgetReason BudgetReason
 }
 
 type PendingRequestKind string
@@ -95,11 +113,13 @@ type SessionRuntime struct {
 }
 
 type storedTurnRequest struct {
-	Input         json.RawMessage `json:"input"`
-	PlanMode      bool            `json:"plan_mode,omitempty"`
-	Model         string          `json:"model,omitempty"`
-	MaxToolRounds int             `json:"max_tool_rounds,omitempty"`
-	Resume        bool            `json:"resume,omitempty"`
+	Input             json.RawMessage  `json:"input"`
+	PlanMode          bool             `json:"plan_mode,omitempty"`
+	Model             string           `json:"model,omitempty"`
+	MaxToolRounds     int              `json:"max_tool_rounds,omitempty"`
+	Execution         ExecutionOptions `json:"execution,omitempty"`
+	ExecutionOverride bool             `json:"execution_override,omitempty"`
+	Resume            bool             `json:"resume,omitempty"`
 }
 
 type turnResult struct {
@@ -262,9 +282,10 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 				}
 			}
 			return TurnResult{
-				ExecutionID: stored.ExecutionID,
-				Status:      TaskStatus(stored.Status),
-				Response:    append(json.RawMessage(nil), stored.Response...),
+				ExecutionID:  stored.ExecutionID,
+				Status:       TaskStatus(stored.Status),
+				Response:     append(json.RawMessage(nil), stored.Response...),
+				BudgetReason: BudgetReason(stored.BudgetReason),
 			}, nil
 		}
 		_, queued, err := r.core.sessions.QueuedTurnByExecutionID(ctx, r.sessionID, executionID)
@@ -412,11 +433,11 @@ func (r *SessionRuntime) Interrupt(executionID string) bool {
 	return r != nil && r.core != nil && executionID != "" && r.core.interruptExecution(r.sessionID, executionID)
 }
 
-func (r *SessionRuntime) Recover(ctx context.Context) (TurnSubmission, error) {
+func (r *SessionRuntime) Recover(ctx context.Context, options ...ExecutionOptions) (TurnSubmission, error) {
 	if r == nil || r.core == nil {
 		return TurnSubmission{}, errors.New("session runtime is nil")
 	}
-	submission, _, err := r.core.recoverSession(ctx, r.sessionID, false)
+	submission, _, err := r.core.recoverSession(ctx, r.sessionID, false, options...)
 	return submission, err
 }
 
@@ -660,6 +681,9 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 	if request.MaxToolRounds < 0 {
 		return TurnSubmission{}, nil, errors.New("maximum tool rounds must not be negative")
 	}
+	if err := validateExecutionOptions(request.Execution); err != nil {
+		return TurnSubmission{}, nil, err
+	}
 	if _, err := c.GetSession(ctx, sessionID); err != nil {
 		return TurnSubmission{}, nil, err
 	}
@@ -671,7 +695,10 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 	if err != nil {
 		return TurnSubmission{}, nil, err
 	}
-	storedRequest, err := json.Marshal(storedTurnRequest{Input: append(json.RawMessage(nil), request.Input.Raw...), PlanMode: request.PlanMode, Model: request.Model, MaxToolRounds: request.MaxToolRounds})
+	storedRequest, err := json.Marshal(storedTurnRequest{
+		Input: append(json.RawMessage(nil), request.Input.Raw...), PlanMode: request.PlanMode,
+		Model: request.Model, MaxToolRounds: request.MaxToolRounds, Execution: request.Execution,
+	})
 	if err != nil {
 		return TurnSubmission{}, nil, fmt.Errorf("encode queued turn: %w", err)
 	}
@@ -737,9 +764,17 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 	return TurnSubmission{Status: status, QueueID: queued.QueueID, ExecutionID: executionID, Position: queued.Position}, waiter, nil
 }
 
-func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool) (TurnSubmission, <-chan turnResult, error) {
+func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool, executionOverride ...ExecutionOptions) (TurnSubmission, <-chan turnResult, error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return TurnSubmission{}, nil, errors.New("core, context, and session id are required")
+	}
+	if len(executionOverride) > 1 {
+		return TurnSubmission{}, nil, errors.New("at most one execution options override may be supplied")
+	}
+	if len(executionOverride) == 1 {
+		if err := validateExecutionOptions(executionOverride[0]); err != nil {
+			return TurnSubmission{}, nil, err
+		}
 	}
 	if _, err := c.GetSession(ctx, sessionID); err != nil {
 		return TurnSubmission{}, nil, err
@@ -796,7 +831,11 @@ func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool) 
 			c.mu.Unlock()
 			return TurnSubmission{}, nil, idErr
 		}
-		request, _ := json.Marshal(storedTurnRequest{Input: json.RawMessage("null"), Resume: true})
+		resumeRequest := storedTurnRequest{Input: json.RawMessage("null"), Resume: true}
+		if len(executionOverride) == 1 {
+			resumeRequest.Execution, resumeRequest.ExecutionOverride = executionOverride[0], true
+		}
+		request, _ := json.Marshal(resumeRequest)
 		created, _, enqueueErr := c.sessions.EnqueueTurn(ctx, session.QueuedTurn{SessionID: sessionID, QueueID: queueID, Position: -1, ExecutionID: pending.ExecutionID, Request: request, Status: session.QueuedTurnQueued},
 			mustMarshalEvent(Event{Kind: EventTaskQueued, SessionID: sessionID, ExecutionID: pending.ExecutionID, QueueID: queueID, Status: TaskQueued}))
 		if enqueueErr != nil {
@@ -814,6 +853,10 @@ func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool) 
 			return TurnSubmission{}, nil, fmt.Errorf("decode paused turn request: %w", err)
 		}
 		request.Resume = true
+		if len(executionOverride) == 1 {
+			request.Execution = executionOverride[0]
+			request.ExecutionOverride = true
+		}
 		encoded, err := json.Marshal(request)
 		if err != nil {
 			c.mu.Unlock()
@@ -1116,7 +1159,7 @@ func (c *Core) drainQueue(sessionID string) {
 		c.mu.Lock()
 		c.executionRuns[queued.ExecutionID] = runDone
 		c.mu.Unlock()
-		response, runErr := c.run(ctx, sessionID, request.PlanMode, request.MaxToolRounds, request.Model, request.Resume, input, queued.QueueID, queued.ExecutionID)
+		response, runErr := c.run(ctx, sessionID, request.PlanMode, request.MaxToolRounds, request.Model, request.Execution, request.ExecutionOverride, request.Resume, input, queued.QueueID, queued.ExecutionID)
 		c.mu.Lock()
 		if c.executionRuns[queued.ExecutionID] == runDone {
 			delete(c.executionRuns, queued.ExecutionID)
@@ -1141,9 +1184,9 @@ func (c *Core) drainQueue(sessionID string) {
 			state, ok := c.StateForSession(sessionID)
 			if ok && state.Status == TaskPaused {
 				if current.Status != session.QueuedTurnPaused && current.Status != session.QueuedTurnQueued {
-					event := Event{Kind: EventTaskFinished, SessionID: sessionID, TaskID: state.TaskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskPaused, Err: errorString(runErr)}
+					event := Event{Kind: EventTaskFinished, SessionID: sessionID, TaskID: state.TaskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskPaused, BudgetReason: budgetReasonFromError(runErr), Err: errorString(runErr)}
 					if persistErr := c.persistQueuedEvent(ctx, event, func(payload json.RawMessage) (int64, error) {
-						return c.sessions.PauseQueuedTurn(ctx, sessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), payload)
+						return c.sessions.PauseQueuedTurnWithReason(ctx, sessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload)
 					}); persistErr != nil {
 						slog.Warn("restore paused queued turn", "error", persistErr)
 					}
@@ -1391,6 +1434,7 @@ func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (json.Ra
 	}()
 	submission, waiter, err := c.submitTurn(ctx, request.SessionID, TurnRequest{
 		Input: request.Input, PlanMode: request.PlanMode, Model: request.Model, MaxToolRounds: request.MaxToolRounds,
+		Execution: request.Execution,
 	}, StartIfIdle, true)
 	if err != nil {
 		return nil, err

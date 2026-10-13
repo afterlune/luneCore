@@ -14,7 +14,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 6
+const currentSchemaVersion = 7
 
 // Snapshot is the persisted state for one workspace session. Data is owned by
 // the caller so the session package does not depend on the TUI or model layer.
@@ -172,6 +172,13 @@ func Open(path string) (*Store, error) {
 		_ = tx.Rollback()
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize turn result store: %w", err)
+	}
+	if version < 7 {
+		if _, err := tx.Exec(`ALTER TABLE turn_results ADD COLUMN budget_reason TEXT NOT NULL DEFAULT ''`); err != nil {
+			_ = tx.Rollback()
+			_ = db.Close()
+			return nil, fmt.Errorf("migrate turn result budget reason: %w", err)
+		}
 	}
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS graph_resume_inputs (
 		session_id TEXT NOT NULL,

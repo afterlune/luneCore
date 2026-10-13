@@ -1,5 +1,7 @@
 github.com/afterlune/luneGraph v0.0.0-20261012085938-9e077e0af4d5 h1:fcMRN0jTPKVs6F/CLgP/gjoa+QwTmOtL4m/G+Ek4pJ4=
 github.com/afterlune/luneGraph v0.0.0-20261012085938-9e077e0af4d5/go.mod h1:QFVD7BPU/kIij20si8dhEIVjQYUpwhdBYmOtLG9vLT4=
+github.com/afterlune/luneGraph v0.0.0-20261013014749-96cda2267151 h1:lJdv9bzaD17SY37mLpsM0w+4RENTo8m4TVNKBDym9TY=
+github.com/afterlune/luneGraph v0.0.0-20261013014749-96cda2267151/go.mod h1:QFVD7BPU/kIij20si8dhEIVjQYUpwhdBYmOtLG9vLT4=
 github.com/danieljoos/wincred v1.2.3 h1:v7dZC2x32Ut3nEfRH+vhoZGvN72+dQ/snVXo/vMFLdQ=
 github.com/danieljoos/wincred v1.2.3/go.mod h1:6qqX0WNrS4RzPZ1tnroDzq9kY3fu1KwE7MRLQK4X0bs=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
