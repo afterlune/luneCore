@@ -96,9 +96,6 @@ func (c *Core) OpenMCPURL(serverName, target string) error {
 }
 
 func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName string, request json.RawMessage) (json.RawMessage, error) {
-	if agentID != "" && agentID != "lead" {
-		return nil, errors.New("MCP user interaction from subagents is not supported")
-	}
 	identity := publictool.CallIdentityFromContext(ctx)
 	c.mu.RLock()
 	available := c.interactiveSessions[identity.SessionID]
@@ -119,7 +116,8 @@ func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName s
 	interaction := UserInteractionRequest{ID: id, AgentID: agentID, ServerName: serverName, Request: append(json.RawMessage(nil), request...)}
 	c.interactions[id] = pendingInteraction{response: channel, request: interaction, sessionID: identity.SessionID, taskID: identity.TaskID, executionID: identity.ExecutionID}
 	c.mu.Unlock()
-	c.emit(Event{Kind: EventUserInteractionRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, Interaction: &interaction})
+	c.emit(Event{Kind: EventUserInteractionRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
+		AgentID: agentID, Interaction: &interaction})
 	select {
 	case result := <-channel:
 		return result.Response, result.Err
@@ -127,7 +125,8 @@ func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName s
 		c.mu.Lock()
 		delete(c.interactions, id)
 		c.mu.Unlock()
-		c.emit(Event{Kind: EventUserInteractionCancelled, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, InteractionID: id})
+		c.emit(Event{Kind: EventUserInteractionCancelled, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
+			AgentID: agentID, InteractionID: id})
 		return nil, ctx.Err()
 	}
 }
