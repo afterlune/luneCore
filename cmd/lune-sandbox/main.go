@@ -15,25 +15,26 @@ import (
 )
 
 func main() {
+	input := bufio.NewReader(os.Stdin)
+	if len(os.Args) == 2 && os.Args[1] == "exec" {
+		wire, err := readRequest(input)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "read sandbox child request:", err)
+			os.Exit(2)
+		}
+		if err := sandbox.RunChild(wire.CommandRequest); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		return
+	}
 	if len(os.Args) != 2 || os.Args[1] != "run" {
 		fmt.Fprintln(os.Stderr, "usage: lune-sandbox run")
 		os.Exit(2)
 	}
-	var wire sandbox.HelperRequest
-	input := bufio.NewReader(os.Stdin)
-	line, err := input.ReadBytes('\n')
+	wire, err := readRequest(input)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "read sandbox request:", err)
-		os.Exit(2)
-	}
-	decoder := json.NewDecoder(bytes.NewReader(line))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&wire); err != nil {
-		fmt.Fprintln(os.Stderr, "decode sandbox request:", err)
-		os.Exit(2)
-	}
-	if wire.ProtocolVersion != sandbox.HelperProtocolVersion {
-		fmt.Fprintln(os.Stderr, "unsupported sandbox helper protocol; rebuild lune-sandbox with Core")
 		os.Exit(2)
 	}
 	request := wire.CommandRequest
@@ -53,4 +54,21 @@ func main() {
 		}
 		os.Exit(1)
 	}
+}
+
+func readRequest(input *bufio.Reader) (sandbox.HelperRequest, error) {
+	var wire sandbox.HelperRequest
+	line, err := input.ReadBytes('\n')
+	if err != nil {
+		return wire, err
+	}
+	decoder := json.NewDecoder(bytes.NewReader(line))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&wire); err != nil {
+		return wire, err
+	}
+	if wire.ProtocolVersion != sandbox.HelperProtocolVersion {
+		return wire, errors.New("unsupported sandbox helper protocol; rebuild lune-sandbox with Core")
+	}
+	return wire, nil
 }

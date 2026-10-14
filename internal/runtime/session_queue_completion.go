@@ -79,9 +79,7 @@ func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, 
 		return err
 	}
 	c.rememberQueuedTaskStatus(queued.SessionID, queued.ExecutionID, queued.QueueID, status)
-	if hub := c.eventHubs[queued.SessionID]; hub != nil {
-		hub.notifyDurable()
-	}
+	c.notifyEventHub(queued.SessionID)
 	if err := c.runtime.DeleteCompletedRunForSession(queued.SessionID); err != nil {
 		c.logger.Warn("delete completed graph checkpoint", "error", err)
 	}

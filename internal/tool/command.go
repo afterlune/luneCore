@@ -34,7 +34,7 @@ type CommandTool struct {
 
 var highRiskCommandPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\brm\b[^;&|]*-(?:[a-z]*r[a-z]*|recursive)\b`),
-	regexp.MustCompile(`(?i)\b(remove-item|del|rmdir|rd)\b[^;&|]*(?:-recurse|/s\b|--recursive)`),
+	regexp.MustCompile(`(?i)\b(remove-item|del|erase|rmdir|rd)\b[^;&|]*(?:-recurse|/s\b|--recursive)`),
 	regexp.MustCompile(`(?i)\b(find)\b[^;&|]*\s-delete\b`),
 	regexp.MustCompile(`(?i)\brsync\b[^;&|]*--delete(?:-before|-during|-after|-excluded)?\b`),
 	regexp.MustCompile(`(?i)\bgit\s+clean\b[^;&|]*(?:-[a-z]*f[a-z]*|--force\b)`),
@@ -44,6 +44,7 @@ var highRiskCommandPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\bdd\b[^;&|]*\bof=/dev/`),
 	regexp.MustCompile(`(?i)\b(set-mppreference|set-executionpolicy|iptables(?:-nft|-legacy)?\s+-F|nft\s+flush\s+ruleset|ufw\s+disable|netsh\s+advfirewall|systemctl\s+(enable|disable|mask)|sc(?:\.exe)?\s+(config|create|delete)|reg\s+(delete|add)|net\s+(user|localgroup)|(?:useradd|userdel|usermod|groupadd|groupdel|passwd|chpasswd)|efibootmgr|grub-install|update-grub)\b`),
 	regexp.MustCompile(`(?i)(?:^|\s)(sudo|runas|start-process\s+[^;&|]*-verb\s+runas)(?:\s|$)`),
+	regexp.MustCompile(`(?i)\bcmd(?:\.exe)?\b[^;&|]*/[ck](?:\s|$|")`),
 	regexp.MustCompile(`(?i)(-encodedcommand|\b(?:invoke-expression|iex)\b|\bexec\s*\(|\beval\s*\(|\b(?:curl|wget|iwr|invoke-webrequest)\b[^;&|]*\|\s*(?:sh|bash|powershell|iex))`),
 	regexp.MustCompile(`(?i)\b(?:sh|bash|zsh|dash|powershell|pwsh)(?:\.exe)?\b[^;&|]*\s-(?:c|command|encodedcommand)(?:\s|$)`),
 	regexp.MustCompile(`(?i)\b(?:python(?:\d+(?:\.\d+)*)?|perl|ruby|node|php)\b[^;&|]*\s-(?:c|e|r)(?:\s|$)`),

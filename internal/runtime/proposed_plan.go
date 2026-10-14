@@ -203,7 +203,7 @@ func (c *Core) validatePlanSource(ctx context.Context, sessionID, executionID st
 		return nil, Session{}, err
 	}
 	c.mu.RLock()
-	closed := c.closed
+	closed := c.closed || c.closing
 	running := c.sessionIsRunningLocked(sessionID)
 	c.mu.RUnlock()
 	if closed {

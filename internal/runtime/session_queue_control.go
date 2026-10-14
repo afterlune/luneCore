@@ -80,7 +80,7 @@ func (c *Core) takeInterruptRequest(executionID string) bool {
 func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed || c.closing {
 		return false, errors.New("core is closed")
 	}
 	if c.sessionIsRunningLocked(sessionID) {
@@ -131,18 +131,14 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 			return false, err
 		}
 		if deletedQueue {
-			if hub := c.eventHubs[sessionID]; hub != nil {
-				hub.notifyDurable()
-			}
+			c.notifyEventHub(sessionID)
 		}
 	} else if deletedCheckpoint {
 		event := Event{Kind: EventTaskDiscarded, SessionID: sessionID, Status: TaskIdle}
 		if _, err := c.sessions.AppendRuntimeEvent(ctx, sessionID, mustMarshalEvent(event)); err != nil {
 			return false, err
 		}
-		if hub := c.eventHubs[sessionID]; hub != nil {
-			hub.notifyDurable()
-		}
+		c.notifyEventHub(sessionID)
 	}
 	if discardedExecutionID != "" && (deletedCheckpoint || deletedQueue) {
 		if err := c.sessions.DeleteExecutionTokenBudget(ctx, discardedExecutionID); err != nil {

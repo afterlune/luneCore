@@ -71,7 +71,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 	c.runtimeConfigMu.RLock()
 	defer c.runtimeConfigMu.RUnlock()
 	c.mu.RLock()
-	closed := c.closed
+	closed := c.closed || c.closing
 	c.mu.RUnlock()
 	if closed {
 		return nil, errors.New("core is closed")

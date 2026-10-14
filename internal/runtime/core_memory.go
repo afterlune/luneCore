@@ -139,7 +139,7 @@ func (c *Core) lockMemoryAPI(ctx context.Context) error {
 	}
 	c.runtimeConfigMu.RLock()
 	c.mu.RLock()
-	closed := c.closed
+	closed := c.closed || c.closing
 	c.mu.RUnlock()
 	if closed {
 		c.runtimeConfigMu.RUnlock()

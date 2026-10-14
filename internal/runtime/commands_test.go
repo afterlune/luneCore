@@ -207,6 +207,73 @@ func TestLongCommandRuntimeOutputAndTermination(t *testing.T) {
 	}
 }
 
+func TestCoreClosePersistsTerminalCommandEvent(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	probe := newCommandProbe()
+	provider := &commandFlowProvider{probe: probe, t: t}
+	config := runtimeTestConfig(workspace, stateDir, provider)
+	config.CommandExecutor = probe
+	client, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		_ = client.Close()
+		t.Fatal(err)
+	}
+	identity := publictool.CallIdentity{SessionID: saved.ID, ExecutionID: "close-event-execution", AgentID: "lead", InvocationID: "close-event-call"}
+	if err := client.commands.OpenScope(identity.ExecutionID, context.Background()); err != nil {
+		_ = client.Close()
+		t.Fatal(err)
+	}
+	ctx := publictool.WithCallIdentity(context.Background(), identity)
+	if _, err := client.commands.Start(ctx, publictool.CommandRequest{Command: "close-event", Workspace: workspace}, 0, 0); err != nil {
+		_ = client.Close()
+		t.Fatal(err)
+	}
+	select {
+	case <-probe.started:
+	case <-time.After(time.Second):
+		_ = client.Close()
+		t.Fatal("command did not start")
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- client.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Fatalf("close Core: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Core.Close did not join the terminal command event")
+	}
+
+	reopened, err := New(config)
+	if err != nil {
+		t.Fatalf("reopen Core: %v", err)
+	}
+	defer func() {
+		if err := reopened.Close(); err != nil {
+			t.Errorf("close reopened Core: %v", err)
+		}
+	}()
+	events, err := reopened.sessions.RuntimeEventsAfter(context.Background(), saved.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, stored := range events {
+		var event Event
+		if err := json.Unmarshal(stored.Payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Kind == EventCommandFinished && event.CommandID != "" {
+			return
+		}
+	}
+	t.Fatal("command_finished event was not durable after Core.Close")
+}
+
 func TestRunningCommandsBlockCompletionAndSurviveRestartAsRecords(t *testing.T) {
 	ctx := context.Background()
 	probe := newCommandProbe()

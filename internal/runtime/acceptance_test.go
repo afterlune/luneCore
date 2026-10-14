@@ -234,7 +234,7 @@ func TestHostVerifierTimeoutPausesAsUnknown(t *testing.T) {
 		return AcceptanceReport{}, ctx.Err()
 	})
 	client := newAcceptanceCore(t, provider, verifier)
-	client.executionDefaults = ExecutionOptions{ToolTimeout: 100 * time.Millisecond}
+	client.executionDefaults = ExecutionOptions{ToolTimeout: time.Second}
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)

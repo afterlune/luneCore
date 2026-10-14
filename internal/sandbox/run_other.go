@@ -13,3 +13,7 @@ import (
 func runPlatform(context.Context, publictool.CommandRequest, io.Writer) error {
 	return errors.New("kernel command sandbox is supported only on Windows and Linux")
 }
+
+func runChild(publictool.CommandRequest) error {
+	return errors.New("sandbox child mode is supported only on Linux")
+}

@@ -34,7 +34,7 @@ func (c *Core) EnableMCPServer(name string) error {
 	}
 	defer c.runtimeConfigMu.Unlock()
 	c.mu.RLock()
-	closed := c.closed
+	closed := c.closed || c.closing
 	running := c.hasRunningTasksLocked()
 	c.mu.RUnlock()
 	if closed {
@@ -55,7 +55,7 @@ func (c *Core) DisableMCPServer(name string) error {
 	}
 	defer c.runtimeConfigMu.Unlock()
 	c.mu.RLock()
-	closed := c.closed
+	closed := c.closed || c.closing
 	running := c.hasRunningTasksLocked()
 	c.mu.RUnlock()
 	if closed {
@@ -76,7 +76,7 @@ func (c *Core) AuthenticateMCPServer(ctx context.Context, name string) error {
 	}
 	defer c.runtimeConfigMu.Unlock()
 	c.mu.RLock()
-	closed := c.closed
+	closed := c.closed || c.closing
 	running := c.hasRunningTasksLocked()
 	c.mu.RUnlock()
 	if closed {
@@ -109,7 +109,7 @@ func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName s
 	}
 	channel := make(chan userInteractionResult, 1)
 	c.mu.Lock()
-	if c.closed {
+	if c.closed || c.closing {
 		c.mu.Unlock()
 		return nil, errors.New("core is closed")
 	}

@@ -270,7 +270,6 @@ func (client *stdioTransport) shutdown() {
 	deadline := time.Now().Add(stdioCloseTimeout)
 	client.stop(errors.New("MCP stdio transport is closed"))
 	_ = client.stdin.Close()
-	_ = client.stdout.Close()
 	forced := false
 	if !waitUntil(client.processDone, time.Now().Add(stdioExitGrace)) {
 		forced = true
@@ -281,10 +280,18 @@ func (client *stdioTransport) shutdown() {
 			client.closeErr = err
 		}
 	}
-	if !waitUntil(client.processDone, deadline) {
+	processExited := waitUntil(client.processDone, deadline)
+	if !processExited {
 		client.closeErr = errors.Join(client.closeErr, errors.New("MCP stdio process did not exit within shutdown deadline"))
 	} else if !forced {
 		client.closeErr = errors.Join(client.closeErr, client.waitErr)
+	}
+	drainDeadline := time.Now().Add(stdioDrainTimeout)
+	if deadline.Before(drainDeadline) {
+		drainDeadline = deadline
+	}
+	if !waitUntil(client.readerDone, drainDeadline) || !processExited {
+		_ = client.stdout.Close()
 	}
 	if !waitUntil(client.readerDone, deadline) || !waitUntil(client.writerDone, deadline) {
 		client.closeErr = errors.Join(client.closeErr, errors.New("MCP stdio I/O did not stop within shutdown deadline"))

@@ -148,18 +148,14 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (*Sessi
 	}
 	hub := c.eventHub(sessionID)
 	c.mu.Lock()
-	if c.closed {
-		if c.eventHubs[sessionID] == hub {
-			delete(c.eventHubs, sessionID)
-		}
+	if c.closed || c.closing {
 		c.mu.Unlock()
+		c.removeEventHub(sessionID, hub)
 		return nil, errors.New("core is closed")
 	}
 	if _, err := c.sessions.Get(ctx, sessionID, c.workspace); err != nil {
-		if c.eventHubs[sessionID] == hub {
-			delete(c.eventHubs, sessionID)
-		}
 		c.mu.Unlock()
+		c.removeEventHub(sessionID, hub)
 		return nil, err
 	}
 	reconcile := !c.sessionIsRunningLocked(sessionID) && !c.queueDraining[sessionID]

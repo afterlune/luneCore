@@ -323,6 +323,19 @@ func TestSessionRuntimeFinalizesCompletedCheckpointAfterRestartWithoutRerunning(
 	if !errors.Is(waitErr, context.DeadlineExceeded) {
 		t.Fatalf("WaitTurn before checkpoint recovery error = %v, want context deadline exceeded", waitErr)
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		client.mu.RLock()
+		running := client.hasRunningTasksLocked()
+		client.mu.RUnlock()
+		if !running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("checkpoint execution did not leave its running state")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 	if _, err := sessionDB.Exec(`DROP TRIGGER reject_turn_result`); err != nil {
 		t.Fatal(err)
 	}

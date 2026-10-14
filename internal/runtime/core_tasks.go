@@ -94,7 +94,7 @@ func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, setting
 		return "", errors.New("context is nil")
 	}
 	c.mu.Lock()
-	if c.closed {
+	if c.closed || c.closing {
 		c.mu.Unlock()
 		return "", errors.New("core is closed")
 	}
@@ -284,7 +284,7 @@ func (c *Core) requestApproval(ctx context.Context, request tool.PermissionReque
 	response := make(chan bool, 1)
 	identity := publictool.CallIdentityFromContext(ctx)
 	c.mu.Lock()
-	if c.closed {
+	if c.closed || c.closing {
 		c.mu.Unlock()
 		return false
 	}

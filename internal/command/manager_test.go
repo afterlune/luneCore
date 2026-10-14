@@ -119,6 +119,50 @@ func TestCommandShortAndLegacyOutput(t *testing.T) {
 	}
 }
 
+func TestManagerCloseWaitsForTerminalObserver(t *testing.T) {
+	store := &memoryStore{records: map[string][]byte{}}
+	observerStarted := make(chan struct{})
+	releaseObserver := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseObserver) }) }
+	defer release()
+	code := 0
+	m, err := New(context.Background(), store, executorFunc(func(context.Context, publictool.CommandRequest) (publictool.CommandResult, error) {
+		return publictool.CommandResult{ExitCode: &code}, nil
+	}), publictool.CommandOptions{}, func(info publictool.CommandInfo) {
+		if info.Status.Active() {
+			return
+		}
+		close(observerStarted)
+		<-releaseObserver
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.OpenScope("execution", context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.Start(identityContext(), publictool.CommandRequest{Command: "quick"}, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-observerStarted:
+	case <-time.After(time.Second):
+		t.Fatal("terminal observer did not start")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	if err := m.Close(ctx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Close error = %v, want observer wait deadline", err)
+	}
+	release()
+	ctx, cancel = context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := m.Close(ctx); err != nil {
+		t.Fatalf("Close after terminal observer returned: %v", err)
+	}
+}
+
 func TestCommandSurvivesToolContextAndStopsIdempotently(t *testing.T) {
 	entered := make(chan struct{})
 	m, _ := managerForTest(t, executorFunc(func(ctx context.Context, r publictool.CommandRequest) (publictool.CommandResult, error) {

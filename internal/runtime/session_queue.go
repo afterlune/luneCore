@@ -69,7 +69,7 @@ func (c *Core) submitTurnWithPermission(ctx context.Context, sessionID string, r
 		waiter = make(chan turnResult, 1)
 	}
 	c.mu.Lock()
-	if c.closed {
+	if c.closed || c.closing {
 		c.mu.Unlock()
 		return TurnSubmission{}, nil, errors.New("core is closed")
 	}

@@ -76,8 +76,8 @@ func (h *sessionEventHub) publishLive(event Event) {
 }
 
 func (c *Core) eventHub(sessionID string) *sessionEventHub {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.eventHubMu.Lock()
+	defer c.eventHubMu.Unlock()
 	if c.eventHubs == nil {
 		c.eventHubs = make(map[string]*sessionEventHub)
 	}
@@ -87,6 +87,29 @@ func (c *Core) eventHub(sessionID string) *sessionEventHub {
 		c.eventHubs[sessionID] = hub
 	}
 	return hub
+}
+
+func (c *Core) existingEventHub(sessionID string) *sessionEventHub {
+	c.eventHubMu.Lock()
+	defer c.eventHubMu.Unlock()
+	return c.eventHubs[sessionID]
+}
+
+func (c *Core) removeEventHub(sessionID string, expected *sessionEventHub) *sessionEventHub {
+	c.eventHubMu.Lock()
+	defer c.eventHubMu.Unlock()
+	hub := c.eventHubs[sessionID]
+	if hub != nil && (expected == nil || hub == expected) {
+		delete(c.eventHubs, sessionID)
+		return hub
+	}
+	return nil
+}
+
+func (c *Core) notifyEventHub(sessionID string) {
+	if hub := c.existingEventHub(sessionID); hub != nil {
+		hub.notifyDurable()
+	}
 }
 
 func (c *Core) emit(event Event) {

@@ -22,9 +22,9 @@ type HelperRequest struct {
 	publictool.CommandRequest
 }
 
-// Run executes a serialized command request in a platform sandbox. The Linux
-// implementation supervises a shell that inherits kernel restrictions; Windows
-// creates an AppContainer or restricted-token child.
+// Run executes a serialized command request in a platform sandbox. Linux uses
+// a restricted process-group child; Windows creates an AppContainer or
+// restricted-token child.
 func Run(request publictool.CommandRequest, output io.Writer) error {
 	return RunContext(context.Background(), request, output)
 }
@@ -45,4 +45,13 @@ func RunContext(ctx context.Context, request publictool.CommandRequest, output i
 		return errors.New("command output writer is required")
 	}
 	return runPlatform(ctx, request, output)
+}
+
+// RunChild is the internal exec mode used by the Linux supervisor after it has
+// established the process group. Successful execution replaces the process.
+func RunChild(request publictool.CommandRequest) error {
+	if request.Command == "" || request.Workspace == "" {
+		return errors.New("sandbox child command and workspace are required")
+	}
+	return runChild(request)
 }

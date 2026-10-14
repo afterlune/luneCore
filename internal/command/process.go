@@ -59,7 +59,10 @@ func (m *Manager) Start(ctx context.Context, request publictool.CommandRequest, 
 	commandCtx, cancel := context.WithTimeout(publictool.WithCallIdentity(s.ctx, identity), timeout)
 	info := publictool.CommandInfo{Command: request.Command, ID: id, SessionID: identity.SessionID, ExecutionID: identity.ExecutionID, AgentID: identity.AgentID, InvocationID: identity.InvocationID, TaskID: identity.TaskID, Status: publictool.CommandRunning, StartedAt: time.Now()}
 	request.OnOutput = nil
-	j := &job{record: Record{Info: info, Request: request}, cancel: cancel, done: make(chan struct{}), changed: make(chan struct{})}
+	j := &job{
+		record: Record{Info: info, Request: request}, cancel: cancel,
+		done: make(chan struct{}), observerDone: make(chan struct{}), changed: make(chan struct{}),
+	}
 	if err := m.store.SaveCommand(ctx, j.record); err != nil {
 		cancel()
 		m.mu.Unlock()
@@ -143,15 +146,20 @@ func (m *Manager) run(ctx context.Context, j *job) {
 	j.record.Info.FinishedAt = time.Now()
 	persistErr := m.store.SaveCommand(context.Background(), j.record)
 	info := cloneInfo(j.record.Info)
-	close(j.done)
 	close(j.changed)
 	j.mu.Unlock()
 	if persistErr == nil {
+		// The terminal observer persists lifecycle events through Core's session
+		// store. Close must not treat the command as finished until that write
+		// has returned.
+		_ = m.observeTerminal(context.Background(), j, info)
 		m.mu.Lock()
 		delete(m.jobs, info.ID)
 		m.mu.Unlock()
-		m.observe(info)
 	}
+	j.mu.Lock()
+	close(j.done)
+	j.mu.Unlock()
 }
 
 func (m *Manager) Stop(ctx context.Context, sessionID, id, executionID, agentID string) (publictool.CommandOutput, error) {

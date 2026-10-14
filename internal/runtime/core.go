@@ -91,6 +91,7 @@ type Core struct {
 	stateDirLock   *session.DirectoryLock
 
 	mu                  sync.RWMutex
+	eventHubMu          sync.Mutex
 	runtimeConfigMu     sync.RWMutex
 	usageMu             sync.Mutex
 	active              TaskState
@@ -106,6 +107,7 @@ type Core struct {
 	interruptRequests   map[string]bool
 	queueDrainWG        sync.WaitGroup
 	closed              bool
+	closing             bool
 }
 
 func New(config Config) (_ *Core, err error) {

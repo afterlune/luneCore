@@ -3,7 +3,9 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +27,47 @@ const (
 )
 
 func runPlatform(ctx context.Context, request publictool.CommandRequest, output io.Writer) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("locate sandbox helper: %w", err)
+	}
+	encoded, err := json.Marshal(HelperRequest{ProtocolVersion: HelperProtocolVersion, CommandRequest: request})
+	if err != nil {
+		return fmt.Errorf("encode sandbox child request: %w", err)
+	}
+	command := exec.CommandContext(ctx, self, "exec")
+	command.Stdin = bytes.NewReader(append(encoded, '\n'))
+	command.Stdout, command.Stderr = output, output
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := unix.Kill(-command.Process.Pid, unix.SIGKILL)
+		if errors.Is(err, unix.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	command.WaitDelay = time.Second
+	if err := command.Start(); err != nil {
+		return fmt.Errorf("start restricted sandbox child: %w", err)
+	}
+	err = command.Wait()
+	// The restricted child is the process-group leader. Remove any commands it
+	// left behind after it exits; the supervisor remains outside that group.
+	_ = unix.Kill(-command.Process.Pid, unix.SIGKILL)
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return &ExitError{Code: exit.ExitCode()}
+		}
+		return err
+	}
+	return nil
+}
+
+func runChild(request publictool.CommandRequest) error {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	workspace, err := filepath.EvalSymlinks(request.Workspace)
@@ -54,33 +97,8 @@ func runPlatform(ctx context.Context, request publictool.CommandRequest, output 
 	if err := installSeccomp(request.Sandbox.Network); err != nil {
 		return fmt.Errorf("install seccomp policy: %w", err)
 	}
-	command := exec.CommandContext(ctx, "/bin/sh", "-c", request.Command)
-	command.Env = sandboxEnvironment(tempDir, homeDir)
-	command.Stdout, command.Stderr = output, output
-	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
-	command.Cancel = func() error {
-		if command.Process == nil {
-			return os.ErrProcessDone
-		}
-		err := unix.Kill(-command.Process.Pid, unix.SIGKILL)
-		if errors.Is(err, unix.ESRCH) {
-			return os.ErrProcessDone
-		}
-		return err
-	}
-	command.WaitDelay = time.Second
-	if err := command.Start(); err != nil {
-		return fmt.Errorf("start sandbox command: %w", err)
-	}
-	err = command.Wait()
-	// A non-interactive shell must not leave descendants behind after it exits.
-	_ = unix.Kill(-command.Process.Pid, unix.SIGKILL)
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return &ExitError{Code: exit.ExitCode()}
-		}
-		return err
+	if err := unix.Exec("/bin/sh", []string{"/bin/sh", "-c", request.Command}, sandboxEnvironment(tempDir, homeDir)); err != nil {
+		return fmt.Errorf("execute sandbox command: %w", err)
 	}
 	return nil
 }
@@ -240,7 +258,8 @@ func installSeccomp(network bool) error {
 		unix.SYS_PROCESS_VM_READV, unix.SYS_PROCESS_VM_WRITEV,
 		unix.SYS_PIDFD_GETFD, unix.SYS_CAPSET, unix.SYS_SETUID, unix.SYS_SETREUID, unix.SYS_SETRESUID,
 		unix.SYS_SETGID, unix.SYS_SETREGID, unix.SYS_SETRESGID, unix.SYS_SETFSUID, unix.SYS_SETFSGID,
-		unix.SYS_SETGROUPS,
+		unix.SYS_SETGROUPS, unix.SYS_SETSID, unix.SYS_SETPGID,
+		unix.SYS_IO_URING_SETUP, unix.SYS_IO_URING_ENTER, unix.SYS_IO_URING_REGISTER,
 	}
 	if runtime.GOARCH == "amd64" {
 		// x86-only I/O privilege syscalls (iopl=172, ioperm=173).

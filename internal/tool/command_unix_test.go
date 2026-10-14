@@ -7,10 +7,56 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 	"time"
+
+	publictool "github.com/afterlune/luneCore/tool"
 )
+
+func TestLinuxSeccompBlocksIoUringAndProcessGroupEscape(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err != nil {
+		t.Skip("python3 is required for Linux seccomp integration probes")
+	}
+	helper := sandboxHelperForTest(t)
+	executor := SandboxedCommandExecutor{HelperPath: helper}
+	workspace := t.TempDir()
+	ioUringDenied := `python3 -c 'import ctypes,errno; libc=ctypes.CDLL(None,use_errno=True); result=libc.syscall(425,8,None); assert result == -1 and ctypes.get_errno() == errno.EPERM'`
+	commands := []struct {
+		name    string
+		command string
+		network bool
+	}{
+		{
+			name:    "network-disabled",
+			command: `python3 -c 'import socket,errno; exec("try:\n socket.socket()\nexcept OSError as error:\n assert error.errno == errno.EPERM\nelse:\n raise SystemExit(11)")' && ` + ioUringDenied,
+		},
+		{
+			name:    "network-enabled",
+			command: `python3 -c 'import socket; sock=socket.socket(); sock.close()' && ` + ioUringDenied,
+			network: true,
+		},
+		{
+			name:    "process-detach",
+			command: `python3 -c 'import os,errno; exec("for fn in (os.setsid, lambda: os.setpgid(0, 0)):\n try:\n  fn()\n except OSError as error:\n  assert error.errno == errno.EPERM\n else:\n  raise SystemExit(12)")'`,
+		},
+	}
+	for _, test := range commands {
+		t.Run(test.name, func(t *testing.T) {
+			request := publictool.CommandRequest{
+				Command: test.command, Workspace: workspace,
+				Sandbox: publictool.SandboxPolicy{PermissionMode: "workspace", Workspace: workspace, Network: test.network},
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			result, err := executor.Execute(ctx, request)
+			if err != nil || result.ExitCode == nil || *result.ExitCode != 0 {
+				t.Fatalf("result=%+v error=%v", result, err)
+			}
+		})
+	}
+}
 
 func TestCommandCancellationStopsShellChildrenPromptly(t *testing.T) {
 	workspace := t.TempDir()

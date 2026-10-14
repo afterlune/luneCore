@@ -18,7 +18,7 @@ func (c *Core) ForkSession(ctx context.Context, sessionID string) (Session, erro
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed || c.closing {
 		return Session{}, errors.New("core is closed")
 	}
 	if c.sessionIsRunningLocked(sessionID) {
@@ -43,7 +43,7 @@ func (c *Core) ForkPausedTask(ctx context.Context, sessionID string) (Session, e
 	defer c.runtimeConfigMu.RUnlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed || c.closing {
 		return Session{}, errors.New("core is closed")
 	}
 	if c.sessionIsRunningLocked(sessionID) || c.queueDraining[sessionID] {

@@ -27,7 +27,7 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 	c.runtimeConfigMu.RLock()
 	defer c.runtimeConfigMu.RUnlock()
 	c.mu.RLock()
-	closed := c.closed
+	closed := c.closed || c.closing
 	c.mu.RUnlock()
 	if closed {
 		return 0, errors.New("core is closed")

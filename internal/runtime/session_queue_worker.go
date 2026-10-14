@@ -11,7 +11,7 @@ import (
 
 func (c *Core) scheduleQueueDrain(sessionID string) {
 	c.mu.Lock()
-	if c.closed || c.queueDraining[sessionID] {
+	if c.closed || c.closing || c.queueDraining[sessionID] {
 		c.mu.Unlock()
 		return
 	}
@@ -26,7 +26,7 @@ func (c *Core) drainQueue(sessionID string) {
 	defer func() {
 		c.mu.Lock()
 		delete(c.queueDraining, sessionID)
-		closed := c.closed
+		closed := c.closed || c.closing
 		c.mu.Unlock()
 		if closed {
 			return
@@ -52,7 +52,7 @@ func (c *Core) drainQueue(sessionID string) {
 	}
 	for {
 		c.mu.RLock()
-		closed := c.closed
+		closed := c.closed || c.closing
 		c.mu.RUnlock()
 		if closed {
 			return
@@ -84,7 +84,7 @@ func (c *Core) drainQueue(sessionID string) {
 			return
 		}
 		c.mu.RLock()
-		closing := c.closed
+		closing := c.closed || c.closing
 		c.mu.RUnlock()
 		if closing {
 			if err := c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnQueued); err != nil {
@@ -116,7 +116,7 @@ func (c *Core) drainQueue(sessionID string) {
 		c.mu.Unlock()
 		c.eventHub(sessionID).notifyDurable()
 		c.mu.RLock()
-		closing = c.closed
+		closing = c.closed || c.closing
 		c.mu.RUnlock()
 		if closing {
 			if _, exists, lookupErr := c.sessions.QueuedTurnByExecutionID(ctx, sessionID, queued.ExecutionID); lookupErr == nil && exists {
@@ -192,9 +192,7 @@ func (c *Core) failQueuedTurn(ctx context.Context, queued session.QueuedTurn, er
 	if _, persistErr := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(TaskFailed), nil, nil, nil, "", mustMarshalEvent(event)); persistErr != nil {
 		c.logger.Warn("finish rejected queued turn", "error", persistErr)
 	} else {
-		if hub := c.eventHubs[queued.SessionID]; hub != nil {
-			hub.notifyDurable()
-		}
+		c.notifyEventHub(queued.SessionID)
 		if cleanupErr := c.sessions.DeleteExecutionTokenBudget(context.Background(), queued.ExecutionID); cleanupErr != nil {
 			c.logger.Warn("delete failed execution token budget", "error", cleanupErr)
 		}

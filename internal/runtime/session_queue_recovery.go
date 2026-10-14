@@ -28,7 +28,7 @@ func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool, 
 		return TurnSubmission{}, nil, err
 	}
 	c.mu.Lock()
-	if c.closed {
+	if c.closed || c.closing {
 		c.mu.Unlock()
 		return TurnSubmission{}, nil, errors.New("core is closed")
 	}
@@ -118,9 +118,7 @@ func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool, 
 			return TurnSubmission{}, nil, enqueueErr
 		}
 		item = &created
-		if hub := c.eventHubs[sessionID]; hub != nil {
-			hub.notifyDurable()
-		}
+		c.notifyEventHub(sessionID)
 	} else {
 		var request storedTurnRequest
 		if err := json.Unmarshal(item.Request, &request); err != nil {
@@ -142,9 +140,7 @@ func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool, 
 			c.mu.Unlock()
 			return TurnSubmission{}, nil, err
 		}
-		if hub := c.eventHubs[sessionID]; hub != nil {
-			hub.notifyDurable()
-		}
+		c.notifyEventHub(sessionID)
 		item.Status, item.Request = session.QueuedTurnQueued, encoded
 	}
 	var waiter chan turnResult
@@ -198,9 +194,7 @@ func (c *Core) reconcileQueuedTurns(ctx context.Context, sessionID string) error
 		if updateErr != nil {
 			return updateErr
 		}
-		if hub := c.eventHubs[sessionID]; hub != nil {
-			hub.notifyDurable()
-		}
+		c.notifyEventHub(sessionID)
 	}
 	// A committed result may survive a crash that happened before checkpoint
 	// deletion. It cannot be resumed and should not block the next turn.

@@ -199,6 +199,10 @@ func TestHighRiskAndOpaqueCommandsNeedExactPlanApproval(t *testing.T) {
 		"rsync --delete source/ target/",
 		"mkfs.ext4 /dev/sdb",
 		"Set-MpPreference -DisableRealtimeMonitoring $true",
+		"erase /s /q .\\*",
+		"ErAsE /q /S *.log",
+		`cmd.exe /c erase /s /q .\*`,
+		`C:\Windows\System32\cmd.exe /k "erase /s /q .\*"`,
 		"python -c \"import os; os.remove('data')\"",
 		"bash -c 'echo opaque'",
 	}

@@ -98,7 +98,7 @@ func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed || c.closing {
 		return errors.New("core is closed")
 	}
 	if c.sessionIsRunningLocked(sessionID) {
@@ -151,11 +151,10 @@ func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 			waiter <- turnResult{err: errors.New("session was deleted before the turn started")}
 		}
 	}
-	if hub := c.eventHubs[sessionID]; hub != nil {
+	if hub := c.removeEventHub(sessionID, nil); hub != nil {
 		hub.close()
 	}
 	delete(c.interactiveSessions, sessionID)
-	delete(c.eventHubs, sessionID)
 	return nil
 }
 
@@ -168,7 +167,7 @@ func (c *Core) RewindSession(ctx context.Context, sessionID string, userTurns in
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.closed {
+	if c.closed || c.closing {
 		return 0, errors.New("core is closed")
 	}
 	if c.sessionIsRunningLocked(sessionID) {

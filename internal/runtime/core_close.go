@@ -12,21 +12,34 @@ func (c *Core) Close() error {
 	}
 	runtimeConfigLocked := c.runtimeConfigMu.TryLock()
 	closingAfterQueueDrain := false
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		if runtimeConfigLocked {
+			c.runtimeConfigMu.Unlock()
+		}
+		return nil
+	}
+	if c.closing {
+		c.mu.Unlock()
+		if runtimeConfigLocked {
+			c.runtimeConfigMu.Unlock()
+		}
+		return errors.New("core is already closing")
+	}
+	if c.hasRunningTasksLocked() {
+		c.mu.Unlock()
+		if runtimeConfigLocked {
+			c.runtimeConfigMu.Unlock()
+		}
+		return errors.New("cannot close core while a task is running")
+	}
 	if !runtimeConfigLocked {
-		c.mu.Lock()
-		if c.closed {
-			c.mu.Unlock()
-			return nil
-		}
-		if c.hasRunningTasksLocked() {
-			c.mu.Unlock()
-			return errors.New("cannot close core while a task is running")
-		}
 		if len(c.queueDraining) == 0 {
 			c.mu.Unlock()
 			return errors.New("cannot close core while runtime configuration changes are active")
 		}
-		c.closed = true
+		c.closing = true
 		c.mu.Unlock()
 		c.queueDrainWG.Wait()
 		for !c.runtimeConfigMu.TryLock() {
@@ -34,23 +47,21 @@ func (c *Core) Close() error {
 		}
 		runtimeConfigLocked = true
 		closingAfterQueueDrain = true
+		c.mu.Lock()
+	} else {
+		c.closing = true
 	}
 	defer func() {
 		if runtimeConfigLocked {
 			c.runtimeConfigMu.Unlock()
 		}
 	}()
-	c.mu.Lock()
-	if c.closed && !closingAfterQueueDrain {
-		c.mu.Unlock()
-		return nil
-	}
 	if !closingAfterQueueDrain && c.hasRunningTasksLocked() {
+		c.closing = false
 		c.mu.Unlock()
 		return errors.New("cannot close core while a task is running")
 	}
 	if !closingAfterQueueDrain && len(c.queueDraining) > 0 {
-		c.closed = true
 		c.mu.Unlock()
 		c.runtimeConfigMu.Unlock()
 		runtimeConfigLocked = false
@@ -59,16 +70,9 @@ func (c *Core) Close() error {
 			time.Sleep(time.Millisecond)
 		}
 		runtimeConfigLocked = true
+		closingAfterQueueDrain = true
 		c.mu.Lock()
 	}
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
-	cleanupErr := c.commands.Close(cleanupCtx)
-	cleanupCancel()
-	if cleanupErr != nil {
-		c.mu.Unlock()
-		return cleanupErr
-	}
-	c.closed = true
 	for executionID, waiter := range c.turnWaiters {
 		delete(c.turnWaiters, executionID)
 		waiter <- turnResult{err: errors.New("core is closing")}
@@ -80,7 +84,18 @@ func (c *Core) Close() error {
 		default:
 		}
 	}
+	// Terminal command observers append events through Core and may need c.mu.
+	// Keep new work out via c.closing, but release the lock while joining them.
 	c.mu.Unlock()
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
+	cleanupErr := c.commands.Close(cleanupCtx)
+	cleanupCancel()
+	if cleanupErr != nil {
+		c.mu.Lock()
+		c.closing = false
+		c.mu.Unlock()
+		return cleanupErr
+	}
 	var closeMCP error
 	if c.mcpManager != nil {
 		closeMCP = c.mcpManager.Close()
@@ -94,5 +109,10 @@ func (c *Core) Close() error {
 		}
 	}
 	c.mu.Unlock()
-	return errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.stateDirLock.Close())
+	closeErr := errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.stateDirLock.Close())
+	c.mu.Lock()
+	c.closed = true
+	c.closing = false
+	c.mu.Unlock()
+	return closeErr
 }

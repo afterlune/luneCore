@@ -36,12 +36,14 @@ type scope struct {
 	closed map[string]bool
 }
 type job struct {
-	mu       sync.Mutex
-	record   Record
-	cancel   context.CancelFunc
-	done     chan struct{}
-	changed  chan struct{}
-	streamed bool
+	mu              sync.Mutex
+	record          Record
+	cancel          context.CancelFunc
+	done            chan struct{}
+	observerDone    chan struct{}
+	observerStarted bool
+	changed         chan struct{}
+	streamed        bool
 }
 
 type Manager struct {
@@ -137,6 +139,9 @@ func (m *Manager) StopScope(ctx context.Context, executionID, agentID string) er
 		if err != nil {
 			return fmt.Errorf("persist command cleanup: %w", err)
 		}
+		if err := m.observeTerminal(ctx, j, info); err != nil {
+			return err
+		}
 		m.mu.Lock()
 		delete(m.jobs, info.ID)
 		m.mu.Unlock()
@@ -175,6 +180,27 @@ func (m *Manager) observe(info publictool.CommandInfo) {
 		m.observer(cloneInfo(info))
 	}
 }
+
+func (m *Manager) observeTerminal(ctx context.Context, j *job, info publictool.CommandInfo) error {
+	j.mu.Lock()
+	if !j.observerStarted {
+		j.observerStarted = true
+		done := j.observerDone
+		j.mu.Unlock()
+		m.observe(info)
+		close(done)
+		return nil
+	}
+	done := j.observerDone
+	j.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return fmt.Errorf("wait for command event observer: %w", ctx.Err())
+	case <-done:
+		return nil
+	}
+}
+
 func (m *Manager) StopSession(ctx context.Context, sessionID string) error {
 	m.mu.Lock()
 	ids := map[string]bool{}
