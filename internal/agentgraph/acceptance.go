@@ -34,6 +34,10 @@ type evidenceRequest struct {
 	Question string `json:"question"`
 }
 
+type acceptanceResolution struct {
+	Decision acceptance.Decision `json:"decision"`
+}
+
 func criteriaDefinition() model.FunctionTool {
 	return acceptanceFunction(submitCriteriaToolName, "Fix the current task's acceptance criteria before execution. Quote their authorization basis from the current user turn, not the session goal.", map[string]any{
 		"type": "object",
