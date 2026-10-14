@@ -48,6 +48,7 @@ func (manager *Manager) connectServer(ctx context.Context, name string, force bo
 			return nil
 		}
 		delete(manager.instances, name)
+		manager.cancelHostOperationsLocked(existing)
 		manager.unregister(existing)
 	}
 	config, exists := manager.servers[name]
@@ -55,6 +56,7 @@ func (manager *Manager) connectServer(ctx context.Context, name string, force bo
 	manager.mu.Unlock()
 	defer func() { manager.mu.Lock(); delete(manager.connecting, name); manager.mu.Unlock() }()
 	if existing != nil {
+		existing.hostOperationsWG.Wait()
 		if old, ok := existing.client.(*stdioTransport); ok {
 			err := old.closeContext(ctx)
 			if ctx.Err() != nil {
@@ -88,7 +90,7 @@ func (manager *Manager) connectServer(ctx context.Context, name string, force bo
 	default:
 		return fmt.Errorf("MCP server %q has unsupported transport %q", name, config.Transport)
 	}
-	instance := &serverInstance{client: client, config: config, owner: manager}
+	instance := &serverInstance{client: client, config: config, owner: manager, hostOperations: make(map[uint64]context.CancelCauseFunc)}
 	instance.category = model.ToolCategory{Name: "mcp", Description: "Tools provided by enabled MCP servers."}
 	tools, err := manager.listTools(ctx, name, instance)
 	if err != nil {

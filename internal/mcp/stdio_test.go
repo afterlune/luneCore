@@ -77,6 +77,9 @@ func TestMCPStdioHelper(t *testing.T) {
 				}
 			}
 		}
+		if request.Method == "prompts/list" {
+			result["prompts"] = []any{}
+		}
 		if request.Method == "tools/call" {
 			if path := os.Getenv("LUNE_MCP_STDIO_CALLS"); path != "" {
 				file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
@@ -93,7 +96,8 @@ func TestMCPStdioHelper(t *testing.T) {
 		if request.Method == "test/error" {
 			response, _ = json.Marshal(map[string]any{"jsonrpc": "2.0", "id": request.ID, "error": map[string]any{"code": -1, "message": "expected error"}})
 		}
-		if request.Method == "test/delay" || request.Method == "test/reverse" && deferred == nil {
+		delayPromptList := request.Method == "prompts/list" && os.Getenv("LUNE_MCP_STDIO_PROMPT_DELAY") == "1"
+		if request.Method == "test/delay" || request.Method == "test/reverse" && deferred == nil || delayPromptList {
 			deferred = response
 			if path := os.Getenv("LUNE_MCP_STDIO_SEEN"); path != "" {
 				_ = os.WriteFile(path, []byte("seen"), 0600)

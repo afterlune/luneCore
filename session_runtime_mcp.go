@@ -10,6 +10,10 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
+// ErrMCPServerLifecycleChanged identifies a host MCP request canceled because
+// its server was disabled, reconnected, or the Core was closed.
+var ErrMCPServerLifecycleChanged = mcp.ErrServerLifecycleChanged
+
 // MCPPromptArgument describes one argument accepted by an MCP prompt.
 type MCPPromptArgument struct {
 	Name        string

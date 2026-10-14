@@ -327,6 +327,107 @@ func TestSessionRuntimeMCPHostInteractionUsesPendingRequests(t *testing.T) {
 	}
 }
 
+func TestSessionRuntimeMCPInteractionIsCancelledByServerLifecycle(t *testing.T) {
+	for _, action := range []string{"disable", "reconnect", "close"} {
+		t.Run(action, func(t *testing.T) {
+			var promptCalls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				var message hostMCPRequest
+				if err := json.NewDecoder(request.Body).Decode(&message); err != nil {
+					t.Errorf("decode MCP request: %v", err)
+					return
+				}
+				switch message.Method {
+				case "tools/list":
+					writeHostMCPResult(writer, message.ID, map[string]any{"tools": []any{}})
+				case "prompts/get":
+					promptCalls.Add(1)
+					writeHostMCPResult(writer, message.ID, map[string]any{
+						"resultType": "input_required", "requestState": "wait",
+						"inputRequests": map[string]any{"input": map[string]any{
+							"method": "elicitation/create", "params": map[string]any{"mode": "form", "message": "Waiting for host", "requestedSchema": map[string]any{"type": "object"}},
+						}},
+					})
+				default:
+					t.Errorf("unexpected MCP method %q", message.Method)
+				}
+			}))
+			defer server.Close()
+
+			client := newProgrammaticCore(t, &scriptedHostProvider{})
+			attachHostMCPServer(t, client, "host", server.URL)
+			saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime.SetUserInteractionAvailable(true)
+			requestDone := make(chan error, 1)
+			go func() {
+				_, err := runtime.GetMCPPrompt(context.Background(), "host", "login", nil)
+				requestDone <- err
+			}()
+
+			deadline := time.Now().Add(3 * time.Second)
+			var pending []PendingRequest
+			for time.Now().Before(deadline) {
+				pending, err = runtime.PendingRequests(context.Background())
+				if err == nil && len(pending) == 1 && pending[0].Interaction != nil {
+					break
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if err != nil || len(pending) != 1 || pending[0].Interaction == nil {
+				t.Fatalf("pending interaction = %#v, error = %v", pending, err)
+			}
+			interactionID := pending[0].Interaction.ID
+
+			lifecycleDone := make(chan error, 1)
+			go func() {
+				switch action {
+				case "disable":
+					lifecycleDone <- client.DisableMCPServer("host")
+				case "reconnect":
+					lifecycleDone <- client.EnableMCPServer("host")
+				default:
+					lifecycleDone <- client.Close()
+				}
+			}()
+			select {
+			case err := <-requestDone:
+				if !errors.Is(err, ErrMCPServerLifecycleChanged) || errors.Is(err, context.Canceled) {
+					t.Fatalf("host request error = %v, want lifecycle sentinel only", err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("host request did not stop after lifecycle change")
+			}
+			select {
+			case err := <-lifecycleDone:
+				if err != nil {
+					t.Fatalf("%s error = %v", action, err)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatalf("%s did not wait for host interaction to drain", action)
+			}
+			if err := runtime.ResolveUserInteraction(interactionID, json.RawMessage(`{"action":"accept","content":{}}`)); err == nil {
+				t.Fatal("lifecycle cancellation left the old interaction resolvable")
+			}
+			if got := promptCalls.Load(); got != 1 {
+				t.Fatalf("prompt/get called %d times after cancellation", got)
+			}
+			if action != "close" {
+				pending, err = runtime.PendingRequests(context.Background())
+				if err != nil || len(pending) != 0 {
+					t.Fatalf("pending requests after cancellation = %#v, error = %v", pending, err)
+				}
+			}
+		})
+	}
+}
+
 func TestSessionRuntimeMCPResourceReadRespectsLimits(t *testing.T) {
 	imageData := base64.StdEncoding.EncodeToString([]byte{1, 2, 3})
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

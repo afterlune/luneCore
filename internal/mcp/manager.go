@@ -65,12 +65,17 @@ type Manager struct {
 }
 
 type serverInstance struct {
-	client   transport
-	tools    []*remoteTool
-	category model.ToolCategory
-	config   projectconfig.MCPServerConfig
-	owner    *Manager
+	client            transport
+	tools             []*remoteTool
+	category          model.ToolCategory
+	config            projectconfig.MCPServerConfig
+	owner             *Manager
+	nextHostOperation uint64
+	hostOperations    map[uint64]context.CancelCauseFunc
+	hostOperationsWG  sync.WaitGroup
 }
+
+var ErrServerLifecycleChanged = errors.New("MCP server lifecycle changed")
 
 type remoteTool struct {
 	server       *serverInstance
@@ -159,6 +164,7 @@ func (manager *Manager) Disable(name string) error {
 		cancel()
 	}
 	instance := manager.instances[name]
+	manager.cancelHostOperationsLocked(instance)
 	delete(manager.instances, name)
 	delete(manager.enabled, name)
 	delete(manager.errors, name)
@@ -166,6 +172,7 @@ func (manager *Manager) Disable(name string) error {
 	manager.mu.Unlock()
 	var closeErr error
 	if instance != nil {
+		instance.hostOperationsWG.Wait()
 		closeErr = instance.client.Close()
 	}
 	return errors.Join(closeErr, manager.writeEnabled())
@@ -225,15 +232,26 @@ func (manager *Manager) Close() error {
 	instances := make([]*serverInstance, 0, len(manager.instances))
 	for _, instance := range manager.instances {
 		instances = append(instances, instance)
+		manager.cancelHostOperationsLocked(instance)
 		manager.unregister(instance)
 	}
 	manager.instances = make(map[string]*serverInstance)
 	manager.mu.Unlock()
 	var failures []error
 	for _, instance := range instances {
+		instance.hostOperationsWG.Wait()
 		if err := instance.client.Close(); err != nil {
 			failures = append(failures, err)
 		}
 	}
 	return errors.Join(failures...)
+}
+
+func (manager *Manager) cancelHostOperationsLocked(instance *serverInstance) {
+	if instance == nil {
+		return
+	}
+	for _, cancel := range instance.hostOperations {
+		cancel(ErrServerLifecycleChanged)
+	}
 }

@@ -101,7 +101,7 @@ if result.Status == core.TaskCompleted {
 }
 ```
 
-MCP prompts and resources are host-controlled: use `runtime.ListMCPPrompts`, `GetMCPPrompt`, `ListMCPResources`, `ListMCPResourceTemplates`, and `ReadMCPResource` to fetch them explicitly. `GetMCPPrompt` and `ReadMCPResource` return `model.ResponseInput`; pass it to `core.NewTaskInput` and submit it only when appropriate. These calls do not add model tools or inject content into a task. MCP servers that request user input use the same `PendingRequests` and `ResolveUserInteraction` flow as tool calls.
+MCP prompts and resources are host-controlled: use `runtime.ListMCPPrompts`, `GetMCPPrompt`, `ListMCPResources`, `ListMCPResourceTemplates`, and `ReadMCPResource` to fetch them explicitly. `GetMCPPrompt` and `ReadMCPResource` return `model.ResponseInput`; pass it to `core.NewTaskInput` and submit it only when appropriate. These calls do not add model tools or inject content into a task. MCP servers that request user input use the same `PendingRequests` and `ResolveUserInteraction` flow as tool calls. An in-flight host request canceled by server disable, reconnect, or Core shutdown matches `core.ErrMCPServerLifecycleChanged`; caller-context cancellation remains `context.Canceled`.
 
 Every task prepares completion criteria from the current user turn before using business tools, then reviews the final candidate. `SessionSettings.Goal` is background guidance and does not add criteria. A plan is accepted for completeness; it is not required to have been implemented. `RunTask`, `ResumeTask`, and `WaitTurn` return the same `TaskResult`. Only an accepted result has `TaskCompleted` status.
 

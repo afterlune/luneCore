@@ -46,21 +46,21 @@ type ResourceTemplate struct {
 }
 
 func (manager *Manager) ListPrompts(ctx context.Context, serverName string) ([]Prompt, error) {
-	instance, err := manager.connectedInstance(serverName)
-	if err != nil {
-		return nil, err
-	}
-	return listMCPItems[Prompt](ctx, serverName, instance, "prompts/list", "prompts")
+	return withHostOperation(manager, ctx, serverName, func(ctx context.Context, instance *serverInstance) ([]Prompt, error) {
+		return listMCPItems[Prompt](ctx, serverName, instance, "prompts/list", "prompts")
+	})
 }
 
 func (manager *Manager) GetPrompt(ctx context.Context, serverName, promptName string, arguments map[string]string) (PromptResult, error) {
 	if strings.TrimSpace(promptName) == "" {
 		return PromptResult{}, errors.New("MCP prompt name is required")
 	}
-	instance, err := manager.connectedInstance(serverName)
-	if err != nil {
-		return PromptResult{}, err
-	}
+	return withHostOperation(manager, ctx, serverName, func(ctx context.Context, instance *serverInstance) (PromptResult, error) {
+		return manager.getPrompt(ctx, instance, serverName, promptName, arguments)
+	})
+}
+
+func (manager *Manager) getPrompt(ctx context.Context, instance *serverInstance, serverName, promptName string, arguments map[string]string) (PromptResult, error) {
 	params := map[string]any{"name": promptName}
 	if arguments != nil {
 		params["arguments"] = arguments
@@ -127,29 +127,27 @@ func (manager *Manager) GetPrompt(ctx context.Context, serverName, promptName st
 }
 
 func (manager *Manager) ListResources(ctx context.Context, serverName string) ([]Resource, error) {
-	instance, err := manager.connectedInstance(serverName)
-	if err != nil {
-		return nil, err
-	}
-	return listMCPItems[Resource](ctx, serverName, instance, "resources/list", "resources")
+	return withHostOperation(manager, ctx, serverName, func(ctx context.Context, instance *serverInstance) ([]Resource, error) {
+		return listMCPItems[Resource](ctx, serverName, instance, "resources/list", "resources")
+	})
 }
 
 func (manager *Manager) ListResourceTemplates(ctx context.Context, serverName string) ([]ResourceTemplate, error) {
-	instance, err := manager.connectedInstance(serverName)
-	if err != nil {
-		return nil, err
-	}
-	return listMCPItems[ResourceTemplate](ctx, serverName, instance, "resources/templates/list", "resourceTemplates")
+	return withHostOperation(manager, ctx, serverName, func(ctx context.Context, instance *serverInstance) ([]ResourceTemplate, error) {
+		return listMCPItems[ResourceTemplate](ctx, serverName, instance, "resources/templates/list", "resourceTemplates")
+	})
 }
 
 func (manager *Manager) ReadResource(ctx context.Context, serverName, uri string) (*model.ResponseInput, error) {
 	if strings.TrimSpace(uri) == "" {
 		return nil, errors.New("MCP resource URI is required")
 	}
-	instance, err := manager.connectedInstance(serverName)
-	if err != nil {
-		return nil, err
-	}
+	return withHostOperation(manager, ctx, serverName, func(ctx context.Context, instance *serverInstance) (*model.ResponseInput, error) {
+		return manager.readResource(ctx, instance, serverName, uri)
+	})
+}
+
+func (manager *Manager) readResource(ctx context.Context, instance *serverInstance, serverName, uri string) (*model.ResponseInput, error) {
 	params := map[string]any{"uri": uri}
 	response, err := instance.client.Request(ctx, "resources/read", params, uri, nil)
 	if err != nil {
@@ -180,26 +178,62 @@ func (manager *Manager) ReadResource(ctx context.Context, serverName, uri string
 	return model.NewResponseInputItems(item), nil
 }
 
-func (manager *Manager) connectedInstance(serverName string) (*serverInstance, error) {
+func withHostOperation[T any](manager *Manager, ctx context.Context, serverName string, run func(context.Context, *serverInstance) (T, error)) (T, error) {
+	var zero T
 	if manager == nil {
-		return nil, errors.New("MCP manager is unavailable")
+		return zero, errors.New("MCP manager is unavailable")
+	}
+	if ctx == nil {
+		return zero, errors.New("MCP request context is required")
 	}
 	manager.mu.Lock()
-	defer manager.mu.Unlock()
 	instance := manager.instances[serverName]
 	if manager.closed {
-		return nil, errors.New("MCP manager is closed")
+		manager.mu.Unlock()
+		return zero, errors.New("MCP manager is closed")
 	}
 	if !manager.enabled[serverName] || instance == nil {
 		if _, exists := manager.servers[serverName]; !exists {
-			return nil, fmt.Errorf("unknown MCP server %q", serverName)
+			manager.mu.Unlock()
+			return zero, fmt.Errorf("unknown MCP server %q", serverName)
 		}
-		return nil, fmt.Errorf("MCP server %q is not enabled and connected", serverName)
+		manager.mu.Unlock()
+		return zero, fmt.Errorf("MCP server %q is not enabled and connected", serverName)
 	}
 	if stdio, ok := instance.client.(*stdioTransport); ok && !stdio.Alive() {
-		return nil, fmt.Errorf("MCP server %q is not connected", serverName)
+		manager.mu.Unlock()
+		return zero, fmt.Errorf("MCP server %q is not connected", serverName)
 	}
-	return instance, nil
+	if err := ctx.Err(); err != nil {
+		manager.mu.Unlock()
+		return zero, err
+	}
+	if instance.hostOperations == nil {
+		instance.hostOperations = make(map[uint64]context.CancelCauseFunc)
+	}
+	instance.nextHostOperation++
+	id := instance.nextHostOperation
+	operationCtx, cancel := context.WithCancelCause(ctx)
+	instance.hostOperations[id] = cancel
+	instance.hostOperationsWG.Add(1)
+	manager.mu.Unlock()
+
+	result, runErr := run(operationCtx, instance)
+	manager.mu.Lock()
+	if _, active := instance.hostOperations[id]; active {
+		cause := context.Cause(operationCtx)
+		switch {
+		case errors.Is(cause, ErrServerLifecycleChanged):
+			runErr = ErrServerLifecycleChanged
+		case runErr == nil && cause != nil:
+			runErr = cause
+		}
+		delete(instance.hostOperations, id)
+		instance.hostOperationsWG.Done()
+	}
+	manager.mu.Unlock()
+	cancel(context.Canceled)
+	return result, runErr
 }
 
 func listMCPItems[T any](ctx context.Context, serverName string, instance *serverInstance, method, field string) ([]T, error) {

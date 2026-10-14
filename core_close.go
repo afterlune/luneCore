@@ -80,6 +80,12 @@ func (c *Core) Close() error {
 		default:
 		}
 	}
+	c.mu.Unlock()
+	var closeMCP error
+	if c.mcpManager != nil {
+		closeMCP = c.mcpManager.Close()
+	}
+	c.mu.Lock()
 	for id, pending := range c.interactions {
 		delete(c.interactions, id)
 		select {
@@ -88,9 +94,5 @@ func (c *Core) Close() error {
 		}
 	}
 	c.mu.Unlock()
-	var closeMCP error
-	if c.mcpManager != nil {
-		closeMCP = c.mcpManager.Close()
-	}
 	return errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.stateDirLock.Close())
 }
