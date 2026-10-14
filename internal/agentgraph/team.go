@@ -11,6 +11,16 @@ import (
 func (a *Agent) mergeTeam(ctx context.Context, _ graph.CallInfo, parent State, branches []graph.BranchResult[State]) (State, error) {
 	results := make([]TeamMemberResult, len(branches))
 	for index, branch := range branches {
+		if a.options.StopCommands != nil {
+			state := branch.State
+			if state.AgentID == "" && index < len(parent.TeamAssignments) {
+				state.ExecutionID = parent.ExecutionID
+				state.AgentID = parent.AgentID + "/" + parent.TeamAssignments[index].ID
+			}
+			if err := a.options.StopCommands(state); err != nil {
+				return State{}, err
+			}
+		}
 		assignment := TeamAssignment{}
 		if index < len(parent.TeamAssignments) {
 			assignment = parent.TeamAssignments[index]

@@ -115,6 +115,9 @@ func InvocationID(ctx context.Context) string {
 }
 
 type CommandRequest struct {
+	// OnOutput receives transient stdout/stderr bytes during Execute only.
+	// Implementations must stop on errors and finish callbacks before returning.
+	OnOutput     func([]byte) error `json:"-"`
 	Command      string
 	Workspace    string
 	InvocationID string
@@ -197,7 +200,8 @@ func NoInteractiveDecisions(ctx context.Context) bool {
 }
 
 type CommandResult struct {
-	Output string
+	ExitCode *int
+	Output   string
 }
 
 // CommandExecutor executes a shell command. The built-in executor enforces

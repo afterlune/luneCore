@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
@@ -293,6 +294,12 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 			paused = &queued[i]
 			break
 		}
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
+	cleanupErr := c.commands.StopSession(cleanupCtx, sessionID)
+	cleanupCancel()
+	if cleanupErr != nil {
+		return false, cleanupErr
 	}
 	parentID := c.runtime.CheckpointID(sessionID)
 	delete(c.liveExecutions, parentID)

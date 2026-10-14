@@ -185,6 +185,12 @@ func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool, 
 			return TurnSubmission{}, nil, err
 		}
 	}
+	if agentgraph.IsCommandCompletionWait(pending) {
+		if err := c.admitCommandCompletionRecovery(ctx, sessionID); err != nil {
+			c.mu.Unlock()
+			return TurnSubmission{}, nil, err
+		}
+	}
 	if pending.AcceptancePaused {
 		accepted, decisionErr := c.hasAcceptanceResolutionInput(ctx, sessionID)
 		if decisionErr != nil {

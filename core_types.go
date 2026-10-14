@@ -64,6 +64,8 @@ const (
 	EventTaskDiscarded            EventKind = "task_discarded"
 	EventTaskQueued               EventKind = "task_queued"
 	EventRuntimeStreamFailed      EventKind = "runtime_stream_failed"
+	EventCommandStarted           EventKind = "command_started"
+	EventCommandFinished          EventKind = "command_finished"
 	EventToolStarted              EventKind = "tool_started"
 	EventToolFinished             EventKind = "tool_finished"
 	EventUsage                    EventKind = "usage"
@@ -95,8 +97,11 @@ const (
 // Event is a structured runtime notification. Arguments and response payloads
 // are transient; clients should not persist or log them without sanitizing.
 type Event struct {
-	Kind         EventKind
-	ModelFailure *publicmodel.Failure
+	Kind            EventKind
+	CommandID       string
+	CommandStatus   publictool.CommandStatus
+	CommandExitCode *int
+	ModelFailure    *publicmodel.Failure
 	// Cursor is non-zero for events written to the durable runtime event log.
 	// Model stream deltas are live-only and have a zero cursor.
 	Cursor int64

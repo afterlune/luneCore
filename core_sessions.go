@@ -271,6 +271,12 @@ func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 	if c.queueDraining[sessionID] {
 		return errors.New("cannot delete a session while queued work is starting")
 	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
+	cleanupErr := c.commands.StopSession(cleanupCtx, sessionID)
+	cleanupCancel()
+	if cleanupErr != nil {
+		return cleanupErr
+	}
 	// Save-based usage/settings updates must not recreate a session after its
 	// row has been deleted. The session row is removed last for retry safety.
 	c.usageMu.Lock()
@@ -286,6 +292,9 @@ func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 	delete(c.liveExecutions, parentID)
 	if err := c.checkpoints.Delete(ctx, parentID); err != nil && !errors.Is(err, checkpoint.ErrNotFound) {
 		return fmt.Errorf("delete task checkpoint for session %q: %w", sessionID, err)
+	}
+	if err := c.sessions.DeleteCommands(ctx, sessionID); err != nil {
+		return err
 	}
 	if err := c.sessions.DeleteToolInvocationsForSession(ctx, sessionID); err != nil {
 		return err

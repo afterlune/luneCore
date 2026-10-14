@@ -386,6 +386,12 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 	if !exists {
 		return nil, errors.New("unknown tool: " + name)
 	}
+	if control, ok := registeredTool.(CommandControlTool); ok {
+		if err := control.authorizeCommand(ctx, arguments); err != nil {
+			return nil, err
+		}
+		return registeredTool, nil
+	}
 	if err := permissions.authorize(ctx, PermissionRequest{
 		Tool: name, AgentID: model.AgentIDFromContext(ctx), Arguments: append(json.RawMessage(nil), arguments...), Metadata: metadata,
 	}); err != nil {

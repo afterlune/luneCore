@@ -160,6 +160,9 @@ func (c *Core) endTask(sessionID, taskID string, cancel context.CancelFunc) {
 	c.mu.Lock()
 	state, ok := c.activeTasks[sessionID]
 	if ok && state.TaskID == taskID {
+		// A repeated interrupt can race the paused queue commit. It belongs to
+		// this attempt, not a future recovery under the same ExecutionID.
+		delete(c.interruptRequests, state.ExecutionID)
 		delete(c.taskCancels, sessionID)
 		if state.Status == TaskRunning {
 			state.Status = TaskIdle

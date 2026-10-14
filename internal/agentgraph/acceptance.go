@@ -315,7 +315,7 @@ func (a *Agent) failOrPauseAcceptance(ctx context.Context, state State, err erro
 		}
 		return a.pauseAcceptanceUnknown(state, err), nil
 	}
-	return failTask(state, err)
+	return a.failTask(state, err)
 }
 
 func (a *Agent) pauseAcceptanceUnknown(state State, err error) graph.Transition[State] {

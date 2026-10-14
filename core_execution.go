@@ -204,6 +204,11 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		return nil, err
 	}
 	defer c.endTask(sessionID, taskID, cancelTask)
+	if err := c.commands.OpenScope(taskOptions.ExecutionID, taskCtx); err != nil {
+		c.finishTaskState(sessionID, TaskFailed, err)
+		return nil, err
+	}
+	defer c.stopCommands(taskOptions.ExecutionID, "")
 	ctx = taskCtx
 	taskState, _ := c.StateForSession(sessionID)
 	ctx = publictool.WithCallIdentity(ctx, publictool.CallIdentity{
@@ -259,6 +264,10 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		}
 	} else {
 		response, err = taskRuntime.Respond(ctx, input)
+	}
+	cleanupErr := c.stopCommands(taskOptions.ExecutionID, "")
+	if cleanupErr != nil {
+		err = errors.Join(err, ErrTaskPaused, cleanupErr)
 	}
 	pausedByGraph := errors.Is(err, ErrTaskPaused)
 	if pausedByGraph {
@@ -342,7 +351,7 @@ func (c *Core) graphResumeInputs(ctx context.Context, sessionID, runID string) (
 	var inputs []graph.ResumeInput
 	for _, input := range stored {
 		for _, invocation := range cp.Invocations {
-			if invocation.Status == graph.InvocationWaiting && (invocation.Continuation == agentgraph.UserQuestionContinuation || invocation.Continuation == agentgraph.AcceptanceContinuation || invocation.Continuation == agentgraph.ModelRecoveryContinuation) && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
+			if invocation.Status == graph.InvocationWaiting && (invocation.Continuation == agentgraph.UserQuestionContinuation || invocation.Continuation == agentgraph.AcceptanceContinuation || invocation.Continuation == agentgraph.ModelRecoveryContinuation || invocation.Continuation == agentgraph.ExecutionBlockerContinuation) && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
 				inputs = append(inputs, graph.ResumeInput{InvocationID: input.InvocationID, CallID: input.CallID, Payload: append([]byte(nil), input.Payload...)})
 				break
 			}
@@ -363,7 +372,7 @@ func (c *Core) reconcileGraphResumeInputs(ctx context.Context, sessionID, runID 
 	for _, input := range stored {
 		stillPending := false
 		for _, invocation := range cp.Invocations {
-			if invocation.Status == graph.InvocationWaiting && (invocation.Continuation == agentgraph.UserQuestionContinuation || invocation.Continuation == agentgraph.AcceptanceContinuation || invocation.Continuation == agentgraph.ModelRecoveryContinuation) && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
+			if invocation.Status == graph.InvocationWaiting && (invocation.Continuation == agentgraph.UserQuestionContinuation || invocation.Continuation == agentgraph.AcceptanceContinuation || invocation.Continuation == agentgraph.ModelRecoveryContinuation || invocation.Continuation == agentgraph.ExecutionBlockerContinuation) && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
 				stillPending = true
 				break
 			}

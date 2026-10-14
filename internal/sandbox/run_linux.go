@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"syscall"
+	"time"
 	"unsafe"
 
 	publictool "github.com/afterlune/luneCore/tool"
@@ -21,7 +24,9 @@ const (
 	landlockRulePathBeneath      = 1
 )
 
-func runPlatform(_ context.Context, request publictool.CommandRequest, _ io.Writer) error {
+func runPlatform(ctx context.Context, request publictool.CommandRequest, output io.Writer) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
 	workspace, err := filepath.EvalSymlinks(request.Workspace)
 	if err != nil {
 		return fmt.Errorf("resolve sandbox workspace: %w", err)
@@ -49,8 +54,33 @@ func runPlatform(_ context.Context, request publictool.CommandRequest, _ io.Writ
 	if err := installSeccomp(request.Sandbox.Network); err != nil {
 		return fmt.Errorf("install seccomp policy: %w", err)
 	}
-	if err := unix.Exec("/bin/sh", []string{"/bin/sh", "-c", request.Command}, sandboxEnvironment(tempDir, homeDir)); err != nil {
+	command := exec.CommandContext(ctx, "/bin/sh", "-c", request.Command)
+	command.Env = sandboxEnvironment(tempDir, homeDir)
+	command.Stdout, command.Stderr = output, output
+	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true, Pdeathsig: syscall.SIGKILL}
+	command.Cancel = func() error {
+		if command.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := unix.Kill(-command.Process.Pid, unix.SIGKILL)
+		if errors.Is(err, unix.ESRCH) {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	command.WaitDelay = time.Second
+	if err := command.Start(); err != nil {
 		return fmt.Errorf("start sandbox command: %w", err)
+	}
+	err = command.Wait()
+	// A non-interactive shell must not leave descendants behind after it exits.
+	_ = unix.Kill(-command.Process.Pid, unix.SIGKILL)
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) {
+			return &ExitError{Code: exit.ExitCode()}
+		}
+		return err
 	}
 	return nil
 }

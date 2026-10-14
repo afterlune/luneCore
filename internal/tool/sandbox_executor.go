@@ -10,8 +10,10 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/afterlune/luneCore/internal/sandbox"
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
@@ -40,17 +42,20 @@ func (e SandboxedCommandExecutor) Execute(ctx context.Context, request publictoo
 	}
 	defer os.RemoveAll(tempDir)
 	request.Sandbox.TempDir = tempDir
-	encoded, err := json.Marshal(request)
+	encoded, err := json.Marshal(sandbox.HelperRequest{ProtocolVersion: sandbox.HelperProtocolVersion, CommandRequest: request})
 	if err != nil {
 		return publictool.CommandResult{}, fmt.Errorf("encode sandbox request: %w", err)
 	}
-	command := exec.CommandContext(ctx, helper, "run")
+	executionCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	command := exec.CommandContext(executionCtx, helper, "run")
 	configureCommandProcess(command)
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		return publictool.CommandResult{}, fmt.Errorf("open sandbox helper input: %w", err)
 	}
-	if runtime.GOOS == "windows" {
+	defer stdin.Close()
+	if runtime.GOOS == "windows" || runtime.GOOS == "linux" {
 		// EOF tells the helper to stop its AppContainer child and restore ACLs
 		// before it exits. Killing the helper tree directly could skip cleanup.
 		command.Cancel = func() error {
@@ -64,7 +69,8 @@ func (e SandboxedCommandExecutor) Execute(ctx context.Context, request publictoo
 	}
 	command.Env = sandboxHelperEnvironment()
 	output := &limitedBuffer{limit: maxCommandOutput}
-	command.Stdout, command.Stderr = output, output
+	writer := &commandOutputWriter{buffer: output, callback: request.OnOutput, cancel: cancel}
+	command.Stdout, command.Stderr = writer, writer
 	if err := command.Start(); err != nil {
 		_ = stdin.Close()
 		return publictool.CommandResult{}, fmt.Errorf("start sandbox helper: %w", err)
@@ -80,16 +86,19 @@ func (e SandboxedCommandExecutor) Execute(ctx context.Context, request publictoo
 		if truncated {
 			text += "\n[command output truncated at 1 MiB]"
 		}
+		if callbackErr := writer.Error(); callbackErr != nil {
+			return publictool.CommandResult{Output: text, ExitCode: commandExitCode(command)}, fmt.Errorf("capture command output: %w", callbackErr)
+		}
 		if ctx.Err() != nil {
 			return publictool.CommandResult{Output: text}, fmt.Errorf("sandbox command stopped: %w", ctx.Err())
 		}
-		return publictool.CommandResult{Output: text}, fmt.Errorf("sandbox command failed: %w", err)
+		return publictool.CommandResult{Output: text, ExitCode: commandExitCode(command)}, fmt.Errorf("sandbox command failed: %w", err)
 	}
 	text, truncated := output.String()
 	if truncated {
 		text += "\n[command output truncated at 1 MiB]"
 	}
-	return publictool.CommandResult{Output: text}, nil
+	return publictool.CommandResult{Output: text, ExitCode: commandExitCode(command)}, nil
 }
 
 func (e SandboxedCommandExecutor) helperPath() (string, error) {
@@ -140,3 +149,34 @@ func sandboxHelperEnvironment() []string {
 	}
 	return environment
 }
+
+func commandExitCode(command *exec.Cmd) *int {
+	if command.ProcessState == nil {
+		return nil
+	}
+	code := command.ProcessState.ExitCode()
+	return &code
+}
+
+type commandOutputWriter struct {
+	mu       sync.Mutex
+	buffer   *limitedBuffer
+	callback func([]byte) error
+	err      error
+	cancel   context.CancelFunc
+}
+
+func (w *commandOutputWriter) Write(data []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.callback != nil {
+		if err := w.callback(data); err != nil {
+			w.err = err
+			w.cancel()
+			return 0, err
+		}
+	}
+	return w.buffer.Write(data)
+}
+
+func (w *commandOutputWriter) Error() error { w.mu.Lock(); defer w.mu.Unlock(); return w.err }

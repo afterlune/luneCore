@@ -44,7 +44,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	if loadProjectInstructions {
 		instructions, err := a.options.ProjectInstructionsForTask(ctx, state)
 		if err != nil {
-			return failTask(state, fmt.Errorf("load workspace project instructions: %w", err))
+			return a.failTask(state, fmt.Errorf("load workspace project instructions: %w", err))
 		}
 		state.ProjectInstructions, _ = mergeProjectInstructions(state.ProjectInstructions, instructions)
 		state.ProjectInstructionsReady = true
@@ -68,26 +68,26 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 			}
 		}
 		if a.options.Team == nil {
-			return failTask(state, errors.New("team executor is unavailable"))
+			return a.failTask(state, errors.New("team executor is unavailable"))
 		}
 		var err error
 		requester, err = a.options.Team.Requester(ctx, state)
 		if err != nil {
-			return failTask(state, err)
+			return a.failTask(state, err)
 		}
 	} else {
 		if state.ModelProfile != "" && state.ModelProfile != a.options.Profile {
-			return failTask(state, fmt.Errorf("model profile changed from %q to %q; the paused task remains pinned to its original profile", state.ModelProfile, a.options.Profile))
+			return a.failTask(state, fmt.Errorf("model profile changed from %q to %q; the paused task remains pinned to its original profile", state.ModelProfile, a.options.Profile))
 		}
 		if state.Provider != "" && state.Provider != a.options.Provider || state.Model != "" && state.Model != a.options.Model {
-			return failTask(state, errors.New("provider/model changed; the paused task remains pinned to its original profile"))
+			return a.failTask(state, errors.New("provider/model changed; the paused task remains pinned to its original profile"))
 		}
 		if state.Protocol == "" {
 			state.Protocol = a.options.Protocol
 			state.ServerCompaction = a.options.ServerCompaction
 			state.SupportsInputAudio = a.options.SupportsInputAudio
 		} else if state.Protocol != a.options.Protocol || state.ServerCompaction != a.options.ServerCompaction || state.SupportsInputAudio != a.options.SupportsInputAudio {
-			return failTask(state, errors.New("provider protocol or compaction capability changed; the paused task remains pinned to its original configuration"))
+			return a.failTask(state, errors.New("provider protocol or compaction capability changed; the paused task remains pinned to its original configuration"))
 		}
 	}
 	if state.Transcript.Items == nil && state.Transcript.Text == nil {
@@ -114,7 +114,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	default:
 		visibleTools, visibleNames, err = a.visibleTools(state, state.SelectedCategory, permissionMode)
 		if err != nil {
-			return failTask(state, err)
+			return a.failTask(state, err)
 		}
 	}
 	request := model.ModelRequest{
@@ -169,6 +169,15 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		auto := "auto"
 		request.ToolChoice = &model.ToolChoice{Mode: &auto}
 	}
+	if a.options.CommandSummary != nil && state.AcceptancePhase != "criteria" && state.AcceptancePhase != "acceptance" {
+		summary, err := a.options.CommandSummary(ctx, state)
+		if err != nil {
+			return a.failTask(state, err)
+		}
+		if summary != "" {
+			request.Instructions += "\n\n" + summary
+		}
+	}
 	compactionThreshold := int64(0)
 	serverCompactionRequested := false
 	if state.AutoCompact && state.ContextWindow <= 0 && !state.CompactionWarningEmitted {
@@ -211,6 +220,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 			}
 		}
 	}
+
 	a.options.Logger.InfoContext(ctx, "agent model request started",
 		"agent_id", state.AgentID,
 		"provider", state.Provider,
@@ -283,12 +293,12 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 
 	state.History, err = appendResponseHistory(state.History, response.Output)
 	if err != nil {
-		return failTask(state, err)
+		return a.failTask(state, err)
 	}
 	state.History = pruneHistoryBeforeLatestCompaction(state.History)
 	state.Transcript, err = appendTranscriptOutput(state.Transcript, response.Output)
 	if err != nil {
-		return failTask(state, err)
+		return a.failTask(state, err)
 	}
 	calls := responseFunctionCalls(response.Output)
 	if len(calls) == 0 {
@@ -298,8 +308,28 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		case "acceptance":
 			return a.retryAcceptanceFormat(state, response, acceptanceNode, "Submit a structured acceptance report with submit_acceptance, or request more evidence with request_acceptance_evidence.")
 		default:
+			if a.options.ActiveCommands != nil && a.options.ActiveCommands(state) {
+				return a.deferCommandCompletion(ctx, state)
+			}
+			state.CommandFinalizeAttempts = 0
 			state.FinalResponse = response
 			if a.options.AcceptanceEnabled && !state.TeamBranch {
+				if a.options.CommandEvidence != nil {
+					evidence, err := a.options.CommandEvidence(ctx, state)
+					if err != nil {
+						return a.failTask(state, err)
+					}
+					known := map[string]bool{}
+					for _, saved := range state.AcceptanceEvidence {
+						known[saved.Reference] = true
+					}
+					for _, saved := range evidence {
+						if !known[saved.Reference] {
+							state.AcceptanceEvidence = append(state.AcceptanceEvidence, saved)
+							known[saved.Reference] = true
+						}
+					}
+				}
 				state.AcceptancePhase = "acceptance"
 				state.AcceptanceCandidate = responseText(response.Output)
 				state.AcceptanceCandidateCount++
@@ -308,7 +338,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 				a.observeAcceptance(state, "started", "", "")
 				return graph.To(state, acceptanceNode), nil
 			}
-			return finishAgent(state), nil
+			return a.finishAgent(state)
 		}
 	}
 	if state.MaxToolRounds > 0 && state.ToolRounds >= state.MaxToolRounds {
@@ -322,8 +352,9 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		}
 		state.FinalResponse = response
 		state.TaskError = fmt.Sprintf("%v: %d", model.ErrToolCallLimit, state.MaxToolRounds)
-		return finishAgent(state), nil
+		return a.finishAgent(state)
 	}
+	state.CommandFinalizeAttempts = 0
 	state.PendingCalls = calls
 	state.PendingIndex = 0
 	state.VisibleTools = visibleNames
@@ -352,7 +383,12 @@ func taskInstructions(goal, permissionMode string) string {
 	return strings.Join(instructions, "\n\n")
 }
 
-func failTask(state State, err error) (graph.Transition[State], error) {
+func (a *Agent) failTask(state State, err error) (graph.Transition[State], error) {
+	if state.TeamBranch && a.options.StopCommands != nil {
+		if cleanupErr := a.options.StopCommands(state); cleanupErr != nil {
+			return graph.Transition[State]{}, errors.Join(err, cleanupErr)
+		}
+	}
 	state.TaskError = err.Error()
 	if state.TeamBranch {
 		state.TeamError = err.Error()
@@ -374,13 +410,18 @@ func (a *Agent) nextModelTransition(state State) graph.Transition[State] {
 	return graph.To(state, modelNode)
 }
 
-func finishAgent(state State) graph.Transition[State] {
+func (a *Agent) finishAgent(state State) (graph.Transition[State], error) {
+	if state.TeamBranch && a.options.StopCommands != nil {
+		if err := a.options.StopCommands(state); err != nil {
+			return graph.Transition[State]{}, err
+		}
+	}
 	if !state.TeamBranch {
-		return graph.EndExecution(state)
+		return graph.EndExecution(state), nil
 	}
 	state.TeamText = responseText(state.FinalResponse.Output)
 	if state.TaskError != "" {
 		state.TeamError = state.TaskError
 	}
-	return graph.CompleteBranch(state)
+	return graph.CompleteBranch(state), nil
 }

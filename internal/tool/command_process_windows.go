@@ -9,10 +9,12 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"time"
 )
 
 func configureCommandProcess(command *exec.Cmd) {
+	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
 	command.WaitDelay = time.Second
 	command.Cancel = func() error {
 		if command.Process == nil {

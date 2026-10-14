@@ -22,6 +22,9 @@ func (s *Store) ForkPausedTask(ctx context.Context, sourceSessionID, sourceRunID
 	}
 	defer tx.Rollback()
 	now := time.Now().UnixNano()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO commands(session_id,id,execution_id,data) SELECT ?,id,?,CAST(json_set(CAST(data AS TEXT),'$.info.session_id',?,'$.info.execution_id',?,'$.info.task_id','') AS BLOB) FROM commands WHERE session_id=? AND execution_id=?`, forkSessionID, forkExecutionID, forkSessionID, forkExecutionID, sourceSessionID, sourceExecutionID); err != nil {
+		return fmt.Errorf("copy command records: %w", err)
+	}
 
 	if _, err := tx.ExecContext(ctx, `INSERT INTO tool_invocations(
 		run_id, invocation_id, session_id, execution_id, agent_id, call_id, name, arguments, status, output, updated_at

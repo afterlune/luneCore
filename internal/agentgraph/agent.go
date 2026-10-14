@@ -34,10 +34,11 @@ const (
 const UserQuestionContinuation = "user_question"
 const ModelRecoveryContinuation = "model_recovery"
 const AcceptanceContinuation = "acceptance_resolution"
+const CommandCompletionBlocker = "running_commands"
 const ExecutionBlockerContinuation = "execution_blocker"
 
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
-const CurrentTaskSettingsVersion = 8
+const CurrentTaskSettingsVersion = 9
 
 // Requester sends one Responses API request without managing history or tools.
 type Requester interface {
@@ -70,6 +71,10 @@ type TeamExecutor interface {
 }
 
 type AgentOptions struct {
+	ActiveCommands             func(State) bool
+	StopCommands               func(State) error
+	CommandSummary             func(context.Context, State) (string, error)
+	CommandEvidence            func(context.Context, State) ([]acceptance.Evidence, error)
 	ID                         string
 	Name                       string
 	Logger                     *slog.Logger
@@ -119,8 +124,9 @@ type ContextCompactionEvent struct {
 // custom JSON decoder so typed and unknown multimodal input items survive clone
 // and checkpoint round trips.
 type State struct {
-	ModelFailure *publicmodel.Failure `json:"model_failure,omitempty"`
-	RunID        string               `json:"run_id,omitempty"`
+	CommandFinalizeAttempts int                  `json:"command_finalize_attempts,omitempty"`
+	ModelFailure            *publicmodel.Failure `json:"model_failure,omitempty"`
+	RunID                   string               `json:"run_id,omitempty"`
 	// ExecutionID is stable across resume attempts and namespaces tool calls.
 	ExecutionID               string                       `json:"execution_id,omitempty"`
 	AgentID                   string                       `json:"agent_id,omitempty"`
@@ -344,6 +350,11 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 		return nil, err
 	}
 	if err := graph.RegisterJSONContinuation[State, string](workflow, ExecutionBlockerContinuation, func(_ context.Context, _ graph.CallInfo, state State, _ string) (State, error) {
+		if IsCommandCompletionWait(state) {
+			state.BlockerID, state.BlockerTool, state.BlockerReason = "", "", ""
+			state.CommandFinalizeAttempts = 0
+			return state, nil
+		}
 		return state, errors.New("an execution blocker requires an updated plan")
 	}); err != nil {
 		return nil, fmt.Errorf("register execution blocker continuation: %w", err)
@@ -370,7 +381,7 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	}
 	for _, edge := range [][2]string{
 		{toolNode, teamModelNode}, {teamModelNode, teamToolNode}, {teamToolNode, teamToolNode}, {teamToolNode, teamModelNode},
-		{teamJoinNode, toolNode}, {teamBranchJoinNode, teamToolNode},
+		{teamModelNode, teamModelNode}, {teamJoinNode, toolNode}, {teamBranchJoinNode, teamToolNode},
 	} {
 		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
 			return nil, fmt.Errorf("add %s-to-%s edge: %w", edge[0], edge[1], err)

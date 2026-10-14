@@ -12,17 +12,19 @@ import (
 	"sync"
 	"time"
 
+	commandruntime "github.com/afterlune/luneCore/internal/command"
 	"github.com/afterlune/luneCore/internal/model"
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
 const (
-	commandSchema    = `{"type":"object","properties":{"command":{"type":"string","description":"Shell command to run in the workspace"}},"required":["command"],"additionalProperties":false}`
+	commandSchema    = `{"type":"object","properties":{"command":{"type":"string","description":"Non-interactive shell command to run in the workspace"},"yield_time_ms":{"type":"integer","minimum":0,"maximum":5000,"description":"Initial wait; defaults to 1000 ms. Query command_status if still running."},"timeout_ms":{"type":"integer","minimum":1,"description":"Optional shorter timeout, bounded by the host command limit."}},"required":["command"],"additionalProperties":false}`
 	maxCommandOutput = 1 << 20
 )
 
 // CommandTool delegates local execution to a kernel-sandboxed executor.
 type CommandTool struct {
+	Manager           *commandruntime.Manager
 	Workspace         string
 	Timeout           time.Duration
 	Executor          publictool.CommandExecutor
@@ -48,12 +50,14 @@ var highRiskCommandPatterns = []*regexp.Regexp{
 }
 
 func (CommandTool) Definition() model.FunctionTool {
-	return functionDefinition("command", "Run a shell command in the workspace and return its stdout and stderr.", commandSchema)
+	return functionDefinition("command", "Run a non-interactive shell command. Return its state and bounded output; if running, use command_status or command_stop. A start receipt is not evidence of success.", commandSchema)
 }
 
 func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	var args struct {
 		Command string `json:"command"`
+		Yield   *int64 `json:"yield_time_ms"`
+		Timeout *int64 `json:"timeout_ms"`
 	}
 	if err := decodeArguments(raw, &args); err != nil {
 		return Result{Err: fmt.Errorf("invalid command arguments: %w", err)}
@@ -61,20 +65,23 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if strings.TrimSpace(args.Command) == "" {
 		return Result{Err: errors.New("command must not be empty")}
 	}
+	yield := time.Second
+	if args.Yield != nil {
+		if *args.Yield < 0 || *args.Yield > 5000 {
+			return Result{Err: errors.New("yield_time_ms must be between 0 and 5000")}
+		}
+		yield = time.Duration(*args.Yield) * time.Millisecond
+	}
+	timeout := t.Timeout
+	if args.Timeout != nil {
+		if *args.Timeout <= 0 || *args.Timeout > int64((time.Duration(1<<63-1))/time.Millisecond) {
+			return Result{Err: errors.New("invalid timeout_ms")}
+		}
+		timeout = time.Duration(*args.Timeout) * time.Millisecond
+	}
 	workspace, err := canonicalWorkspace(t.Workspace)
 	if err != nil {
 		return Result{Err: err}
-	}
-
-	timeout := t.Timeout
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	commandCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	executor := t.Executor
-	if executor == nil {
-		executor = SandboxedCommandExecutor{HelperPath: t.SandboxHelperPath}
 	}
 	authorization := publictool.PlanAuthorizationFromContext(ctx)
 	if reason := highRiskCommandReason(args.Command); reason != "" && !commandApproved(args.Command, authorization.ApprovedHighRiskCommands) {
@@ -84,19 +91,29 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if mode == "" {
 		mode = PermissionModeWorkspace
 	}
-	sandbox := publictool.SandboxPolicy{
-		PermissionMode: string(mode), Workspace: workspace,
-		Grants:  append([]publictool.PathGrant(nil), authorization.Paths...),
-		Network: mode == PermissionModeFullAccess || authorization.AllowNetwork,
-	}
+	sandbox := publictool.SandboxPolicy{PermissionMode: string(mode), Workspace: workspace, Grants: append([]publictool.PathGrant(nil), authorization.Paths...), Network: mode == PermissionModeFullAccess || authorization.AllowNetwork}
 	if mode == PermissionModeFullAccess {
 		sandbox.HomeDir, _ = os.UserHomeDir()
 	}
-	invocationID := publictool.InvocationID(ctx)
-	requestContext := publictool.WithInvocationID(commandCtx, invocationID)
-	result, err := executor.Execute(requestContext, publictool.CommandRequest{
-		Command: args.Command, Workspace: workspace, InvocationID: invocationID, Sandbox: sandbox,
-	})
+	request := publictool.CommandRequest{Command: args.Command, Workspace: workspace, InvocationID: publictool.InvocationID(ctx), Sandbox: sandbox}
+	if t.Manager != nil {
+		output, err := t.Manager.Start(ctx, request, timeout, yield)
+		if err != nil {
+			return Result{Err: err}
+		}
+		data, err := json.Marshal(output)
+		return Result{Output: string(data), Err: err}
+	}
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	commandCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	executor := t.Executor
+	if executor == nil {
+		executor = SandboxedCommandExecutor{HelperPath: t.SandboxHelperPath}
+	}
+	result, err := executor.Execute(commandCtx, request)
 	if commandCtx.Err() != nil {
 		return Result{Output: result.Output, Err: fmt.Errorf("command stopped: %w", commandCtx.Err())}
 	}

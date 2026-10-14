@@ -5,13 +5,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"runtime"
 
 	"github.com/afterlune/luneCore/internal/sandbox"
-	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func main() {
@@ -19,7 +19,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: lune-sandbox run")
 		os.Exit(2)
 	}
-	var request publictool.CommandRequest
+	var wire sandbox.HelperRequest
 	input := bufio.NewReader(os.Stdin)
 	line, err := input.ReadBytes('\n')
 	if err != nil {
@@ -28,13 +28,18 @@ func main() {
 	}
 	decoder := json.NewDecoder(bytes.NewReader(line))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&request); err != nil {
+	if err := decoder.Decode(&wire); err != nil {
 		fmt.Fprintln(os.Stderr, "decode sandbox request:", err)
 		os.Exit(2)
 	}
+	if wire.ProtocolVersion != sandbox.HelperProtocolVersion {
+		fmt.Fprintln(os.Stderr, "unsupported sandbox helper protocol; rebuild lune-sandbox with Core")
+		os.Exit(2)
+	}
+	request := wire.CommandRequest
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	if runtime.GOOS == "windows" {
+	if runtime.GOOS == "windows" || runtime.GOOS == "linux" {
 		go func() {
 			_, _ = io.Copy(io.Discard, input)
 			cancel()
@@ -42,6 +47,10 @@ func main() {
 	}
 	if err := sandbox.RunContext(ctx, request, os.Stdout); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		var exit *sandbox.ExitError
+		if errors.As(err, &exit) && exit.Code > 0 {
+			os.Exit(exit.Code)
+		}
 		os.Exit(1)
 	}
 }

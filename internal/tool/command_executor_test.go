@@ -4,12 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/afterlune/luneCore/internal/sandbox"
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
@@ -17,6 +22,113 @@ type commandExecutorFunc func(context.Context, publictool.CommandRequest) (publi
 
 func (f commandExecutorFunc) Execute(ctx context.Context, request publictool.CommandRequest) (publictool.CommandResult, error) {
 	return f(ctx, request)
+}
+
+func TestSandboxCommandStreamsOutputAndPreservesExitCode(t *testing.T) {
+	helper := sandboxHelperForTest(t)
+	command := "printf 'phase-one\\n'; sleep 0.1; printf 'phase-two\\n'; exit 7"
+	if runtime.GOOS == "windows" {
+		command = "Write-Output phase-one; Start-Sleep -Milliseconds 100; Write-Output phase-two; exit 7"
+	}
+	var mu sync.Mutex
+	var chunks []string
+	request := publictool.CommandRequest{Command: command, Workspace: t.TempDir(), OnOutput: func(data []byte) error { mu.Lock(); chunks = append(chunks, string(data)); mu.Unlock(); return nil }}
+	request.Sandbox = publictool.SandboxPolicy{PermissionMode: "workspace", Workspace: request.Workspace}
+	result, err := (SandboxedCommandExecutor{HelperPath: helper}).Execute(context.Background(), request)
+	mu.Lock()
+	output := strings.Join(chunks, "")
+	mu.Unlock()
+	if err == nil || result.ExitCode == nil || *result.ExitCode != 7 || !strings.Contains(output, "phase-one") || !strings.Contains(output, "phase-two") {
+		t.Fatalf("result=%+v output=%q error=%v", result, output, err)
+	}
+}
+
+func TestSandboxHelperEOFStopsCommandChildren(t *testing.T) {
+	workspace := t.TempDir()
+	helper := sandboxHelperForTest(t)
+	command := "(printf started > started; sleep 0.4; printf finished > finished) & wait"
+	if runtime.GOOS == "windows" {
+		started := strings.ReplaceAll(filepath.Join(workspace, "started"), "'", "''")
+		finished := strings.ReplaceAll(filepath.Join(workspace, "finished"), "'", "''")
+		command = fmt.Sprintf("$job = Start-Job -ScriptBlock { Set-Content -LiteralPath '%s' started; Start-Sleep -Milliseconds 400; Set-Content -LiteralPath '%s' finished }; Wait-Job $job", started, finished)
+	}
+	request := publictool.CommandRequest{Command: command, Workspace: workspace, Sandbox: publictool.SandboxPolicy{PermissionMode: "workspace", Workspace: workspace, TempDir: t.TempDir()}}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	process := exec.CommandContext(ctx, helper, "run")
+	captured := &limitedBuffer{limit: maxCommandOutput}
+	process.Stdout, process.Stderr = captured, captured
+	stdin, err := process.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := process.Start(); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(sandbox.HelperRequest{ProtocolVersion: sandbox.HelperProtocolVersion, CommandRequest: request})
+	if _, err := stdin.Write(append(data, '\n')); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if _, err := os.Stat(filepath.Join(workspace, "started")); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			_ = stdin.Close()
+			_ = process.Wait()
+			text, _ := captured.String()
+			t.Fatalf("sandbox child did not start: %s", text)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	_ = stdin.Close()
+	_ = process.Wait()
+	if ctx.Err() != nil {
+		t.Fatal("helper did not stop after its owner disconnected")
+	}
+	time.Sleep(450 * time.Millisecond)
+	if _, err := os.Stat(filepath.Join(workspace, "finished")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("child survived helper EOF: %v", err)
+	}
+}
+
+func TestSandboxConcurrentCommandsKeepGrants(t *testing.T) {
+	helper := sandboxHelperForTest(t)
+	workspace := t.TempDir()
+	var wg sync.WaitGroup
+	for n := 0; n < 4; n++ {
+		wg.Add(1)
+		go func(n int) {
+			defer wg.Done()
+			command := fmt.Sprintf("sleep 0.1; printf complete > marker-%d", n)
+			if runtime.GOOS == "windows" {
+				command = fmt.Sprintf("Start-Sleep -Milliseconds 100; Set-Content -LiteralPath marker-%d complete", n)
+			}
+			request := publictool.CommandRequest{Command: command, Workspace: workspace, Sandbox: publictool.SandboxPolicy{PermissionMode: "workspace", Workspace: workspace}}
+			result, err := (SandboxedCommandExecutor{HelperPath: helper}).Execute(context.Background(), request)
+			if err != nil || result.ExitCode == nil || *result.ExitCode != 0 {
+				t.Errorf("command %d: result=%+v error=%v", n, result, err)
+			}
+		}(n)
+	}
+	wg.Wait()
+	for n := 0; n < 4; n++ {
+		data, err := os.ReadFile(filepath.Join(workspace, fmt.Sprintf("marker-%d", n)))
+		if err != nil || !strings.Contains(string(data), "complete") {
+			t.Fatalf("command %d marker=%q error=%v", n, data, err)
+		}
+	}
+}
+
+func TestSandboxHelperRejectsOldProtocol(t *testing.T) {
+	helper := sandboxHelperForTest(t)
+	process := exec.Command(helper, "run")
+	process.Stdin = strings.NewReader(`{"Command":"echo must-not-run","Workspace":"."}` + "\n")
+	output, err := process.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "unsupported sandbox helper protocol") {
+		t.Fatalf("old protocol output=%q error=%v", output, err)
+	}
 }
 
 func TestCommandToolDelegatesToHostExecutorWithStableInvocationID(t *testing.T) {
@@ -127,6 +239,9 @@ func TestHighRiskAndOpaqueCommandsNeedExactPlanApproval(t *testing.T) {
 
 func sandboxHelperForTest(t *testing.T) string {
 	t.Helper()
+	if helper := os.Getenv("LUNE_SANDBOX_TEST_HELPER"); helper != "" {
+		return helper
+	}
 	_, file, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate command test source")

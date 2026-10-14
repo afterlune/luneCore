@@ -46,7 +46,8 @@ func runPlatform(ctx context.Context, request publictool.CommandRequest, _ io.Wr
 	if _, err := os.Stat(command); err != nil {
 		return fmt.Errorf("PowerShell is unavailable: %w", err)
 	}
-	args := []string{command, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", request.Command}
+	script := "try { Set-Location -LiteralPath '" + strings.ReplaceAll(workspace, "'", "''") + "' -ErrorAction Stop; [System.Environment]::CurrentDirectory = '" + strings.ReplaceAll(workspace, "'", "''") + "' } catch { Write-Error $_; exit 1 }; " + request.Command
+	args := []string{command, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script}
 	if request.Sandbox.PermissionMode == "full-access" {
 		if !request.Sandbox.Network {
 			return errors.New("full-access sandbox requires network permission on Windows")
@@ -119,6 +120,10 @@ func runPlatform(ctx context.Context, request publictool.CommandRequest, _ io.Wr
 			return err
 		}
 	}
+	// A workspace-rooted provider drive avoids PowerShell inspecting private
+	// ancestors merely to resolve a location. Native programs use the real cwd.
+	escapedWorkspace := strings.ReplaceAll(workspace, "'", "''")
+	args[len(args)-1] = "try { New-PSDrive -Name LuneWorkspace -PSProvider FileSystem -Root '" + escapedWorkspace + "' -ErrorAction Stop | Out-Null; Set-Location -LiteralPath 'LuneWorkspace:\\' -ErrorAction Stop; [System.Environment]::CurrentDirectory = '" + escapedWorkspace + "' } catch { Write-Error $_; exit 1 }; " + request.Command
 	return runAppContainerProcess(ctx, containerSID, args, workspace, tempDir, request.Sandbox.Network)
 }
 
@@ -342,7 +347,7 @@ func runWindowsChild(ctx context.Context, args []string, directory string, token
 		return fmt.Errorf("read restricted process exit code: %w", err)
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("sandbox command exited with code %d", exitCode)
+		return &ExitError{Code: int(exitCode)}
 	}
 	return nil
 }
@@ -390,17 +395,22 @@ func createAppContainerProfile(name string) (*windows.SID, error) {
 }
 
 func grantAppContainerPath(path string, sid *windows.SID, readWrite bool) (func() error, error) {
+	release, err := lockPathACL(path)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	permissions := uint32(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_EXECUTE | windows.READ_CONTROL)
+	if readWrite {
+		permissions |= windows.FILE_GENERIC_WRITE | windows.DELETE | fileDeleteChild
+	}
 	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return nil, fmt.Errorf("read ACL for %q: %w", path, err)
 	}
 	dacl, _, err := sd.DACL()
 	if err != nil {
-		return nil, fmt.Errorf("read DACL for %q: %w", path, err)
-	}
-	permissions := uint32(windows.FILE_GENERIC_READ | windows.FILE_GENERIC_EXECUTE | windows.READ_CONTROL)
-	if readWrite {
-		permissions |= windows.FILE_GENERIC_WRITE | windows.DELETE | fileDeleteChild
+		return nil, err
 	}
 	entry := windows.EXPLICIT_ACCESS{
 		AccessPermissions: windows.ACCESS_MASK(permissions),
@@ -423,6 +433,11 @@ func grantAppContainerPath(path string, sid *windows.SID, readWrite bool) (func(
 		return nil, fmt.Errorf("grant AppContainer access to %q: %w", path, err)
 	}
 	return func() error {
+		release, err := lockPathACL(path)
+		if err != nil {
+			return err
+		}
+		defer release()
 		current, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 		if err != nil {
 			return err
@@ -567,7 +582,7 @@ func runAppContainerProcess(ctx context.Context, sid *windows.SID, args []string
 		return fmt.Errorf("read AppContainer command exit code: %w", err)
 	}
 	if exitCode != 0 {
-		return fmt.Errorf("sandbox command exited with code %d", exitCode)
+		return &ExitError{Code: int(exitCode)}
 	}
 	return nil
 }
@@ -620,4 +635,33 @@ func deriveCapabilitySID(name string) (*windows.SID, error) {
 		return nil, err
 	}
 	return copy, nil
+}
+
+// Helpers run in separate processes. Serialize each ACL read/modify/write so
+// concurrent grants and revocations preserve the other helpers' SIDs.
+func lockPathACL(path string) (func(), error) {
+	runtime.LockOSThread()
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		runtime.UnlockOSThread()
+		return nil, err
+	}
+	hash := sha256.Sum256([]byte(strings.ToLower(filepath.Clean(absolute))))
+	name, err := windows.UTF16PtrFromString(fmt.Sprintf("Global\\LuneCoreACL_%x", hash))
+	if err != nil {
+		runtime.UnlockOSThread()
+		return nil, err
+	}
+	mutex, err := windows.CreateMutex(nil, false, name)
+	if err != nil && !errors.Is(err, windows.ERROR_ALREADY_EXISTS) {
+		runtime.UnlockOSThread()
+		return nil, err
+	}
+	status, err := windows.WaitForSingleObject(mutex, 5000)
+	if err != nil || (status != windows.WAIT_OBJECT_0 && status != windows.WAIT_ABANDONED) {
+		_ = windows.CloseHandle(mutex)
+		runtime.UnlockOSThread()
+		return nil, fmt.Errorf("lock sandbox path ACL: status=%d error=%v", status, err)
+	}
+	return func() { _ = windows.ReleaseMutex(mutex); _ = windows.CloseHandle(mutex); runtime.UnlockOSThread() }, nil
 }

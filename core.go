@@ -15,6 +15,7 @@ import (
 	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
+	commandruntime "github.com/afterlune/luneCore/internal/command"
 	projectconfig "github.com/afterlune/luneCore/internal/config"
 	"github.com/afterlune/luneCore/internal/mcp"
 	"github.com/afterlune/luneCore/internal/model"
@@ -41,6 +42,7 @@ type Config struct {
 	ModelProviders  map[string]publicmodel.Provider
 	Tools           []publictool.Registration
 	CommandExecutor publictool.CommandExecutor
+	Commands        CommandOptions
 	// SandboxHelperPath optionally selects the lune-sandbox companion binary.
 	// When empty, Core searches beside the host executable and then PATH.
 	SandboxHelperPath string
@@ -67,6 +69,7 @@ type MemoryConfig struct {
 }
 
 type Core struct {
+	commands             *commandruntime.Manager
 	logger               *slog.Logger
 	workspace            string
 	registry             *tool.Registry
@@ -111,6 +114,9 @@ func New(config Config) (_ *Core, err error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if config.Commands.Timeout < 0 || config.Commands.MaxConcurrent < 0 {
+		return nil, errors.New("command limits must not be negative")
+	}
 	if err := validateExecutionOptions(config.Execution); err != nil {
 		return nil, fmt.Errorf("invalid execution defaults: %w", err)
 	}
@@ -118,8 +124,8 @@ func New(config Config) (_ *Core, err error) {
 		return nil, errors.New("memory embedder ID must not be empty")
 	}
 	for _, registration := range config.Tools {
-		if registration.Tool != nil && registration.Tool.Definition().Name == publicmemory.SearchToolName {
-			return nil, fmt.Errorf("tool name is reserved: %s", publicmemory.SearchToolName)
+		if registration.Tool != nil && (registration.Tool.Definition().Name == publicmemory.SearchToolName || registration.Tool.Definition().Name == "command" || registration.Tool.Definition().Name == "command_status" || registration.Tool.Definition().Name == "command_stop") {
+			return nil, fmt.Errorf("tool name is reserved: %s", registration.Tool.Definition().Name)
 		}
 	}
 	if config.MaxConcurrentCallbacks < 0 {
@@ -242,6 +248,9 @@ func New(config Config) (_ *Core, err error) {
 		interruptRequests:    make(map[string]bool),
 		stateDirLock:         stateLock,
 	}
+	if err := c.configureCommands(config); err != nil {
+		return nil, err
+	}
 	if !c.memoryConfig.Disabled {
 		registrations, err := tool.HostToolRegistrations([]publictool.Registration{{
 			Tool: memorySearchTool{core: c},
@@ -309,9 +318,10 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 	requester.SetContextAgentUsageObserver(c.onAgentUsageContext)
 	memoryRequester := agentruntime.NewUsageTrackingRequester(client, "memory", profileID, profile.Provider, profile.Model)
 	memoryRequester.SetContextAgentUsageObserver(c.onAgentUsageContext)
+	activeCommands, stopCommands := c.commandHooks()
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
-		Logger:   c.logger,
+		Logger: c.logger, ActiveCommands: activeCommands, StopCommands: stopCommands, CommandSummary: c.commandSummary, CommandEvidence: c.commandEvidence,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		SupportsInputAudio: profile.SupportsInputAudio, Execution: agentExecutionOptions(taskState.Execution),
 		Team:               c.team,
@@ -343,6 +353,7 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 			c.onModelStreamForTask(currentTask, state.AgentID, state.AgentName, state.ModelProfile, state.Provider, activeModel, event)
 		},
 		OnBranchStarted: func(ctx context.Context, state agentgraph.State) {
+			c.commands.OpenAgent(state.ExecutionID, state.AgentID)
 			identity := publictool.CallIdentityFromContext(ctx)
 			c.emit(Event{Kind: EventAgentStarted, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 				AgentID: state.AgentID, AgentName: state.AgentName, AgentRole: "worker", TeamRunID: state.TeamRunID,
@@ -497,6 +508,13 @@ func (c *Core) Close() error {
 		}
 		runtimeConfigLocked = true
 		c.mu.Lock()
+	}
+	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
+	cleanupErr := c.commands.Close(cleanupCtx)
+	cleanupCancel()
+	if cleanupErr != nil {
+		c.mu.Unlock()
+		return cleanupErr
 	}
 	c.closed = true
 	for executionID, waiter := range c.turnWaiters {

@@ -217,5 +217,59 @@ error when attempts are exhausted.
 
 `model_retry`, `model_recovery_required` and `model_recovery_resumed` events contain
 safe failure metadata, never provider error bodies or causes. Task checkpoints
-use settings version 8; older execution checkpoints must be discarded. Existing
+use settings version 9; older execution checkpoints must be discarded. Existing
 session histories and completed results remain readable.
+
+### Long-running commands
+
+Rebuild `lune-sandbox` alongside Core. Helper protocol version 1 is required;
+older binaries fail closed rather than running without process supervision.
+
+`command` runs non-interactive commands in the existing kernel sandbox. It waits
+up to one second by default, then returns JSON containing the command ID, state,
+and bounded output. Use `command_status` with `command_id`, a byte `cursor`, and
+optional `wait_ms` (0–5000) to read more output; use `command_stop` to stop it.
+`yield_time_ms` (0–5000) controls the initial wait. An optional `timeout_ms` can
+shorten the host limit. A start receipt does not prove successful completion.
+
+`Config.Commands.Timeout` defaults to ten minutes, and
+`Config.Commands.MaxConcurrent` defaults to four running commands across Core.
+Commands belong to the current execution and agent. Model tools cannot inspect
+another agent's commands; controlling an already-authorized command requires no
+additional approval. Existing high-risk command approval and sandbox policies
+apply to every new launch. Windows workspace commands use a PowerShell filesystem
+drive rooted at the workspace; native programs use its actual directory. Commands
+continue across model requests, but stop when
+the task pauses, ends, is interrupted, or is discarded. Team branches also clean
+up their processes when they finish or are cancelled by an early join.
+
+If an agent submits a final answer while its commands still run, Core first
+reminds it to inspect or stop them. A second consecutive submission pauses the
+lead and stops its commands; `Recover` or `ResumeTask` can then continue. Workers
+instead report a branch failure. Command queries become saved tool evidence. The acceptance handoff also snapshots
+terminal command records, with their actual command, exit code and a bounded
+output excerpt, under `command:<id>` evidence references;
+acceptance still judges whether that evidence satisfies the task criteria.
+
+Hosts use `SessionRuntime.ListCommands(ctx)`,
+`ReadCommand(ctx, id, core.CommandReadOptions{Cursor: cursor, Wait: wait})`, and
+`StopCommand(ctx, id)`. Read cancellation cancels only the wait. Stop is
+idempotent and does not relaunch the process. Exit codes are optional for host
+executors that cannot supply them. Status distinguishes success, failure,
+cancellation, timeout and interruption across a restart.
+
+Each command keeps its latest 1 MiB of output. A read returns at most 64 KiB;
+`Cursor`, `NextCursor` and `EndCursor` are absolute byte offsets, and `Truncated`
+reports output that has fallen out of the retained buffer. Snapshots are saved
+before reads return and at termination. Unread live output is not guaranteed to
+survive a crash. Restart marks unfinished records interrupted without rerunning
+commands. Forking a paused task copies saved command records under the new
+session/execution identity, without copying processes. Deleting a session removes
+its records.
+
+The optional `tool.CommandRequest.OnOutput` callback lets host command executors
+provide incremental stdout/stderr; its byte slice is transient, errors require
+stopping, and the callback is excluded from JSON. Old executors still work by
+returning `CommandResult.Output` at completion. Executors must honor cancellation
+and terminate their child processes before returning. Command lifecycle events
+contain identifiers, status and exit codes, never command text or output.
