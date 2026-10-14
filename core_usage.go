@@ -10,6 +10,47 @@ import (
 	"github.com/afterlune/luneCore/internal/model"
 )
 
+type Usage struct {
+	InputTokens         int64              `json:"input_tokens"`
+	InputTokensDetails  TokenInputDetails  `json:"input_tokens_details"`
+	OutputTokens        int64              `json:"output_tokens"`
+	OutputTokensDetails TokenOutputDetails `json:"output_tokens_details"`
+	TotalTokens         int64              `json:"total_tokens"`
+}
+
+type TokenInputDetails struct {
+	CachedTokens        int64 `json:"cached_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+}
+
+type TokenOutputDetails struct {
+	ReasoningTokens int64 `json:"reasoning_tokens"`
+}
+
+type UsageRecord struct {
+	Request              int    `json:"request"`
+	Usage                Usage  `json:"usage"`
+	EstimatedInputTokens int64  `json:"estimated_input_tokens,omitempty"`
+	Available            bool   `json:"available"`
+	ContextWindow        int64  `json:"context_window,omitempty"`
+	AgentID              string `json:"agent_id,omitempty"`
+	Provider             string `json:"provider,omitempty"`
+	ModelProfile         string `json:"model_profile,omitempty"`
+	Model                string `json:"model,omitempty"`
+}
+
+type UsageTotals struct {
+	Requests       int   `json:"requests"`
+	Measured       int   `json:"measured"`
+	Input          int64 `json:"input"`
+	EstimatedInput int64 `json:"estimated_input,omitempty"`
+	Output         int64 `json:"output"`
+	Reasoning      int64 `json:"reasoning"`
+	Total          int64 `json:"total"`
+	Cached         int64 `json:"cached"`
+	CacheCreation  int64 `json:"cache_creation,omitempty"`
+}
+
 func modelContextKey(providerName, effectiveModel string, providerConfig model.ProviderConfig) string {
 	identity, _ := json.Marshal(struct {
 		Provider         string `json:"provider"`
