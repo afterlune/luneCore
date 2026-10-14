@@ -8,7 +8,6 @@ import (
 
 	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/model"
-	runtimepermission "github.com/afterlune/luneCore/internal/tool"
 	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
 )
@@ -223,31 +222,14 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			Output: model.NewToolOutputText(unavailableToolMessage(call.Name, expectedCategory, a.categorized != nil)),
 		}
 	default:
-		toolContext := runtimepermission.WithPermissionMode(ctx, state.PermissionOverride)
-		toolContext = publictool.WithPlanAuthorization(toolContext, state.PlanAuthorization)
-		toolContext = publictool.WithNoInteractiveDecisions(toolContext, state.NoInteractiveDecisions)
-		toolContext = model.WithAgentID(toolContext, state.AgentID)
-		toolContext = model.WithInputAudioSupport(toolContext, state.SupportsInputAudio)
-		identity := publictool.CallIdentityFromContext(toolContext)
-		identity.RunID = state.RunID
-		identity.ExecutionID = state.ExecutionID
-		identity.AgentID = state.AgentID
-		identity.InvocationID = info.CallID
-		toolContext = publictool.WithCallIdentity(toolContext, identity)
-		if recoverable, ok := a.tools.(interface {
-			ExecuteCallRecoverable(context.Context, model.OutputFunctionCall) (model.InputFunctionCallOutput, error)
-		}); ok {
-			var err error
-			output, err = recoverable.ExecuteCallRecoverable(toolContext, call)
-			if err != nil {
-				var blocker *publictool.ExecutionBlockerError
-				if errors.As(err, &blocker) && state.NoInteractiveDecisions && !state.TeamBranch {
-					return a.blockExecution(ctx, state, call.CallID, blocker.Tool, blocker.Error()), nil
-				}
-				return graph.Transition[State]{}, err
+		var err error
+		output, err = a.executeBusinessTool(ctx, state, call, info.CallID)
+		if err != nil {
+			var blocker *publictool.ExecutionBlockerError
+			if errors.As(err, &blocker) && state.NoInteractiveDecisions && !state.TeamBranch {
+				return a.blockExecution(ctx, state, call.CallID, blocker.Tool, blocker.Error()), nil
 			}
-		} else {
-			output = a.tools.ExecuteCall(toolContext, call)
+			return graph.Transition[State]{}, err
 		}
 		evidenceEligible = true
 	}
