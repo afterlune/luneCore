@@ -36,6 +36,10 @@ func (manager *Manager) OpenElicitationURL(serverName, target string) error {
 }
 
 func (remote *remoteTool) withMRTR(ctx context.Context, method string, originalParams map[string]any, name string, bindings []headerBinding, first json.RawMessage) (json.RawMessage, error) {
+	return withMRTR(ctx, remote.server, remote.serverName, method, originalParams, name, bindings, first)
+}
+
+func withMRTR(ctx context.Context, server *serverInstance, serverName, method string, originalParams map[string]any, name string, bindings []headerBinding, first json.RawMessage) (json.RawMessage, error) {
 	response := first
 	params := cloneMap(originalParams)
 	for round := 0; round <= maxMRTRRounds; round++ {
@@ -51,7 +55,7 @@ func (remote *remoteTool) withMRTR(ctx context.Context, method string, originalP
 			return response, nil
 		}
 		if round == maxMRTRRounds {
-			return nil, fmt.Errorf("MCP server %q exceeded the %d-round input limit", remote.serverName, maxMRTRRounds)
+			return nil, fmt.Errorf("MCP server %q exceeded the %d-round input limit", serverName, maxMRTRRounds)
 		}
 		if len(result.InputRequests) == 0 {
 			return nil, errors.New("MCP server requested input without any input requests")
@@ -65,16 +69,16 @@ func (remote *remoteTool) withMRTR(ctx context.Context, method string, originalP
 		for _, key := range keys {
 			request := result.InputRequests[key]
 			if request.Method != "elicitation/create" {
-				return nil, fmt.Errorf("MCP server %q requested unsupported interaction %q", remote.serverName, request.Method)
+				return nil, fmt.Errorf("MCP server %q requested unsupported interaction %q", serverName, request.Method)
 			}
-			if remote.serverName == "" || remote.server == nil {
+			if serverName == "" || server == nil {
 				return nil, errors.New("MCP server interaction is unavailable")
 			}
 			payload, err := json.Marshal(request)
 			if err != nil {
 				return nil, err
 			}
-			answer, err := remote.withInteraction(ctx, payload)
+			answer, err := withInteraction(ctx, server, serverName, payload)
 			if err != nil {
 				return nil, err
 			}
@@ -88,7 +92,7 @@ func (remote *remoteTool) withMRTR(ctx context.Context, method string, originalP
 			params["requestState"] = *result.RequestState
 		}
 		var err error
-		response, err = remote.server.client.Request(ctx, method, cloneMap(params), name, bindings)
+		response, err = server.client.Request(ctx, method, cloneMap(params), name, bindings)
 		if err != nil {
 			return nil, err
 		}
@@ -147,8 +151,12 @@ func cloneMap(source map[string]any) map[string]any {
 }
 
 func (remote *remoteTool) withInteraction(ctx context.Context, request json.RawMessage) (json.RawMessage, error) {
-	if remote.server == nil || remote.server.owner == nil || remote.server.owner.interact == nil {
+	return withInteraction(ctx, remote.server, remote.serverName, request)
+}
+
+func withInteraction(ctx context.Context, server *serverInstance, serverName string, request json.RawMessage) (json.RawMessage, error) {
+	if server == nil || server.owner == nil || server.owner.interact == nil {
 		return nil, errors.New("MCP user interaction is unavailable")
 	}
-	return remote.server.owner.interact(ctx, model.AgentIDFromContext(ctx), remote.serverName, request)
+	return server.owner.interact(ctx, model.AgentIDFromContext(ctx), serverName, request)
 }
