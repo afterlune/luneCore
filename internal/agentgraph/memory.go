@@ -59,7 +59,7 @@ func (a *Agent) extractMemory(ctx context.Context, _ graph.CallInfo, state State
 		requestCtx, cancel = context.WithTimeout(ctx, state.Execution.ModelTimeout*9/10)
 		defer cancel()
 	}
-	response, err := a.sendModel(requestCtx, state, a.options.MemoryRequester, request, nil)
+	response, err := a.sendModel(model.WithUsagePurpose(requestCtx, model.UsagePurposeMemory), state, a.options.MemoryRequester, request, nil)
 	if err != nil {
 		if errors.Is(err, model.ErrTokenBudgetExceeded) {
 			return graph.Wait(state, TokenBudgetContinuation, memoryNode), nil

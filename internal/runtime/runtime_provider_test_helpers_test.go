@@ -83,7 +83,7 @@ func scriptHasRequestedTool(responses []*publicmodel.ModelResponse, request publ
 }
 
 func scriptedCriteriaResponse(request publicmodel.ModelRequest) *publicmodel.ModelResponse {
-	text := scriptedCurrentTask(request.Instructions)
+	text := scriptedCurrentTaskInput(request)
 	kind := "answer"
 	lower := strings.ToLower(text)
 	if strings.Contains(lower, "plan") || strings.Contains(text, "计划") || strings.Contains(text, "规划") {
@@ -101,6 +101,30 @@ func scriptedCriteriaResponse(request publicmodel.ModelRequest) *publicmodel.Mod
 	return &publicmodel.ModelResponse{Status: "completed", Output: []publicmodel.ResponseOutputItem{
 		publicmodel.OutputFunctionCall{CallID: "test-criteria", Name: "prepare_task_criteria", Arguments: string(arguments)},
 	}}
+}
+
+func scriptedCurrentTaskInput(request publicmodel.ModelRequest) string {
+	if request.Input == nil {
+		return scriptedCurrentTask(request.Instructions)
+	}
+	if request.Input.Text != nil {
+		return strings.TrimSpace(*request.Input.Text)
+	}
+	for _, item := range request.Input.Items {
+		message, ok := item.(publicmodel.InputMessage)
+		if !ok || message.Role != publicmodel.RoleUser {
+			continue
+		}
+		if message.Content.Text != nil {
+			return strings.TrimSpace(*message.Content.Text)
+		}
+		for _, part := range message.Content.Parts {
+			if text, ok := part.(publicmodel.InputText); ok {
+				return strings.TrimSpace(text.Text)
+			}
+		}
+	}
+	return scriptedCurrentTask(request.Instructions)
 }
 
 func scriptedAcceptanceResponse(request publicmodel.ModelRequest) *publicmodel.ModelResponse {

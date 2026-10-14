@@ -32,6 +32,17 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		requestCtx, cancelRequest = context.WithTimeout(ctx, requestTimeout)
 	}
 	defer cancelRequest()
+	usagePurpose := model.UsagePurposeMain
+	if state.TeamBranch {
+		usagePurpose = model.UsagePurposeTeam
+	}
+	switch state.AcceptancePhase {
+	case "criteria":
+		usagePurpose = model.UsagePurposeCriteria
+	case "acceptance":
+		usagePurpose = model.UsagePurposeAcceptance
+	}
+	requestCtx = model.WithUsagePurpose(requestCtx, usagePurpose)
 	requester := a.requester
 	if state.TeamBranch {
 		if !state.TeamStarted {
@@ -90,9 +101,17 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 			return a.failTask(state, err)
 		}
 	}
+	requestInput := model.NewResponseInputItems(state.History.Items...)
+	if state.AcceptancePhase == "criteria" || state.AcceptancePhase == "acceptance" {
+		var inputErr error
+		requestInput, inputErr = acceptancePhaseInput(state)
+		if inputErr != nil {
+			return a.failTask(state, inputErr)
+		}
+	}
 	request := model.ModelRequest{
 		Model: state.Model,
-		Input: model.NewResponseInputItems(state.History.Items...),
+		Input: requestInput,
 		Tools: visibleTools,
 	}
 	if state.ModelOverride != "" {
@@ -132,7 +151,7 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		}
 	}
 	if state.NoInteractiveDecisions {
-		request.Instructions += "\n\nThe host has already approved this plan. Do not ask the user questions or request new permissions. If an unapproved action becomes necessary, stop and report the blocker."
+		request.Instructions += "\n\nHost approved this plan. Do not ask the user or seek new permission. Stop and report if an unapproved action is required."
 	}
 	if state.AcceptancePhase == "criteria" {
 		auto := "auto"

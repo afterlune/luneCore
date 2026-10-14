@@ -1,0 +1,50 @@
+[
+  {
+    "id": "short-answer",
+    "input": "用简洁的中文说明 Go 的 context.Context 如何传播取消信号。"
+  },
+  {
+    "id": "follow-up-context",
+    "history": [
+      {"type":"message","role":"user","content":"本项目优先采用简单、轻量的 Go API。"},
+      {"type":"message","role":"assistant","content":"明白，会优先保持接口精简。"},
+      {"type":"message","role":"user","content":"旧决定：session 的完整历史和模型上下文分开保存。"},
+      {"type":"message","role":"assistant","content":"会保留完整历史，同时允许模型上下文压缩。"}
+    ],
+    "input": "沿用我们对 session 的决定，说明压缩时哪些内容必须完整保留。"
+  },
+  {
+    "id": "bounded-plan",
+    "input": "只给一个三步计划：如何为本地 Go 服务增加健康检查；不要写代码，也不要要求已经实现。"
+  },
+  {
+    "id": "workspace-read",
+    "files": {
+      "notes.md": "Release notes\n- API stays backward compatible.\n- Token usage is measured per model request.\n- Cached input is reported separately.\n"
+    },
+    "input": "读取 notes.md，用三条要点概括发布约束。"
+  },
+  {
+    "id": "workspace-edit",
+    "files": {
+      "greeting.go": "package sample\n\nconst Greeting = \"hi\"\n"
+    },
+    "filesMustContain": {
+      "greeting.go": ["const Greeting = \"hello\""]
+    },
+    "input": "把 greeting.go 中 Greeting 的值改成 hello，保留文件格式，并简要说明修改。"
+  },
+  {
+    "id": "relevant-memory",
+    "memories": [
+      {"category":"preference","content":"回答优先简洁，用户要求详细时再展开。","importance":3},
+      {"category":"decision","content":"会话完整 transcript 必须保留；只有模型上下文可以压缩。","importance":3},
+      {"category":"verified_fact","content":"网页 fetch 的输出最多保留 20000 个字符。","importance":1}
+    ],
+    "input": "根据工作区记忆，说明会话历史压缩时必须保留什么。"
+  },
+  {
+    "id": "plan-acceptance",
+    "input": "为给 JSON API 增加请求超时提供完整实施计划，列出接口、取消行为和测试；只规划，不实现。"
+  }
+]

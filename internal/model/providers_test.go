@@ -258,7 +258,7 @@ func TestAnthropicMessagesMapsToolsImagesUsageAndErrors(t *testing.T) {
 	if response.ID != "msg-1" || len(functionCalls(response.Output)) != 1 {
 		t.Fatalf("normalized response = %#v", response)
 	}
-	if response.Usage.InputTokensDetails.CachedTokens != 3 || response.Usage.InputTokensDetails.CacheCreationTokens != 2 {
+	if response.Usage.InputTokens != 16 || response.Usage.InputTokensDetails.CachedTokens != 3 || response.Usage.InputTokensDetails.CacheCreationTokens != 2 || response.Usage.TotalTokens != 21 {
 		t.Fatalf("usage = %#v", response.Usage)
 	}
 }

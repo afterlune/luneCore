@@ -242,7 +242,7 @@ func (c *Core) onUsage(usage model.ResponseUsage) {
 }
 
 func (c *Core) onAgentUsage(usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64) {
-	c.onAgentUsageForTask(c.State(), usage, agentID, profile, provider, modelID, estimatedInputTokens)
+	c.onAgentUsageForTask(c.State(), usage, agentID, profile, provider, modelID, estimatedInputTokens, "")
 }
 
 func (c *Core) onAgentUsageContext(ctx context.Context, usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64) {
@@ -251,25 +251,29 @@ func (c *Core) onAgentUsageContext(ctx context.Context, usage model.ResponseUsag
 	if !ok {
 		state = TaskState{SessionID: identity.SessionID, TaskID: identity.TaskID}
 	}
-	c.onAgentUsageForTask(state, usage, agentID, profile, provider, modelID, estimatedInputTokens)
+	c.onAgentUsageForTask(state, usage, agentID, profile, provider, modelID, estimatedInputTokens, model.UsagePurposeFromContext(ctx))
 }
 
-func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64) {
+func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64, purpose UsagePurpose) {
+	totalTokens := usage.TotalTokens
+	if totalTokens <= 0 {
+		totalTokens = usage.InputTokens + usage.OutputTokens
+	}
 	value := Usage{InputTokens: usage.InputTokens, InputTokensDetails: TokenInputDetails{
 		CachedTokens: usage.InputTokensDetails.CachedTokens, CacheCreationTokens: usage.InputTokensDetails.CacheCreationTokens,
 	},
-		OutputTokens: usage.OutputTokens, OutputTokensDetails: TokenOutputDetails{ReasoningTokens: usage.OutputTokensDetails.ReasoningTokens}, TotalTokens: usage.TotalTokens}
+		OutputTokens: usage.OutputTokens, OutputTokensDetails: TokenOutputDetails{ReasoningTokens: usage.OutputTokensDetails.ReasoningTokens}, TotalTokens: totalTokens}
 	contextWindow := state.ContextWindow
 	if agentID != "" && agentID != "lead" {
 		contextWindow = 0
 	}
 	if state.SessionID != "" {
-		if err := c.recordUsageForAgent(context.Background(), state.SessionID, value, agentID, profile, provider, modelID, contextWindow, estimatedInputTokens); err != nil {
+		if err := c.recordUsageForAgent(context.Background(), state.SessionID, value, agentID, profile, provider, modelID, contextWindow, estimatedInputTokens, purpose); err != nil {
 			c.logger.Warn("persist token usage", "error", err)
 		}
 	}
 	c.emit(Event{Kind: EventUsage, SessionID: state.SessionID, TaskID: state.TaskID, ExecutionID: state.ExecutionID, Usage: value,
-		AgentID: agentID, ModelProfile: profile, Provider: provider, Model: modelID, ContextWindow: contextWindow,
+		AgentID: agentID, UsagePurpose: purpose, ModelProfile: profile, Provider: provider, Model: modelID, ContextWindow: contextWindow,
 		EstimatedInputTokens: estimatedInputTokensIfMissing(value.InputTokens, estimatedInputTokens)})
 }
 

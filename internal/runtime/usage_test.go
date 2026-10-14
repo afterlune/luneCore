@@ -27,7 +27,7 @@ func TestAgentUsageTotalsOutliveRecentRequestLimit(t *testing.T) {
 		if request%2 == 1 {
 			agentID = "research"
 		}
-		if err := client.recordUsageForAgent(context.Background(), saved.ID, usage, agentID, agentID, "provider", agentID+"-model", 64000, 0); err != nil {
+		if err := client.recordUsageForAgent(context.Background(), saved.ID, usage, agentID, agentID, "provider", agentID+"-model", 64000, 0, UsagePurposeMain); err != nil {
 			t.Fatalf("record usage request %d: %v", request+1, err)
 		}
 	}
@@ -47,6 +47,9 @@ func TestAgentUsageTotalsOutliveRecentRequestLimit(t *testing.T) {
 		if totals.Measured != wantRequests || totals.Input != int64(wantRequests*10) || totals.Output != int64(wantRequests*2) || totals.Cached != int64(wantRequests*4) {
 			t.Errorf("%s totals = %#v, want %d measured requests", agentID, totals, wantRequests)
 		}
+	}
+	if restored.UsageRequests[len(restored.UsageRequests)-1].Purpose != UsagePurposeMain {
+		t.Fatalf("usage purpose = %q, want %q", restored.UsageRequests[len(restored.UsageRequests)-1].Purpose, UsagePurposeMain)
 	}
 }
 
@@ -91,7 +94,7 @@ func TestUsageRequestUsesEstimateOnlyWhenInputUsageIsMissing(t *testing.T) {
 		t.Fatalf("record missing-input usage: %v", err)
 	}
 	if err := client.recordUsageForAgent(context.Background(), saved.ID,
-		Usage{InputTokens: 100, OutputTokens: 4, TotalTokens: 104}, "lead", "primary", "provider-a", "model-a", 64000, 999); err != nil {
+		Usage{InputTokens: 100, OutputTokens: 4}, "lead", "primary", "provider-a", "model-a", 64000, 999); err != nil {
 		t.Fatalf("record measured-input usage: %v", err)
 	}
 	restored, err := client.GetSession(context.Background(), saved.ID)
@@ -99,7 +102,7 @@ func TestUsageRequestUsesEstimateOnlyWhenInputUsageIsMissing(t *testing.T) {
 		t.Fatalf("GetSession: %v", err)
 	}
 	if len(restored.UsageRequests) != 2 || restored.UsageRequests[0].EstimatedInputTokens != 123 ||
-		restored.UsageRequests[1].EstimatedInputTokens != 0 || restored.UsageRequests[1].Usage.InputTokens != 100 {
+		restored.UsageRequests[1].EstimatedInputTokens != 0 || restored.UsageRequests[1].Usage.InputTokens != 100 || restored.UsageRequests[1].Usage.TotalTokens != 104 {
 		t.Fatalf("usage requests = %#v; server input should win and estimates stay separate", restored.UsageRequests)
 	}
 	if restored.SessionUsage.Input != 100 || restored.SessionUsage.EstimatedInput != 123 || restored.SessionUsage.Measured != 2 {

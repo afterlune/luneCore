@@ -20,14 +20,16 @@ func decodeAnthropicResponse(data []byte) (*ModelResponse, error) {
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, err
 	}
+	inputTokens := wire.Usage.InputTokens + wire.Usage.CacheReadInputTokens + wire.Usage.CacheCreationInputTokens
 	result := &ModelResponse{
 		ID: wire.ID, Object: "response", Model: wire.Model, Status: "completed",
 		Usage: ResponseUsage{
-			InputTokens: wire.Usage.InputTokens,
+			InputTokens: inputTokens,
 			InputTokensDetails: TokenInputDetails{
 				CachedTokens: wire.Usage.CacheReadInputTokens, CacheCreationTokens: wire.Usage.CacheCreationInputTokens,
 			},
-			OutputTokens: wire.Usage.OutputTokens, TotalTokens: wire.Usage.InputTokens + wire.Usage.OutputTokens,
+			OutputTokens: wire.Usage.OutputTokens,
+			TotalTokens:  inputTokens + wire.Usage.OutputTokens,
 		},
 	}
 	if wire.StopReason == "max_tokens" {

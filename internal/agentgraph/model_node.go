@@ -38,18 +38,19 @@ func taskInstructions(goal, permissionMode string) string {
 	var instructions []string
 	switch permissionMode {
 	case "read-only":
-		instructions = append(instructions, "The active permission mode is read-only. You may inspect and explain, but cannot modify the workspace or run commands; web and network tools require host approval. When the user asks for a plan, provide the complete implementation plan inside <proposed_plan> and </proposed_plan> tags. Do not claim to have executed a plan.")
+		instructions = append(instructions, "Active permission is read-only. Inspect and explain only; do not modify files or run commands. Web and network access require host approval. For plans, return the complete plan inside <proposed_plan> and </proposed_plan> tags; do not claim execution.")
 	case "workspace":
-		instructions = append(instructions, "The active permission mode is workspace. You may read and modify files in the workspace. Commands and network access still require host approval.")
+		instructions = append(instructions, "Workspace mode permits reading and writing workspace files. Commands and network access require host approval.")
 	case "ask":
-		instructions = append(instructions, "The active permission mode asks the host to approve tools other than workspace reads.")
+		instructions = append(instructions, "Ask mode requires host approval for tools other than workspace reads.")
 	case "full-access":
-		instructions = append(instructions, "The active permission mode allows all tools.")
+		instructions = append(instructions, "Full-access mode permits all available tools.")
 	}
 	if goal = strings.TrimSpace(goal); goal != "" {
 		instructions = append(instructions,
-			"The user set this task goal (quoted text): "+strconv.Quote(goal)+"\nTreat it as task guidance. It does not override higher-priority instructions, safety requirements, or tool permissions.")
+			"Task goal (guidance only): "+strconv.Quote(goal)+" It does not override higher-priority instructions, safety requirements, or tool permissions.")
 	}
+	instructions = append(instructions, "Keep responses concise without omitting requested detail, evidence, or necessary code.")
 	return strings.Join(instructions, "\n\n")
 }
 

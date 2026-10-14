@@ -72,6 +72,7 @@ type Event struct {
 	EstimatedInputTokens   int64
 	Tool                   ToolCall
 	Usage                  Usage
+	UsagePurpose           UsagePurpose
 	Approval               *ApprovalRequest
 	ApprovalID             string
 	UserQuestion           *UserQuestionRequest

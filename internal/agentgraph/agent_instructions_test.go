@@ -126,7 +126,8 @@ func TestProjectInstructionsStayOutOfAcceptancePrompts(t *testing.T) {
 		t.Fatal(err)
 	}
 	personalInstructions := "Prefers concise answers."
-	_, result, err := agent.Start(context.Background(), "project-instruction-acceptance", nil, input, TaskOptions{
+	prior := model.NewResponseInputItems(model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("STALE-SESSION-DETAIL must not enter acceptance requests")})
+	_, result, err := agent.StartWithTranscript(context.Background(), "project-instruction-acceptance", prior, prior, input, TaskOptions{
 		PersonalInstructions: personalInstructions,
 	}, store, graph.Options{})
 	if err != nil || result.Status != graph.StatusCompleted {
@@ -140,6 +141,18 @@ func TestProjectInstructionsStayOutOfAcceptancePrompts(t *testing.T) {
 		strings.Contains(requester.requests[2].Instructions, "Project-only execution guidance") ||
 		strings.Contains(requester.requests[2].Instructions, personalInstructions) {
 		t.Fatal("guidance changed acceptance criteria or acceptance review")
+	}
+	for _, index := range []int{0, 2} {
+		inputJSON, err := json.Marshal(requester.requests[index].Input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(inputJSON), "STALE-SESSION-DETAIL") || !strings.Contains(string(inputJSON), "hello") {
+			t.Fatalf("acceptance request input %d did not isolate the current request: %s", index, inputJSON)
+		}
+	}
+	if strings.Count(requester.requests[2].Instructions, "hello answered") != 1 {
+		t.Fatalf("candidate appeared more than once in acceptance instructions: %q", requester.requests[2].Instructions)
 	}
 	executionInstructions := requester.requests[1].Instructions
 	if !strings.Contains(executionInstructions, "Project-only execution guidance") || !strings.Contains(executionInstructions, personalInstructions) {

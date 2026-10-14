@@ -148,7 +148,7 @@ func (a *Agent) summarizeHistoryPrefix(ctx context.Context, request model.ModelR
 		Instructions: instructions,
 		Reasoning:    request.Reasoning,
 	}
-	response, err := a.sendModel(ctx, state, a.requester, request, nil)
+	response, err := a.sendModel(model.WithUsagePurpose(ctx, model.UsagePurposeCompaction), state, a.requester, request, nil)
 	if err != nil {
 		return "", fmt.Errorf("summarize conversation: %w", err)
 	}

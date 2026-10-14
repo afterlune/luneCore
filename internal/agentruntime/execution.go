@@ -112,8 +112,12 @@ func (r *Responder) finish(ctx context.Context, result graph.Result[agentgraph.S
 			return nil, errors.Join(runErr, errors.New("agent graph completed without a final state"))
 		}
 		state := result.Final
+		history := model.NewResponseInputItems(state.History.Items...)
+		if state.AcceptancePhase == "complete" {
+			history = PruneCompletedAcceptanceContext(history)
+		}
 		r.historyMu.Lock()
-		r.history = model.NewResponseInputItems(state.History.Items...)
+		r.history = history
 		transcript := state.Transcript
 		if transcript.Items == nil && transcript.Text == nil {
 			transcript = state.History

@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/afterlune/luneCore/internal/agentgraph"
+	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/memory"
 	publicmodel "github.com/afterlune/luneCore/model"
 )
@@ -118,6 +120,44 @@ func TestWorkspaceMemoryUsesHostEmbeddingsForHybridSearch(t *testing.T) {
 	}
 	if items, err := client.ListMemories(ctx, 10); err != nil || len(items) != 0 {
 		t.Fatalf("memories after clear = %#v, error=%v", items, err)
+	}
+}
+
+func TestMemorySummaryPinsPreferencesAndSelectsRelevantNotesWithinBudget(t *testing.T) {
+	client := newMemoryTestCore(t, nil, MemoryConfig{})
+	ctx := context.Background()
+	for _, item := range []memory.Input{
+		{Category: memory.CategoryPreference, Content: "Prefer concise Chinese answers.", Importance: 3},
+		{Category: memory.CategoryDecision, Content: "Token budget estimates remain separate from provider measured usage.", Importance: 3},
+		{Category: memory.CategoryVerifiedFact, Content: "An unrelated deployment fact that should not be injected.", Importance: 1},
+	} {
+		if _, err := client.AddMemory(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	taskInput, err := json.Marshal(publicmodel.NewResponseInputText("How does the token budget estimate relate to measured usage?"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	summary, err := client.memorySummary(ctx, agentgraph.State{TaskInput: taskInput})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(summary, "Prefer concise Chinese answers") || !strings.Contains(summary, "Token budget estimates") {
+		t.Fatalf("summary omitted pinned or relevant memory: %s", summary)
+	}
+	if strings.Contains(summary, "unrelated deployment fact") {
+		t.Fatalf("summary injected an unrelated memory: %s", summary)
+	}
+	if used := model.EstimateInputTokens(model.ModelRequest{Instructions: summary}); used > maxMemorySummaryTokens {
+		t.Fatalf("summary uses %d estimated tokens, cap %d", used, maxMemorySummaryTokens)
+	}
+	stopwordInput, err := json.Marshal(publicmodel.NewResponseInputText("What is it?"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if query := memoryQueryForTask(agentgraph.State{TaskInput: stopwordInput}); query != "" {
+		t.Fatalf("stopword-only task produced memory query %q", query)
 	}
 }
 

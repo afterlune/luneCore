@@ -125,7 +125,9 @@ Hosts can provide a model catalog through `core.Config.ModelConfig`, custom impl
 
 Set `core.Config.Logger` to route Core-owned structured diagnostics to a host `*slog.Logger`. If omitted, Core captures `slog.Default()` when `core.New` is called and does not replace the process default. Host-provided providers, tools, and command executors remain responsible for their own logs.
 
-Workspace memory is enabled by default. After an accepted task, Core makes a separate model call to extract a few reusable preferences, decisions, conventions, or verified facts. Future tasks receive a short untrusted memory summary and can call the read-only `search_memory` tool for details. Memories are scoped to the workspace and stored with the session database. Deleting a source session also deletes memories extracted from it; manually added memories remain. Use `ListMemories`, `SearchMemories`, `AddMemory`, `UpdateMemory`, `DeleteMemory`, and `ClearMemories` to manage them. Set `Config.Memory.Disabled` to opt out of automatic memory use and extraction.
+Workspace memory is enabled by default. After an accepted task, Core makes a separate model call to extract a few reusable preferences, decisions, conventions, or verified facts. Future tasks receive a small summary of important preferences and locally matched memories, and can call the read-only `search_memory` tool for details. Memories are scoped to the workspace and stored with the session database. Deleting a source session also deletes memories extracted from it; manually added memories remain. Use `ListMemories`, `SearchMemories`, `AddMemory`, `UpdateMemory`, `DeleteMemory`, and `ClearMemories` to manage them. Set `Config.Memory.Disabled` to opt out of automatic memory use and extraction.
+
+Each `UsageRecord` includes a `Purpose` (`main`, `criteria`, `acceptance`, `compaction`, `memory`, or `team`) so hosts can see which model stages consume tokens. Provider-measured totals are authoritative; estimated input remains separate. Cached token counts are reported separately from total input where the protocol defines them as a subset.
 
 Hosts may provide an `Embedder` through `Config.Memory.Embedder` for semantic retrieval. Core stores the returned vectors and combines vector and SQLite full-text rankings; if embedding fails, full-text search remains available. Keep `Embedder.ID()` stable for one model and vector format, and call `ReindexMemories` after changing it.
 
@@ -277,3 +279,25 @@ stopping, and the callback is excluded from JSON. Old executors still work by
 returning `CommandResult.Output` at completion. Executors must honor cancellation
 and terminate their child processes before returning. Command lifecycle events
 contain identifiers, status and exit codes, never command text or output.
+
+## Token benchmark
+
+`cmd/lune-tokenbench` runs the synthetic request corpus against a configured
+model profile in temporary workspaces and writes per-case token, duration,
+acceptance, and objective-check results. Reports include final answers for
+manual side-by-side quality review, but omit prompts and tool transcripts. Live
+runs call the configured provider and incur its normal usage charges.
+
+```sh
+go run ./cmd/lune-tokenbench run --config ./config.json --profile main --repeat 3 --out baseline.json
+go run ./cmd/lune-tokenbench run --config ./config.json --profile main --repeat 3 --out candidate.json
+go run ./cmd/lune-tokenbench compare --baseline baseline.json --candidate candidate.json
+```
+
+Run one report from the unmodified revision and the other from the candidate
+revision, using the same configuration and profile. If the baseline predates
+this command, copy `cmd/lune-tokenbench` and `testdata/tokenbench` into a
+temporary baseline worktree and run it there; the runner uses the existing Core
+API and accepts usage records without the newer purpose field. Review each
+report's `finalText` fields before treating the automated token, request-count,
+status, and p95 checks as a quality result.

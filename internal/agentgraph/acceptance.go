@@ -16,8 +16,9 @@ const maxAcceptanceRepairs = 2
 func (a *Agent) retryAcceptanceFormat(state State, response *model.Response, target string, instruction string) (graph.Transition[State], error) {
 	if state.AcceptanceFormatRetries < 1 {
 		state.AcceptanceFormatRetries++
-		state.History.Items = append(state.History.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("The internal acceptance response was missing its required structured tool call. " + instruction)})
-		state.Transcript.Items = append(state.Transcript.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("The internal acceptance response was missing its required structured tool call. " + instruction)})
+		message := InternalAcceptancePromptPrefix + "The internal acceptance response was missing its required structured tool call. " + instruction
+		state.History.Items = append(state.History.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(message)})
+		state.Transcript.Items = append(state.Transcript.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(message)})
 		return graph.To(state, target), nil
 	}
 	state.AcceptancePauseReason = acceptance.PauseInvalidReport
@@ -59,8 +60,9 @@ func (a *Agent) resolveAcceptanceDecision(state State) (graph.Transition[State],
 	}
 	state.AcceptanceRepairs = 0
 	state.AcceptancePhase = "execution"
-	state.History.Items = append(state.History.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("The host chose to continue after the acceptance pause. Make a correction against the saved criteria and previous reports; the host grants up to two new correction attempts. Do not change the criteria.")})
-	state.Transcript.Items = append(state.Transcript.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("The host chose to continue after the acceptance pause. Make a correction against the saved criteria and previous reports; the host grants up to two new correction attempts. Do not change the criteria.")})
+	message := InternalAcceptancePromptPrefix + "The host chose to continue after the acceptance pause. Make a correction against the saved criteria and previous reports; the host grants up to two new correction attempts. Do not change the criteria."
+	state.History.Items = append(state.History.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(message)})
+	state.Transcript.Items = append(state.Transcript.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(message)})
 	a.observeAcceptance(state, "resolved", "", "continue")
 	return graph.To(state, modelNode), nil
 }
@@ -104,8 +106,9 @@ func (a *Agent) acceptModelReport(ctx context.Context, state State, report accep
 		state.AcceptanceRepairs++
 		state.AcceptancePhase = "execution"
 		state.TaskError = ""
-		state.History.Items = append(state.History.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(acceptanceRepairInstructions(state, report))})
-		state.Transcript.Items = append(state.Transcript.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(acceptanceRepairInstructions(state, report))})
+		message := InternalAcceptancePromptPrefix + acceptanceRepairInstructions(state, report)
+		state.History.Items = append(state.History.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(message)})
+		state.Transcript.Items = append(state.Transcript.Items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(message)})
 		return graph.To(state, modelNode), nil
 	}
 	state.AcceptancePauseReason = acceptance.PauseUnknown

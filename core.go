@@ -41,6 +41,15 @@ const (
 )
 
 const (
+	UsagePurposeMain       = coreruntime.UsagePurposeMain
+	UsagePurposeCriteria   = coreruntime.UsagePurposeCriteria
+	UsagePurposeAcceptance = coreruntime.UsagePurposeAcceptance
+	UsagePurposeCompaction = coreruntime.UsagePurposeCompaction
+	UsagePurposeMemory     = coreruntime.UsagePurposeMemory
+	UsagePurposeTeam       = coreruntime.UsagePurposeTeam
+)
+
+const (
 	DefaultAutoCompactThreshold    = coreruntime.DefaultAutoCompactThreshold
 	DefaultAttachmentMaxFiles      = coreruntime.DefaultAttachmentMaxFiles
 	DefaultAttachmentMaxFileBytes  = coreruntime.DefaultAttachmentMaxFileBytes
@@ -216,6 +225,7 @@ type TurnSubmission = coreruntime.TurnSubmission
 type Usage = coreruntime.Usage
 type UsageRecord = coreruntime.UsageRecord
 type UsageTotals = coreruntime.UsageTotals
+type UsagePurpose = coreruntime.UsagePurpose
 type UserInteractionRequest = coreruntime.UserInteractionRequest
 type UserQuestionAnswer = coreruntime.UserQuestionAnswer
 type UserQuestionRequest = coreruntime.UserQuestionRequest

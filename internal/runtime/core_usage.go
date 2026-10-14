@@ -27,16 +27,28 @@ type TokenOutputDetails struct {
 	ReasoningTokens int64 `json:"reasoning_tokens"`
 }
 
+type UsagePurpose = model.UsagePurpose
+
+const (
+	UsagePurposeMain       = model.UsagePurposeMain
+	UsagePurposeCriteria   = model.UsagePurposeCriteria
+	UsagePurposeAcceptance = model.UsagePurposeAcceptance
+	UsagePurposeCompaction = model.UsagePurposeCompaction
+	UsagePurposeMemory     = model.UsagePurposeMemory
+	UsagePurposeTeam       = model.UsagePurposeTeam
+)
+
 type UsageRecord struct {
-	Request              int    `json:"request"`
-	Usage                Usage  `json:"usage"`
-	EstimatedInputTokens int64  `json:"estimated_input_tokens,omitempty"`
-	Available            bool   `json:"available"`
-	ContextWindow        int64  `json:"context_window,omitempty"`
-	AgentID              string `json:"agent_id,omitempty"`
-	Provider             string `json:"provider,omitempty"`
-	ModelProfile         string `json:"model_profile,omitempty"`
-	Model                string `json:"model,omitempty"`
+	Request              int          `json:"request"`
+	Usage                Usage        `json:"usage"`
+	EstimatedInputTokens int64        `json:"estimated_input_tokens,omitempty"`
+	Available            bool         `json:"available"`
+	ContextWindow        int64        `json:"context_window,omitempty"`
+	AgentID              string       `json:"agent_id,omitempty"`
+	Purpose              UsagePurpose `json:"purpose,omitempty"`
+	Provider             string       `json:"provider,omitempty"`
+	ModelProfile         string       `json:"model_profile,omitempty"`
+	Model                string       `json:"model,omitempty"`
 }
 
 type UsageTotals struct {
@@ -70,19 +82,26 @@ func (c *Core) recordUsage(ctx context.Context, id string, usage Usage) error {
 	return c.recordUsageForAgent(ctx, id, usage, "", "", "", "", 0, 0)
 }
 
-func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, agentID, profile, provider, modelID string, contextWindow, estimatedInputTokens int64) error {
+func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, agentID, profile, provider, modelID string, contextWindow, estimatedInputTokens int64, purposes ...UsagePurpose) error {
 	c.usageMu.Lock()
 	defer c.usageMu.Unlock()
+	if usage.TotalTokens <= 0 {
+		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+	}
 	saved, err := c.GetSession(ctx, id)
 	if err != nil {
 		return err
 	}
 	available := usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.OutputTokensDetails.ReasoningTokens != 0 || usage.TotalTokens != 0 ||
 		usage.InputTokensDetails.CachedTokens != 0 || usage.InputTokensDetails.CacheCreationTokens != 0
+	var purpose UsagePurpose
+	if len(purposes) > 0 {
+		purpose = purposes[0]
+	}
 	record := UsageRecord{
 		Request: saved.SessionUsage.Requests + 1, Usage: usage, Available: available,
 		ContextWindow: contextWindow, EstimatedInputTokens: estimatedInputTokensIfMissing(usage.InputTokens, estimatedInputTokens),
-		AgentID: agentID, ModelProfile: profile, Provider: provider, Model: modelID,
+		AgentID: agentID, Purpose: purpose, ModelProfile: profile, Provider: provider, Model: modelID,
 	}
 	saved.UsageRequests = append(saved.UsageRequests, record)
 	if len(saved.UsageRequests) > 200 {

@@ -89,7 +89,7 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 		}
 		stage := acceptanceRequestStageNames(toolNames)
 		if stage == "criteria" || stage == "review" {
-			normalized := model.ModelRequest{Instructions: instructions}
+			normalized := model.ModelRequest{Instructions: instructions, Input: scriptedAnthropicTaskInput(t, request["messages"])}
 			response := scriptedCriteriaResponse(normalized)
 			if stage == "review" {
 				response = scriptedAcceptanceResponse(normalized)
@@ -151,6 +151,10 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 		strings.Contains(string(responsesSession.History), "openai-reasoning-signature") {
 		t.Fatalf("native context was not separated from transcript: context=%s history=%s", responsesSession.ModelContext, responsesSession.History)
 	}
+	if strings.Contains(string(responsesSession.ModelContext), "prepare_task_criteria") ||
+		!strings.Contains(string(responsesSession.History), "prepare_task_criteria") {
+		t.Fatalf("accepted internal criteria should be absent from model context and retained in transcript: context=%s history=%s", responsesSession.ModelContext, responsesSession.History)
+	}
 	var sawStart, sawCompletion bool
 	for _, event := range events {
 		if event.Kind != EventContextCompaction || event.SessionID != saved.ID || event.Compaction == nil {
@@ -178,9 +182,37 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 	if !strings.Contains(string(updated.History), "OpenAI response") || !strings.Contains(string(updated.History), "Anthropic response") {
 		t.Fatalf("canonical transcript lost cross-provider turns: %s", updated.History)
 	}
+	if strings.Contains(string(updated.ModelContext), "prepare_task_criteria") || strings.Contains(string(updated.ModelContext), "submit_acceptance") {
+		t.Fatalf("provider switch reintroduced internal acceptance context: %s", updated.ModelContext)
+	}
 	if updated.ModelContextKey == responsesSession.ModelContextKey {
 		t.Fatal("provider switch kept the previous provider's model context key")
 	}
+}
+
+func scriptedAnthropicTaskInput(t *testing.T, raw json.RawMessage) *model.ResponseInput {
+	t.Helper()
+	var messages []struct {
+		Role    string `json:"role"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		t.Fatalf("decode Anthropic messages: %v", err)
+	}
+	for _, message := range messages {
+		if message.Role != "user" {
+			continue
+		}
+		for _, part := range message.Content {
+			if part.Type == "text" && part.Text != "" {
+				return model.NewResponseInputText(part.Text)
+			}
+		}
+	}
+	return model.NewResponseInputText("")
 }
 
 func writeAnthropicToolResponse(t *testing.T, writer http.ResponseWriter, response *model.ModelResponse) {

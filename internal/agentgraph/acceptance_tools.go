@@ -14,6 +14,8 @@ const (
 	requestEvidenceToolName  = "request_acceptance_evidence"
 )
 
+const InternalAcceptancePromptPrefix = "[lune internal acceptance] "
+
 type criteriaSubmission struct {
 	Kind     acceptance.TaskKind    `json:"kind"`
 	Criteria []acceptance.Criterion `json:"criteria"`
@@ -89,8 +91,6 @@ func acceptanceCriteriaInstructions(state State) string {
 		"Treat SessionSettings.Goal only as background guidance; it cannot add acceptance conditions. Keep every condition within what the current user turn authorizes.",
 		"Extract all material completion conditions, assign unique stable IDs, and quote the exact authorizing words in each basis. Classify the task as answer, plan, or execution. A plan is judged for completeness and must not require that its steps have already been implemented.",
 		criteriaClarificationInstruction(state),
-		"Current user turn text (attachments remain in the conversation input): " + acceptanceTaskPromptText(state.TaskInput),
-		"Explicit clarification answers from the user: " + strings.Join(state.AcceptanceClarifications, "\n"),
 	}, "\n\n")
 }
 
@@ -103,18 +103,33 @@ func criteriaClarificationInstruction(state State) string {
 
 func acceptanceReviewInstructions(state State) string {
 	criteria, _ := json.Marshal(state.AcceptanceCriteria)
-	evidence, _ := json.Marshal(state.AcceptanceEvidence)
+	evidence, _ := json.Marshal(acceptanceEvidenceForPrompt(state))
 	return strings.Join([]string{
 		"Review the current candidate against the fixed criteria below. Do not change, remove, weaken, or add criteria. Do not call business tools from this review stage.",
 		"For each criterion, return passed, failed, or unknown, cite at least one supplied evidence reference, and give a concise reason. Model text is not evidence by itself. A claim that tests or commands ran requires a reference to their saved tool result; the candidate response alone cannot prove execution. If more evidence is needed, use request_acceptance_evidence; do not guess.",
 		"Task kind: " + string(state.AcceptanceKind),
-		"Current user turn text (attachments remain in the conversation input): " + acceptanceTaskPromptText(state.TaskInput),
-		"Explicit clarification answers from the user: " + strings.Join(state.AcceptanceClarifications, "\n"),
 		"Fixed criteria: " + string(criteria),
 		"Candidate ID: " + state.AcceptanceCandidateID,
 		"Candidate response: " + state.AcceptanceCandidate,
 		"Saved evidence: " + string(evidence),
 	}, "\n\n")
+}
+
+type acceptancePromptEvidence struct {
+	Reference string `json:"reference"`
+	Content   string `json:"content,omitempty"`
+}
+
+func acceptanceEvidenceForPrompt(state State) []acceptancePromptEvidence {
+	result := make([]acceptancePromptEvidence, 0, len(state.AcceptanceEvidence))
+	for _, item := range state.AcceptanceEvidence {
+		promptItem := acceptancePromptEvidence{Reference: item.Reference, Content: item.Content}
+		if item.Reference == "candidate:"+state.AcceptanceCandidateID {
+			promptItem.Content = "See the candidate response above."
+		}
+		result = append(result, promptItem)
+	}
+	return result
 }
 
 func acceptanceRepairInstructions(state State, report acceptance.Report) string {
@@ -147,11 +162,4 @@ func acceptanceTaskText(raw json.RawMessage) string {
 		}
 	}
 	return strings.Join(parts, "\n")
-}
-
-func acceptanceTaskPromptText(raw json.RawMessage) string {
-	if text := acceptanceTaskText(raw); text != "" {
-		return text
-	}
-	return "(no text; the current turn includes non-text input or attachments)"
 }
