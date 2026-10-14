@@ -488,20 +488,6 @@ func (a *Agent) MaxConcurrency() int {
 	return a.options.Team.MaxParallelAgents()
 }
 
-const teamDispatchToolName = "delegate_team"
-
-const askUserToolName = model.UserQuestionToolName
-
-type userQuestionInput struct {
-	Question string   `json:"question"`
-	Options  []string `json:"options,omitempty"`
-}
-
 type acceptanceResolution struct {
 	Decision acceptance.Decision `json:"decision"`
-}
-
-type teamDispatchRequest struct {
-	Tasks            []TeamAssignment `json:"tasks"`
-	MinimumSuccesses *int             `json:"minimum_successes,omitempty"`
 }
