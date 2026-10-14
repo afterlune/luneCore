@@ -388,3 +388,57 @@ func TestLegacyCheckpointDefaultsTokenBudgetToUnlimited(t *testing.T) {
 		t.Fatalf("legacy task settings decoded as %#v", state)
 	}
 }
+
+func TestTaskBudgetReasonPersistsAndRecoveryCanRaiseLimit(t *testing.T) {
+	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
+		hostToolCallResponse("select", "select_tool_category", `{"category":"files"}`),
+		hostTextResponse("completed after recovery"),
+	}}
+	config := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
+	config.Execution.MaxSteps = 1
+	client, err := New(config)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	}()
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := NewTaskInput("continue with enough budget")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: input, Execution: ExecutionOptions{MaxSteps: 2}}); !errors.Is(err, ErrTaskPaused) {
+		t.Fatalf("RunTask error = %v, want a budget pause", err)
+	}
+	state, ok := client.StateForSession(saved.ID)
+	if !ok || state.Status != TaskPaused || state.ExecutionID == "" {
+		t.Fatalf("paused state = %#v, found=%t", state, ok)
+	}
+	checkpoint, err := client.checkpoints.Load(context.Background(), client.runtime.CheckpointID(saved.ID))
+	if err != nil || checkpoint.Steps != 2 {
+		t.Fatalf("checkpoint steps = %d, error=%v; want task override to replace host default", checkpoint.Steps, err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	paused, err := runtime.WaitTurn(context.Background(), state.ExecutionID)
+	if err != nil || paused.Status != TaskPaused || paused.BudgetReason != BudgetMaxSteps {
+		t.Fatalf("paused result = %#v, error=%v", paused, err)
+	}
+	if _, err := runtime.Recover(context.Background(), ExecutionOptions{MaxSteps: 10}); err != nil {
+		t.Fatalf("Recover with raised budget: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	completed, err := runtime.WaitTurn(ctx, state.ExecutionID)
+	if err != nil || completed.Status != TaskCompleted || completed.BudgetReason != "" {
+		t.Fatalf("completed result = %#v, error=%v", completed, err)
+	}
+}
