@@ -97,6 +97,12 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 			break
 		}
 	}
+	discardedExecutionID := ""
+	if paused != nil {
+		discardedExecutionID = paused.ExecutionID
+	} else if state, ok := c.activeTasks[sessionID]; ok && state.Status == TaskPaused {
+		discardedExecutionID = state.ExecutionID
+	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
 	cleanupErr := c.commands.StopSession(cleanupCtx, sessionID)
 	cleanupCancel()
@@ -136,6 +142,11 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 		}
 		if hub := c.eventHubs[sessionID]; hub != nil {
 			hub.notifyDurable()
+		}
+	}
+	if discardedExecutionID != "" && (deletedCheckpoint || deletedQueue) {
+		if err := c.sessions.DeleteExecutionTokenBudget(ctx, discardedExecutionID); err != nil {
+			return false, err
 		}
 	}
 	if state, ok := c.activeTasks[sessionID]; ok && state.Status == TaskPaused && (deletedCheckpoint || deletedQueue) {

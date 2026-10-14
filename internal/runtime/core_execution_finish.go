@@ -82,6 +82,9 @@ func (c *Core) finishTaskRun(ctx context.Context, sessionID, queueID, executionI
 		if cleanupErr := c.sessions.DeleteToolInvocationsForSession(context.Background(), sessionID); cleanupErr != nil {
 			c.logger.Warn("delete completed tool invocation records", "error", cleanupErr)
 		}
+		if cleanupErr := c.sessions.DeleteExecutionTokenBudget(context.Background(), executionScopeID); cleanupErr != nil {
+			c.logger.Warn("delete completed execution token budget", "error", cleanupErr)
+		}
 	}
 	if response == nil {
 		return nil, err

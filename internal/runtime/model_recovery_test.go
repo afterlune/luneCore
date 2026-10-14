@@ -220,11 +220,17 @@ func TestModelMaxAttemptsSettings(t *testing.T) {
 	if err := validateExecutionOptions(ExecutionOptions{ModelMaxAttempts: -1}); err == nil {
 		t.Fatal("negative attempts accepted")
 	}
-	defaults := ExecutionOptions{ModelMaxAttempts: 5}
+	if err := validateExecutionOptions(ExecutionOptions{TokenBudget: -1}); err == nil {
+		t.Fatal("negative token budget accepted")
+	}
+	defaults := ExecutionOptions{ModelMaxAttempts: 5, TokenBudget: 500}
 	if got := mergeExecutionOptions(defaults, ExecutionOptions{}); got.ModelMaxAttempts != 5 {
 		t.Fatal(got)
 	}
-	if got := coreExecutionOptions(agentExecutionOptions(mergeExecutionOptions(defaults, ExecutionOptions{ModelMaxAttempts: 1}))); got.ModelMaxAttempts != 1 {
+	if got := coreExecutionOptions(agentExecutionOptions(mergeExecutionOptions(defaults, ExecutionOptions{ModelMaxAttempts: 1, TokenBudget: 1000}))); got.ModelMaxAttempts != 1 || got.TokenBudget != 1000 {
 		t.Fatal(got)
+	}
+	if got := coreExecutionOptions(agentExecutionOptions(mergeExecutionOptions(defaults, ExecutionOptions{}))); got.TokenBudget != 500 {
+		t.Fatalf("host token budget default = %d, want 500", got.TokenBudget)
 	}
 }

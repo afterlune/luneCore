@@ -61,6 +61,9 @@ func (a *Agent) extractMemory(ctx context.Context, _ graph.CallInfo, state State
 	}
 	response, err := a.sendModel(requestCtx, state, a.options.MemoryRequester, request, nil)
 	if err != nil {
+		if errors.Is(err, model.ErrTokenBudgetExceeded) {
+			return graph.Wait(state, TokenBudgetContinuation, memoryNode), nil
+		}
 		return a.endMemoryAttempt(state, "failed", nil, err), nil
 	}
 	if response == nil || response.Status == "failed" {

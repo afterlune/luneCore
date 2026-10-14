@@ -121,6 +121,7 @@ func (c *Core) ForkPausedTask(ctx context.Context, sessionID string) (Session, e
 	}
 	newRunID := c.runtime.CheckpointID(forkedSession.ID)
 	rollback := func(cause error) (Session, error) {
+		cause = errors.Join(cause, c.sessions.DeleteExecutionTokenBudget(context.Background(), newExecutionID))
 		if deleteErr := c.checkpoints.Delete(context.Background(), newRunID); deleteErr != nil && !errors.Is(deleteErr, checkpoint.ErrNotFound) {
 			cause = errors.Join(cause, deleteErr)
 		}
@@ -155,6 +156,9 @@ func (c *Core) ForkPausedTask(ctx context.Context, sessionID string) (Session, e
 	}
 	if err := c.checkpoints.Create(ctx, forkedCheckpoint); err != nil {
 		return rollback(fmt.Errorf("save forked task checkpoint: %w", err))
+	}
+	if err := c.sessions.SetExecutionTokenBudget(ctx, forkedSession.ID, newExecutionID, pending.Execution.TokenBudget); err != nil {
+		return rollback(fmt.Errorf("initialize forked task token budget: %w", err))
 	}
 	var budgetReason string
 	result, found, resultErr := c.sessions.TurnResult(ctx, sessionID, pending.ExecutionID)

@@ -60,6 +60,7 @@ func (t *teamExecutor) Requester(_ context.Context, state agentgraph.State) (age
 		return nil, err
 	}
 	requester := agentruntime.NewUsageTrackingRequester(client, state.AgentID, state.ModelProfile, state.Provider, state.Model)
+	requester.SetMaxOutputTokens(profile.MaxOutputTokens)
 	requester.SetContextAgentUsageObserver(t.core.onAgentUsageContext)
 	return requester, nil
 }

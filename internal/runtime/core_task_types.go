@@ -13,12 +13,13 @@ import (
 
 type TaskStatus string
 
-// BudgetReason identifies the per-call execution limit that paused a task.
+// BudgetReason identifies the execution limit that paused a task.
 type BudgetReason = agentruntime.BudgetReason
 
 const (
 	BudgetMaxSteps       = agentruntime.BudgetMaxSteps
 	BudgetMaxInvocations = agentruntime.BudgetMaxInvocations
+	BudgetMaxTokens      = agentruntime.BudgetMaxTokens
 )
 
 const (
@@ -105,4 +106,8 @@ type ExecutionOptions struct {
 	JoinTimeout      time.Duration `json:"join_timeout,omitempty"`
 	TeamEntryTimeout time.Duration `json:"team_entry_timeout,omitempty"`
 	TeamQuorum       int           `json:"team_quorum,omitempty"`
+	// TokenBudget caps total input and output tokens across the whole execution.
+	// Zero means unlimited when effective; task overrides inherit the host
+	// default at zero. Recovery may raise or replace this absolute total cap.
+	TokenBudget int64 `json:"token_budget,omitempty"`
 }

@@ -37,6 +37,7 @@ const (
 const (
 	BudgetMaxSteps       = coreruntime.BudgetMaxSteps
 	BudgetMaxInvocations = coreruntime.BudgetMaxInvocations
+	BudgetMaxTokens      = coreruntime.BudgetMaxTokens
 )
 
 const (

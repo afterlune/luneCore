@@ -15,6 +15,7 @@ type BudgetReason string
 const (
 	BudgetMaxSteps       BudgetReason = "max_steps"
 	BudgetMaxInvocations BudgetReason = "max_invocations"
+	BudgetMaxTokens      BudgetReason = "max_tokens"
 )
 
 type TaskPausedError struct {

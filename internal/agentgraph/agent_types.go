@@ -18,6 +18,7 @@ const ModelRecoveryContinuation = "model_recovery"
 const AcceptanceContinuation = "acceptance_resolution"
 const CommandCompletionBlocker = "running_commands"
 const ExecutionBlockerContinuation = "execution_blocker"
+const TokenBudgetContinuation = "token_budget"
 
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
 const CurrentTaskSettingsVersion = 9
@@ -218,4 +219,5 @@ type ExecutionOptions struct {
 	JoinTimeout      time.Duration `json:"join_timeout,omitempty"`
 	TeamEntryTimeout time.Duration `json:"team_entry_timeout,omitempty"`
 	TeamQuorum       int           `json:"team_quorum,omitempty"`
+	TokenBudget      int64         `json:"token_budget,omitempty"`
 }

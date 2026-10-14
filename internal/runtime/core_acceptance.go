@@ -77,7 +77,7 @@ func (c *Core) hasAcceptanceResolutionInput(ctx context.Context, sessionID strin
 	if err != nil || !found {
 		return false, err
 	}
-	inputs, err := c.graphResumeInputs(ctx, sessionID, c.runtime.CheckpointID(sessionID))
+	inputs, err := c.graphResumeInputs(ctx, sessionID, c.runtime.CheckpointID(sessionID), false)
 	if err != nil {
 		return false, err
 	}

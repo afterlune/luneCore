@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 11
+const currentSchemaVersion = 12
 
 func Open(path string) (*Store, error) {
 	absolute, err := filepath.Abs(path)
@@ -280,6 +280,37 @@ func Open(path string) (*Store, error) {
 		_ = tx.Rollback()
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize commands: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS execution_token_budgets (
+		execution_id TEXT PRIMARY KEY,
+		session_id TEXT NOT NULL,
+		token_limit INTEGER NOT NULL CHECK (token_limit >= 0),
+		updated_at INTEGER NOT NULL
+	)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize execution token budgets: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS execution_token_budgets_session ON execution_token_budgets(session_id)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize execution token budget index: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS execution_token_reservations (
+		id INTEGER PRIMARY KEY AUTOINCREMENT,
+		execution_id TEXT NOT NULL,
+		reserved_tokens INTEGER NOT NULL CHECK (reserved_tokens >= 0),
+		actual_tokens INTEGER CHECK (actual_tokens >= 0),
+		created_at INTEGER NOT NULL
+	)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize execution token reservations: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE INDEX IF NOT EXISTS execution_token_reservations_execution ON execution_token_reservations(execution_id)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize execution token reservation index: %w", err)
 	}
 	if version < currentSchemaVersion {
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {

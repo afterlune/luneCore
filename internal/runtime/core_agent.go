@@ -27,8 +27,10 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		return nil, nil, model.ModelProfile{}, err
 	}
 	requester := agentruntime.NewUsageTrackingRequester(client, "lead", profileID, profile.Provider, profile.Model)
+	requester.SetMaxOutputTokens(profile.MaxOutputTokens)
 	requester.SetContextAgentUsageObserver(c.onAgentUsageContext)
 	memoryRequester := agentruntime.NewUsageTrackingRequester(client, "memory", profileID, profile.Provider, profile.Model)
+	memoryRequester.SetMaxOutputTokens(profile.MaxOutputTokens)
 	memoryRequester.SetContextAgentUsageObserver(c.onAgentUsageContext)
 	activeCommands, stopCommands := c.commandHooks()
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{

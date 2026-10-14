@@ -241,6 +241,9 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		if serverCompactionRequested {
 			a.notifyCompaction(ContextCompactionEvent{Stage: "failed", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold, Error: responseErr})
 		}
+		if errors.Is(responseErr, model.ErrTokenBudgetExceeded) {
+			return graph.Wait(state, TokenBudgetContinuation, a.tokenBudgetRetryNode(state)), nil
+		}
 		if ctx.Err() != nil {
 			return graph.Transition[State]{}, responseErr
 		}
@@ -251,4 +254,18 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 	}
 
 	return a.handleModelResponse(ctx, state, request, response, visibleNames, compactionThreshold, serverCompactionRequested)
+}
+
+func (a *Agent) tokenBudgetRetryNode(state State) string {
+	if state.TeamBranch {
+		return teamModelNode
+	}
+	switch state.AcceptancePhase {
+	case "criteria":
+		return criteriaNode
+	case "acceptance":
+		return acceptanceNode
+	default:
+		return modelNode
+	}
 }

@@ -23,7 +23,7 @@ func (r *Responder) Respond(ctx context.Context, input *model.ResponseInput) (*m
 	modelContext := r.ModelContextHistory()
 	execution, result, err := r.agent.StartWithTranscript(ctx, runID, modelContext, transcript, input, r.taskOptions, r.store, r.options())
 	r.execution = execution
-	return r.finish(result, err)
+	return r.finish(ctx, result, err)
 }
 
 func (r *Responder) Resume(ctx context.Context, inputs []graph.ResumeInput) (*model.Response, error) {
@@ -35,7 +35,7 @@ func (r *Responder) Resume(ctx context.Context, inputs []graph.ResumeInput) (*mo
 	} else {
 		r.execution, result, err = r.agent.Recover(ctx, runID, inputs, r.store, r.options())
 	}
-	return r.finish(result, err)
+	return r.finish(ctx, result, err)
 }
 
 func (r *Responder) HasPending() (bool, error) {
@@ -89,7 +89,7 @@ func (r *Responder) logGraphEvent(ctx context.Context, event graph.Event) {
 	r.logger.LogAttrs(ctx, level, "graph execution", attrs...)
 }
 
-func (r *Responder) finish(result graph.Result[agentgraph.State], runErr error) (*model.Response, error) {
+func (r *Responder) finish(ctx context.Context, result graph.Result[agentgraph.State], runErr error) (*model.Response, error) {
 	if result.Final != nil {
 		state := *result.Final
 		r.lastState = &state
@@ -171,10 +171,36 @@ func (r *Responder) finish(result graph.Result[agentgraph.State], runErr error) 
 			if result.Status == graph.StatusBudget {
 				return nil, &TaskPausedError{BudgetReason: BudgetReason(result.BudgetReason)}
 			}
+			waitingForTokens, inspectErr := r.waitingForTokenBudget(ctx)
+			if inspectErr != nil {
+				return nil, fmt.Errorf("inspect token budget pause: %w", inspectErr)
+			}
+			if waitingForTokens {
+				return nil, &TaskPausedError{BudgetReason: BudgetMaxTokens}
+			}
 			return nil, ErrTaskPaused
 		}
 	}
 	return nil, runErr
+}
+
+func (r *Responder) waitingForTokenBudget(ctx context.Context) (bool, error) {
+	if r == nil || r.store == nil {
+		return false, nil
+	}
+	cp, err := r.store.Load(ctx, r.runID())
+	if errors.Is(err, checkpoint.ErrNotFound) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	for _, invocation := range cp.Invocations {
+		if invocation.Status == graph.InvocationWaiting && invocation.Continuation == agentgraph.TokenBudgetContinuation {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (r *Responder) deleteCompletedRun() error {

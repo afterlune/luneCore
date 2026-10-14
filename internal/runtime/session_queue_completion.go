@@ -88,6 +88,9 @@ func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, 
 	if err := c.sessions.DeleteToolInvocationsForSession(context.Background(), queued.SessionID); err != nil {
 		c.logger.Warn("delete completed tool invocation records", "error", err)
 	}
+	if err := c.sessions.DeleteExecutionTokenBudget(context.Background(), queued.ExecutionID); err != nil {
+		c.logger.Warn("delete completed execution token budget", "error", err)
+	}
 	return nil
 }
 

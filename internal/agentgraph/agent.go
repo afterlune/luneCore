@@ -148,6 +148,11 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	}); err != nil {
 		return nil, fmt.Errorf("register execution blocker continuation: %w", err)
 	}
+	if err := graph.RegisterJSONContinuation[State, string](workflow, TokenBudgetContinuation, func(_ context.Context, _ graph.CallInfo, state State, _ string) (State, error) {
+		return state, nil
+	}); err != nil {
+		return nil, fmt.Errorf("register token budget continuation: %w", err)
+	}
 	if err := workflow.AddEdge(criteriaNode, toolNode); err != nil {
 		return nil, fmt.Errorf("add criteria-to-tool edge: %w", err)
 	}

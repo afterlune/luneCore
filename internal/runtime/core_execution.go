@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 
+	"github.com/afterlune/luneCore/internal/agentruntime"
 	"github.com/afterlune/luneCore/internal/model"
 	runtimepermission "github.com/afterlune/luneCore/internal/tool"
 	publictool "github.com/afterlune/luneCore/tool"
@@ -124,6 +125,11 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		c.finishTaskState(sessionID, TaskFailed, err)
 		return nil, err
 	}
+	if err := c.sessions.SetExecutionTokenBudget(ctx, sessionID, taskOptions.ExecutionID, taskOptions.Execution.TokenBudget); err != nil {
+		c.finishTaskState(sessionID, TaskFailed, err)
+		return nil, err
+	}
+	ctx = agentruntime.WithTokenBudget(ctx, &executionTokenBudget{store: c.sessions, executionID: taskOptions.ExecutionID})
 	if !resume {
 		if err := c.resetTaskUsage(ctx, sessionID); err != nil {
 			c.finishTaskState(sessionID, TaskFailed, err)
@@ -145,7 +151,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 	var response *model.Response
 	if resume {
 		var inputs []graph.ResumeInput
-		inputs, err = c.graphResumeInputs(ctx, sessionID, taskRuntime.RunID())
+		inputs, err = c.graphResumeInputs(ctx, sessionID, taskRuntime.RunID(), true)
 		if err == nil {
 			response, err = taskRuntime.Resume(ctx, inputs)
 		}

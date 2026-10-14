@@ -150,7 +150,7 @@ func (c *Core) drainQueue(sessionID string) {
 					// The host may answer as soon as the wait event is emitted, while
 					// this drain still owns the run. Queue that answer once the wait
 					// checkpoint has committed, then continue this drain in place.
-					inputs, inputErr := c.graphResumeInputs(ctx, sessionID, c.runtime.CheckpointID(sessionID))
+					inputs, inputErr := c.graphResumeInputs(ctx, sessionID, c.runtime.CheckpointID(sessionID), false)
 					if inputErr != nil {
 						c.logger.Warn("inspect answered graph wait", "error", inputErr)
 					} else if len(inputs) > 0 {
@@ -191,8 +191,13 @@ func (c *Core) failQueuedTurn(ctx context.Context, queued session.QueuedTurn, er
 	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskFailed, Err: errorString(err)}
 	if _, persistErr := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(TaskFailed), nil, nil, nil, "", mustMarshalEvent(event)); persistErr != nil {
 		c.logger.Warn("finish rejected queued turn", "error", persistErr)
-	} else if hub := c.eventHubs[queued.SessionID]; hub != nil {
-		hub.notifyDurable()
+	} else {
+		if hub := c.eventHubs[queued.SessionID]; hub != nil {
+			hub.notifyDurable()
+		}
+		if cleanupErr := c.sessions.DeleteExecutionTokenBudget(context.Background(), queued.ExecutionID); cleanupErr != nil {
+			c.logger.Warn("delete failed execution token budget", "error", cleanupErr)
+		}
 	}
 	c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: err})
 }
