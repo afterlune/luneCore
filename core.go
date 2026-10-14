@@ -1,301 +1,229 @@
 // Package core exposes the agent runtime without terminal presentation details.
 package core
 
-import (
-	"context"
-	"errors"
-	"fmt"
-	"log/slog"
-	"os"
-	"path/filepath"
-	"strings"
-	"sync"
+import coreruntime "github.com/afterlune/luneCore/internal/runtime"
 
-	"github.com/afterlune/luneCore/acceptance"
-	"github.com/afterlune/luneCore/internal/agentgraph"
-	"github.com/afterlune/luneCore/internal/agentruntime"
-	commandruntime "github.com/afterlune/luneCore/internal/command"
-	projectconfig "github.com/afterlune/luneCore/internal/config"
-	"github.com/afterlune/luneCore/internal/mcp"
-	"github.com/afterlune/luneCore/internal/model"
-	"github.com/afterlune/luneCore/internal/session"
-	"github.com/afterlune/luneCore/internal/tool"
-	publicmemory "github.com/afterlune/luneCore/memory"
-	publicmodel "github.com/afterlune/luneCore/model"
-	publictool "github.com/afterlune/luneCore/tool"
-	graph "github.com/afterlune/luneGraph"
-	"github.com/afterlune/luneGraph/checkpoint"
-	"github.com/afterlune/luneGraph/checkpoint/sqlite"
+const (
+	AcceptanceTaskAnswer    = coreruntime.AcceptanceTaskAnswer
+	AcceptanceTaskPlan      = coreruntime.AcceptanceTaskPlan
+	AcceptanceTaskExecution = coreruntime.AcceptanceTaskExecution
+
+	AcceptancePassed  = coreruntime.AcceptancePassed
+	AcceptanceFailed  = coreruntime.AcceptanceFailed
+	AcceptanceUnknown = coreruntime.AcceptanceUnknown
+
+	AcceptanceSourceModel = coreruntime.AcceptanceSourceModel
+	AcceptanceSourceHost  = coreruntime.AcceptanceSourceHost
+	AcceptanceSourceUser  = coreruntime.AcceptanceSourceUser
+
+	AcceptancePauseUnknown       = coreruntime.AcceptancePauseUnknown
+	AcceptancePauseRepairLimit   = coreruntime.AcceptancePauseRepairLimit
+	AcceptancePauseInvalidReport = coreruntime.AcceptancePauseInvalidReport
+
+	AcceptanceContinue = coreruntime.AcceptanceContinue
+	AcceptanceConfirm  = coreruntime.AcceptanceConfirm
 )
 
-// Config constructs an embedded runtime. ModelConfig values override matching
-// entries from config.json; omitted model settings are loaded from that file.
-// ModelProviders replace protocol adapters with host implementations.
-type Config struct {
-	Workspace string
-	StateDir  string
-	// Logger receives structured logs from this Core and its internal components.
-	// When nil, New captures slog.Default() for the Core's lifetime.
-	Logger          *slog.Logger
-	ModelConfig     *publicmodel.Config
-	ModelProviders  map[string]publicmodel.Provider
-	Tools           []publictool.Registration
-	CommandExecutor publictool.CommandExecutor
-	Commands        CommandOptions
-	// SandboxHelperPath optionally selects the lune-sandbox companion binary.
-	// When empty, Core searches beside the host executable and then PATH.
-	SandboxHelperPath string
-	// Deprecated: local commands now always run through the kernel sandbox.
-	AllowLocalCommand bool
-	Execution         ExecutionOptions
-	// AcceptanceVerifier optionally overrides the model's acceptance judgment.
-	// Implementations should be idempotent, read-only, and honor ctx cancellation.
-	AcceptanceVerifier acceptance.Verifier
-	// PersonalInstructions supplies user-level guidance shared by this Core's sessions.
-	// New tasks snapshot the text for recovery; changes require creating a new Core.
-	PersonalInstructions string
-	Memory               MemoryConfig
-	// MaxConcurrentCallbacks caps callback work across all sessions in this Core.
-	MaxConcurrentCallbacks int
-}
+const (
+	CommandRunning     = coreruntime.CommandRunning
+	CommandStopping    = coreruntime.CommandStopping
+	CommandSucceeded   = coreruntime.CommandSucceeded
+	CommandFailed      = coreruntime.CommandFailed
+	CommandCancelled   = coreruntime.CommandCancelled
+	CommandTimedOut    = coreruntime.CommandTimedOut
+	CommandInterrupted = coreruntime.CommandInterrupted
+)
 
-// MemoryConfig controls automatic workspace memory. Memory is enabled by
-// default; set Disabled to turn off extraction, context injection, and search.
-// Embedder is optional and enables vector-assisted retrieval.
-type MemoryConfig struct {
-	Disabled bool
-	Embedder publicmemory.Embedder
-}
+const (
+	BudgetMaxSteps       = coreruntime.BudgetMaxSteps
+	BudgetMaxInvocations = coreruntime.BudgetMaxInvocations
+)
 
-type Core struct {
-	commands             *commandruntime.Manager
-	logger               *slog.Logger
-	workspace            string
-	registry             *tool.Registry
-	models               *model.ProviderCatalog
-	taskDefaults         taskSettings
-	attachmentLimits     projectconfig.AttachmentLimits
-	team                 *teamExecutor
-	runtime              *agentruntime.Responder
-	mcpManager           *mcp.Manager
-	checkpoints          *sqlite.Store[agentgraph.State]
-	sessions             *session.Store
-	executionDefaults    ExecutionOptions
-	callbackLimiter      *graph.Limiter
-	acceptanceVerifier   acceptance.Verifier
-	personalInstructions string
-	memoryConfig         MemoryConfig
-	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
-	// the recovery source after process restart.
-	liveExecutions map[string]*graph.Execution[agentgraph.State]
-	stateDirLock   *session.DirectoryLock
+const (
+	DefaultAutoCompactThreshold    = coreruntime.DefaultAutoCompactThreshold
+	DefaultAttachmentMaxFiles      = coreruntime.DefaultAttachmentMaxFiles
+	DefaultAttachmentMaxFileBytes  = coreruntime.DefaultAttachmentMaxFileBytes
+	DefaultAttachmentMaxTotalBytes = coreruntime.DefaultAttachmentMaxTotalBytes
+	CurrentSessionDataVersion      = coreruntime.CurrentSessionDataVersion
+)
 
-	mu                  sync.RWMutex
-	runtimeConfigMu     sync.RWMutex
-	usageMu             sync.Mutex
-	active              TaskState
-	activeTasks         map[string]TaskState
-	taskCancels         map[string]context.CancelFunc
-	approvals           map[string]pendingApproval
-	interactions        map[string]pendingInteraction
-	interactiveSessions map[string]bool
-	eventHubs           map[string]*sessionEventHub
-	queueDraining       map[string]bool
-	turnWaiters         map[string]chan turnResult
-	executionRuns       map[string]chan struct{}
-	interruptRequests   map[string]bool
-	queueDrainWG        sync.WaitGroup
-	closed              bool
-}
+const (
+	EventTaskStarted              = coreruntime.EventTaskStarted
+	EventTaskFinished             = coreruntime.EventTaskFinished
+	EventTaskDiscarded            = coreruntime.EventTaskDiscarded
+	EventTaskQueued               = coreruntime.EventTaskQueued
+	EventRuntimeStreamFailed      = coreruntime.EventRuntimeStreamFailed
+	EventCommandStarted           = coreruntime.EventCommandStarted
+	EventCommandFinished          = coreruntime.EventCommandFinished
+	EventToolStarted              = coreruntime.EventToolStarted
+	EventToolFinished             = coreruntime.EventToolFinished
+	EventUsage                    = coreruntime.EventUsage
+	EventApprovalRequired         = coreruntime.EventApprovalRequired
+	EventApprovalCancelled        = coreruntime.EventApprovalCancelled
+	EventUserQuestionRequired     = coreruntime.EventUserQuestionRequired
+	EventUserInteractionRequired  = coreruntime.EventUserInteractionRequired
+	EventUserInteractionCancelled = coreruntime.EventUserInteractionCancelled
+	EventAgentStarted             = coreruntime.EventAgentStarted
+	EventAgentFinished            = coreruntime.EventAgentFinished
+	EventModelRetry               = coreruntime.EventModelRetry
+	EventModelRecoveryRequired    = coreruntime.EventModelRecoveryRequired
+	EventModelRecoveryResumed     = coreruntime.EventModelRecoveryResumed
+	EventModelStream              = coreruntime.EventModelStream
+	EventContextCompaction        = coreruntime.EventContextCompaction
+	EventToolRecoveryRequired     = coreruntime.EventToolRecoveryRequired
+	EventAcceptanceStarted        = coreruntime.EventAcceptanceStarted
+	EventAcceptanceCriteriaReady  = coreruntime.EventAcceptanceCriteriaReady
+	EventAcceptanceReported       = coreruntime.EventAcceptanceReported
+	EventAcceptanceRequired       = coreruntime.EventAcceptanceRequired
+	EventAcceptanceResolved       = coreruntime.EventAcceptanceResolved
+	EventExecutionBlocked         = coreruntime.EventExecutionBlocked
+	EventMemoryStarted            = coreruntime.EventMemoryStarted
+	EventMemorySaved              = coreruntime.EventMemorySaved
+	EventMemorySkipped            = coreruntime.EventMemorySkipped
+	EventMemoryFailed             = coreruntime.EventMemoryFailed
+)
 
-func New(config Config) (_ *Core, err error) {
-	logger := config.Logger
-	if logger == nil {
-		logger = slog.Default()
-	}
-	if config.Commands.Timeout < 0 || config.Commands.MaxConcurrent < 0 {
-		return nil, errors.New("command limits must not be negative")
-	}
-	if err := validateExecutionOptions(config.Execution); err != nil {
-		return nil, fmt.Errorf("invalid execution defaults: %w", err)
-	}
-	if !config.Memory.Disabled && config.Memory.Embedder != nil && strings.TrimSpace(config.Memory.Embedder.ID()) == "" {
-		return nil, errors.New("memory embedder ID must not be empty")
-	}
-	for _, registration := range config.Tools {
-		if registration.Tool != nil && (registration.Tool.Definition().Name == publicmemory.SearchToolName || registration.Tool.Definition().Name == "command" || registration.Tool.Definition().Name == "command_status" || registration.Tool.Definition().Name == "command_stop") {
-			return nil, fmt.Errorf("tool name is reserved: %s", registration.Tool.Definition().Name)
-		}
-	}
-	if config.MaxConcurrentCallbacks < 0 {
-		return nil, errors.New("maximum concurrent callbacks must not be negative")
-	}
-	var callbackLimiter *graph.Limiter
-	if config.MaxConcurrentCallbacks > 0 {
-		callbackLimiter, err = graph.NewLimiter(config.MaxConcurrentCallbacks)
-		if err != nil {
-			return nil, fmt.Errorf("create callback limiter: %w", err)
-		}
-	}
-	workspace := config.Workspace
-	if workspace == "" {
-		workspace, err = os.Getwd()
-		if err != nil {
-			return nil, fmt.Errorf("get workspace: %w", err)
-		}
-	}
-	workspace, err = filepath.Abs(workspace)
-	if err != nil {
-		return nil, fmt.Errorf("resolve workspace: %w", err)
-	}
-	stateDir := config.StateDir
-	if stateDir == "" {
-		stateDir = filepath.Join(workspace, ".luneagent")
-	}
-	stateDir, err = filepath.Abs(stateDir)
-	if err != nil {
-		return nil, fmt.Errorf("resolve state directory: %w", err)
-	}
-	if err := os.MkdirAll(stateDir, 0700); err != nil {
-		return nil, fmt.Errorf("create state directory: %w", err)
-	}
-	stateLock, err := session.AcquireStateDirectoryLock(stateDir)
-	if err != nil {
-		return nil, fmt.Errorf("acquire StateDir lock: %w", err)
-	}
-	keepStateLock := false
-	defer func() {
-		if !keepStateLock {
-			if lockErr := stateLock.Close(); lockErr != nil {
-				err = errors.Join(err, fmt.Errorf("release StateDir lock after initialization failure: %w", lockErr))
-			}
-		}
-	}()
-	projectConfig, err := projectconfig.LoadForRuntime(workspace, config.ModelConfig, config.ModelProviders)
-	if err != nil {
-		return nil, err
-	}
-	hostTools, err := tool.HostToolRegistrations(config.Tools)
-	if err != nil {
-		return nil, err
-	}
-	registry, err := tool.NewDefaultRegistry(workspace, tool.RegistryOptions{
-		Tools: hostTools, CommandExecutor: config.CommandExecutor, AllowLocalCommands: config.AllowLocalCommand,
-		SandboxHelperPath: config.SandboxHelperPath, Logger: logger,
-	})
-	if err != nil {
-		return nil, err
-	}
-	closeRegistry := true
-	defer func() {
-		if closeRegistry {
-			_ = registry.Close()
-		}
-	}()
-	models, err := model.NewProviderCatalogWithHostProviders(projectConfig.ModelConfig(), config.ModelProviders)
-	if err != nil {
-		return nil, err
-	}
-	checkpoints, err := sqlite.Open[agentgraph.State](context.Background(), filepath.Join(stateDir, "checkpoints-v10.db"), checkpoint.JSON[agentgraph.State]{})
-	if err != nil {
-		return nil, fmt.Errorf("open task checkpoints: %w", err)
-	}
-	closeCheckpoints := true
-	defer func() {
-		if closeCheckpoints {
-			_ = checkpoints.Close()
-		}
-	}()
-	sessions, err := session.Open(filepath.Join(stateDir, "sessions.db"))
-	if err != nil {
-		return nil, err
-	}
-	closeSessions := true
-	defer func() {
-		if closeSessions {
-			_ = sessions.Close()
-		}
-	}()
-	c := &Core{
-		logger:           logger,
-		workspace:        workspace,
-		registry:         registry,
-		models:           models,
-		attachmentLimits: projectConfig.Attachments,
-		taskDefaults: taskSettings{
-			ContextWindow: projectConfig.ContextWindow, ReserveOutputTokens: projectConfig.ReserveOutputTokens,
-			AutoCompact: projectConfig.AutoCompact, AutoCompactThreshold: projectConfig.AutoCompactThreshold,
-		},
-		checkpoints:          checkpoints,
-		sessions:             sessions,
-		executionDefaults:    config.Execution,
-		callbackLimiter:      callbackLimiter,
-		acceptanceVerifier:   config.AcceptanceVerifier,
-		personalInstructions: config.PersonalInstructions,
-		memoryConfig:         config.Memory,
-		liveExecutions:       make(map[string]*graph.Execution[agentgraph.State]),
-		active:               TaskState{Status: TaskIdle},
-		activeTasks:          make(map[string]TaskState),
-		taskCancels:          make(map[string]context.CancelFunc),
-		approvals:            make(map[string]pendingApproval),
-		interactions:         make(map[string]pendingInteraction),
-		interactiveSessions:  make(map[string]bool),
-		eventHubs:            make(map[string]*sessionEventHub),
-		queueDraining:        make(map[string]bool),
-		turnWaiters:          make(map[string]chan turnResult),
-		executionRuns:        make(map[string]chan struct{}),
-		interruptRequests:    make(map[string]bool),
-		stateDirLock:         stateLock,
-	}
-	if err := c.configureCommands(config); err != nil {
-		return nil, err
-	}
-	if !c.memoryConfig.Disabled {
-		registrations, err := tool.HostToolRegistrations([]publictool.Registration{{
-			Tool: memorySearchTool{core: c},
-			Metadata: publictool.Metadata{
-				Category:        publictool.Category{Name: "workspace_memory", Description: "Search saved workspace memories from earlier accepted tasks."},
-				PermissionClass: publictool.PermissionWorkspaceRead,
-				ReadOnly:        true,
-			},
-		}})
-		if err != nil {
-			return nil, fmt.Errorf("prepare workspace memory search tool: %w", err)
-		}
-		if err := registry.Register(registrations[0]); err != nil {
-			return nil, fmt.Errorf("register workspace memory search tool: %w", err)
-		}
-	}
-	attachmentLimits := c.ProjectAttachmentLimits()
-	mcpManager, err := mcp.NewManager(mcp.Options{
-		Workspace: workspace, StateDir: stateDir, Servers: projectConfig.MCPServers, Registry: registry,
-		Limits:             mcp.Limits{MaxBinaryBlocks: attachmentLimits.MaxFiles, MaxFileBytes: attachmentLimits.MaxFileBytes, MaxTotalBytes: attachmentLimits.MaxTotalBytes},
-		Logger:             logger,
-		RequestInteraction: c.requestUserInteraction,
-	})
-	if err != nil {
-		return nil, err
-	}
-	c.mcpManager = mcpManager
-	closeMCPManager := true
-	defer func() {
-		if closeMCPManager {
-			_ = mcpManager.Close()
-		}
-	}()
-	for _, restoreErr := range mcpManager.RestoreEnabled() {
-		c.logger.Warn("could not restore enabled MCP server", "error_type", fmt.Sprintf("%T", restoreErr))
-	}
-	team := &teamExecutor{core: c, models: models, tools: registry}
-	c.team = team
-	c.runtime = agentruntime.NewResponder(checkpoints, callbackLimiter, c.logger)
-	registry.SetToolEventObserver(c.onToolEvent)
-	registry.SetToolCallController(c.executeToolCall)
-	registry.SetPermissionApprovalHandler(c.requestApproval)
-	if err := c.migrateLegacySession(context.Background()); err != nil {
-		return nil, err
-	}
-	closeCheckpoints, closeSessions, closeRegistry, closeMCPManager = false, false, false, false
-	keepStateLock = true
-	return c, nil
-}
+const (
+	PendingModelRecoveryRequest = coreruntime.PendingModelRecoveryRequest
+	PendingApproval             = coreruntime.PendingApproval
+	PendingUserQuestion         = coreruntime.PendingUserQuestion
+	PendingUserInteraction      = coreruntime.PendingUserInteraction
+	PendingToolRecovery         = coreruntime.PendingToolRecovery
+	PendingAcceptanceRequest    = coreruntime.PendingAcceptanceRequest
+	PendingExecutionBlocker     = coreruntime.PendingExecutionBlocker
+)
+
+const (
+	PermissionReadOnly   = coreruntime.PermissionReadOnly
+	PermissionWorkspace  = coreruntime.PermissionWorkspace
+	PermissionAsk        = coreruntime.PermissionAsk
+	PermissionFullAccess = coreruntime.PermissionFullAccess
+)
+
+const (
+	PlanImplementSameContext = coreruntime.PlanImplementSameContext
+	PlanImplementNewContext  = coreruntime.PlanImplementNewContext
+)
+
+const (
+	StartIfIdle = coreruntime.StartIfIdle
+	QueueInput  = coreruntime.QueueInput
+)
+
+const (
+	SubmissionAccepted = coreruntime.SubmissionAccepted
+	SubmissionQueued   = coreruntime.SubmissionQueued
+)
+
+const (
+	TaskIdle      = coreruntime.TaskIdle
+	TaskQueued    = coreruntime.TaskQueued
+	TaskRunning   = coreruntime.TaskRunning
+	TaskPaused    = coreruntime.TaskPaused
+	TaskCompleted = coreruntime.TaskCompleted
+	TaskFailed    = coreruntime.TaskFailed
+	TaskCancelled = coreruntime.TaskCancelled
+	TaskDiscarded = coreruntime.TaskDiscarded
+)
+
+const (
+	ToolRecoveryRetry = coreruntime.ToolRecoveryRetry
+	ToolRecoverySkip  = coreruntime.ToolRecoverySkip
+)
+
+var (
+	ErrPlanUnavailable           = coreruntime.ErrPlanUnavailable
+	ErrPlanOutdated              = coreruntime.ErrPlanOutdated
+	ErrSessionBusy               = coreruntime.ErrSessionBusy
+	ErrTaskPaused                = coreruntime.ErrTaskPaused
+	ErrTurnNotFound              = coreruntime.ErrTurnNotFound
+	ErrMCPServerLifecycleChanged = coreruntime.ErrMCPServerLifecycleChanged
+	ErrModelRetryNotReady        = coreruntime.ErrModelRetryNotReady
+	ErrStateDirInUse             = coreruntime.ErrStateDirInUse
+	ErrToolInvocationPersistence = coreruntime.ErrToolInvocationPersistence
+)
+
+type AcceptanceCriterion = coreruntime.AcceptanceCriterion
+type AcceptanceCriterionResult = coreruntime.AcceptanceCriterionResult
+type AcceptanceDecision = coreruntime.AcceptanceDecision
+type AcceptanceEvidence = coreruntime.AcceptanceEvidence
+type AcceptanceOutcome = coreruntime.AcceptanceOutcome
+type AcceptancePauseReason = coreruntime.AcceptancePauseReason
+type AcceptanceReport = coreruntime.AcceptanceReport
+type AcceptanceResolution = coreruntime.AcceptanceResolution
+type AcceptanceSource = coreruntime.AcceptanceSource
+type AcceptanceTaskKind = coreruntime.AcceptanceTaskKind
+type AcceptanceVerificationInput = coreruntime.AcceptanceVerificationInput
+type AcceptanceVerifier = coreruntime.AcceptanceVerifier
+type ApprovalRequest = coreruntime.ApprovalRequest
+type AttachmentLimits = coreruntime.AttachmentLimits
+type BudgetReason = coreruntime.BudgetReason
+type CommandInfo = coreruntime.CommandInfo
+type CommandOptions = coreruntime.CommandOptions
+type CommandOutput = coreruntime.CommandOutput
+type CommandReadOptions = coreruntime.CommandReadOptions
+type CommandStatus = coreruntime.CommandStatus
+type Config = coreruntime.Config
+type ContextCompactionDetails = coreruntime.ContextCompactionDetails
+type ContextDefaults = coreruntime.ContextDefaults
+type Core = coreruntime.Core
+type Event = coreruntime.Event
+type EventKind = coreruntime.EventKind
+type ExecutionBlocker = coreruntime.ExecutionBlocker
+type ExecutionOptions = coreruntime.ExecutionOptions
+type MCPPrompt = coreruntime.MCPPrompt
+type MCPPromptArgument = coreruntime.MCPPromptArgument
+type MCPPromptResult = coreruntime.MCPPromptResult
+type MCPResource = coreruntime.MCPResource
+type MCPResourceTemplate = coreruntime.MCPResourceTemplate
+type MCPServerStatus = coreruntime.MCPServerStatus
+type MemoryConfig = coreruntime.MemoryConfig
+type ModelFailure = coreruntime.ModelFailure
+type ModelOption = coreruntime.ModelOption
+type ModelStreamEvent = coreruntime.ModelStreamEvent
+type PendingAcceptance = coreruntime.PendingAcceptance
+type PendingModelRecovery = coreruntime.PendingModelRecovery
+type PendingRequest = coreruntime.PendingRequest
+type PendingRequestKind = coreruntime.PendingRequestKind
+type PermissionMode = coreruntime.PermissionMode
+type PlanAuthorization = coreruntime.PlanAuthorization
+type PlanImplementation = coreruntime.PlanImplementation
+type PlanImplementationMode = coreruntime.PlanImplementationMode
+type ProposedPlan = coreruntime.ProposedPlan
+type QueuedTurnState = coreruntime.QueuedTurnState
+type RuntimeState = coreruntime.RuntimeState
+type Session = coreruntime.Session
+type SessionRuntime = coreruntime.SessionRuntime
+type SessionSettings = coreruntime.SessionSettings
+type SubmissionMode = coreruntime.SubmissionMode
+type SubmissionStatus = coreruntime.SubmissionStatus
+type TaskInput = coreruntime.TaskInput
+type TaskPausedError = coreruntime.TaskPausedError
+type TaskRequest = coreruntime.TaskRequest
+type TaskResult = coreruntime.TaskResult
+type TaskState = coreruntime.TaskState
+type TaskStatus = coreruntime.TaskStatus
+type TokenInputDetails = coreruntime.TokenInputDetails
+type TokenOutputDetails = coreruntime.TokenOutputDetails
+type ToolCall = coreruntime.ToolCall
+type ToolRecoveryDecision = coreruntime.ToolRecoveryDecision
+type ToolRecoveryRequest = coreruntime.ToolRecoveryRequest
+type ToolRecoveryRequiredError = coreruntime.ToolRecoveryRequiredError
+type TurnRequest = coreruntime.TurnRequest
+type TurnResult = coreruntime.TurnResult
+type TurnSubmission = coreruntime.TurnSubmission
+type Usage = coreruntime.Usage
+type UsageRecord = coreruntime.UsageRecord
+type UsageTotals = coreruntime.UsageTotals
+type UserInteractionRequest = coreruntime.UserInteractionRequest
+type UserQuestionAnswer = coreruntime.UserQuestionAnswer
+type UserQuestionRequest = coreruntime.UserQuestionRequest
+
+// New constructs an embedded runtime.
+func New(config Config) (*Core, error) { return coreruntime.New(config) }
+
+// NewTaskInput creates a task input from any JSON-serializable value.
+func NewTaskInput[T any](value T) (TaskInput, error) { return coreruntime.NewTaskInput(value) }
+
+// ParseTaskInput parses command-line text as JSON input or plain text.
+func ParseTaskInput(line string) (TaskInput, error) { return coreruntime.ParseTaskInput(line) }

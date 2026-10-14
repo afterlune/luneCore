@@ -1,0 +1,126 @@
+package runtime
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"time"
+
+	"github.com/afterlune/luneCore/internal/model"
+)
+
+type Usage struct {
+	InputTokens         int64              `json:"input_tokens"`
+	InputTokensDetails  TokenInputDetails  `json:"input_tokens_details"`
+	OutputTokens        int64              `json:"output_tokens"`
+	OutputTokensDetails TokenOutputDetails `json:"output_tokens_details"`
+	TotalTokens         int64              `json:"total_tokens"`
+}
+
+type TokenInputDetails struct {
+	CachedTokens        int64 `json:"cached_tokens"`
+	CacheCreationTokens int64 `json:"cache_creation_tokens,omitempty"`
+}
+
+type TokenOutputDetails struct {
+	ReasoningTokens int64 `json:"reasoning_tokens"`
+}
+
+type UsageRecord struct {
+	Request              int    `json:"request"`
+	Usage                Usage  `json:"usage"`
+	EstimatedInputTokens int64  `json:"estimated_input_tokens,omitempty"`
+	Available            bool   `json:"available"`
+	ContextWindow        int64  `json:"context_window,omitempty"`
+	AgentID              string `json:"agent_id,omitempty"`
+	Provider             string `json:"provider,omitempty"`
+	ModelProfile         string `json:"model_profile,omitempty"`
+	Model                string `json:"model,omitempty"`
+}
+
+type UsageTotals struct {
+	Requests       int   `json:"requests"`
+	Measured       int   `json:"measured"`
+	Input          int64 `json:"input"`
+	EstimatedInput int64 `json:"estimated_input,omitempty"`
+	Output         int64 `json:"output"`
+	Reasoning      int64 `json:"reasoning"`
+	Total          int64 `json:"total"`
+	Cached         int64 `json:"cached"`
+	CacheCreation  int64 `json:"cache_creation,omitempty"`
+}
+
+func modelContextKey(providerName, effectiveModel string, providerConfig model.ProviderConfig) string {
+	identity, _ := json.Marshal(struct {
+		Provider         string `json:"provider"`
+		Protocol         string `json:"protocol"`
+		BaseURL          string `json:"base_url"`
+		Model            string `json:"model"`
+		ServerCompaction bool   `json:"server_compaction"`
+	}{
+		Provider: providerName, Protocol: providerConfig.Protocol, BaseURL: providerConfig.BaseURL,
+		Model: effectiveModel, ServerCompaction: providerConfig.ServerCompaction,
+	})
+	digest := sha256.Sum256(identity)
+	return hex.EncodeToString(digest[:])
+}
+
+func (c *Core) recordUsage(ctx context.Context, id string, usage Usage) error {
+	return c.recordUsageForAgent(ctx, id, usage, "", "", "", "", 0, 0)
+}
+
+func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, agentID, profile, provider, modelID string, contextWindow, estimatedInputTokens int64) error {
+	c.usageMu.Lock()
+	defer c.usageMu.Unlock()
+	saved, err := c.GetSession(ctx, id)
+	if err != nil {
+		return err
+	}
+	available := usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.OutputTokensDetails.ReasoningTokens != 0 || usage.TotalTokens != 0 ||
+		usage.InputTokensDetails.CachedTokens != 0 || usage.InputTokensDetails.CacheCreationTokens != 0
+	record := UsageRecord{
+		Request: saved.SessionUsage.Requests + 1, Usage: usage, Available: available,
+		ContextWindow: contextWindow, EstimatedInputTokens: estimatedInputTokensIfMissing(usage.InputTokens, estimatedInputTokens),
+		AgentID: agentID, ModelProfile: profile, Provider: provider, Model: modelID,
+	}
+	saved.UsageRequests = append(saved.UsageRequests, record)
+	if len(saved.UsageRequests) > 200 {
+		saved.UsageRequests = append([]UsageRecord(nil), saved.UsageRequests[len(saved.UsageRequests)-200:]...)
+	}
+	if saved.AgentUsage == nil {
+		saved.AgentUsage = make(map[string]UsageTotals)
+	}
+	agentTotals := saved.AgentUsage[agentID]
+	addUsage(&agentTotals, usage, available)
+	estimatedInput := estimatedInputTokensIfMissing(usage.InputTokens, estimatedInputTokens)
+	agentTotals.EstimatedInput += estimatedInput
+	saved.AgentUsage[agentID] = agentTotals
+	addUsage(&saved.SessionUsage, usage, available)
+	addUsage(&saved.TaskUsage, usage, available)
+	saved.SessionUsage.EstimatedInput += estimatedInput
+	saved.TaskUsage.EstimatedInput += estimatedInput
+	saved.UpdatedAt = time.Now()
+	return c.saveSession(ctx, saved)
+}
+
+func estimatedInputTokensIfMissing(inputTokens, estimatedInputTokens int64) int64 {
+	if inputTokens > 0 || estimatedInputTokens <= 0 {
+		return 0
+	}
+	return estimatedInputTokens
+}
+
+func addUsage(totals *UsageTotals, usage Usage, available bool) {
+	totals.Requests++
+	if !available {
+		return
+	}
+	totals.Measured++
+	totals.Input += usage.InputTokens
+	totals.Output += usage.OutputTokens
+	totals.Reasoning += usage.OutputTokensDetails.ReasoningTokens
+	totals.Total += usage.TotalTokens
+	totals.Cached += usage.InputTokensDetails.CachedTokens
+	totals.CacheCreation += usage.InputTokensDetails.CacheCreationTokens
+}
