@@ -101,18 +101,15 @@ func TestProjectInstructionsPreflightSkipsWholeToolBatch(t *testing.T) {
 	}
 }
 
-func TestProjectInstructionsStayOutOfAcceptancePrompts(t *testing.T) {
+func TestProjectAndPersonalInstructionsReachTaskRequest(t *testing.T) {
 	requester := &scriptedRequester{responses: []*model.Response{
-		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"criteria","name":"prepare_task_criteria","arguments":"{\"kind\":\"answer\",\"criteria\":[{\"id\":\"answer\",\"description\":\"Answer the request.\",\"basis\":\"hello\"}]}"}]}`),
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello answered"}]}]}`),
-		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"acceptance","name":"submit_acceptance","arguments":"{\"candidate_id\":\"candidate-1\",\"results\":[{\"criterion_id\":\"answer\",\"outcome\":\"passed\",\"evidence\":[\"candidate:candidate-1\"],\"reason\":\"The answer addresses the request.\"}]}"}]}`),
 	}}
 	registry, err := tool.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
 	agent, err := NewWithOptions(requester, registry, AgentOptions{
-		AcceptanceEnabled: true,
 		ProjectInstructionsForTask: func(context.Context, State) ([]ProjectInstruction, error) {
 			return []ProjectInstruction{{Path: "AGENTS.md", Content: "Project-only execution guidance."}}, nil
 		},
@@ -126,35 +123,17 @@ func TestProjectInstructionsStayOutOfAcceptancePrompts(t *testing.T) {
 		t.Fatal(err)
 	}
 	personalInstructions := "Prefers concise answers."
-	prior := model.NewResponseInputItems(model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("STALE-SESSION-DETAIL must not enter acceptance requests")})
-	_, result, err := agent.StartWithTranscript(context.Background(), "project-instruction-acceptance", prior, prior, input, TaskOptions{
+	prior := model.NewResponseInputItems(model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("Earlier context remains available to the model.")})
+	_, result, err := agent.StartWithTranscript(context.Background(), "project-instruction-task", prior, prior, input, TaskOptions{
 		PersonalInstructions: personalInstructions,
 	}, store, graph.Options{})
 	if err != nil || result.Status != graph.StatusCompleted {
 		t.Fatalf("Start result=%#v error=%v", result, err)
 	}
-	if len(requester.requests) != 3 {
-		t.Fatalf("model requests = %d, want criteria, execution, and acceptance", len(requester.requests))
+	if len(requester.requests) != 1 {
+		t.Fatalf("model requests = %d, want one task request", len(requester.requests))
 	}
-	if strings.Contains(requester.requests[0].Instructions, "Project-only execution guidance") ||
-		strings.Contains(requester.requests[0].Instructions, personalInstructions) ||
-		strings.Contains(requester.requests[2].Instructions, "Project-only execution guidance") ||
-		strings.Contains(requester.requests[2].Instructions, personalInstructions) {
-		t.Fatal("guidance changed acceptance criteria or acceptance review")
-	}
-	for _, index := range []int{0, 2} {
-		inputJSON, err := json.Marshal(requester.requests[index].Input)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(inputJSON), "STALE-SESSION-DETAIL") || !strings.Contains(string(inputJSON), "hello") {
-			t.Fatalf("acceptance request input %d did not isolate the current request: %s", index, inputJSON)
-		}
-	}
-	if strings.Count(requester.requests[2].Instructions, "hello answered") != 1 {
-		t.Fatalf("candidate appeared more than once in acceptance instructions: %q", requester.requests[2].Instructions)
-	}
-	executionInstructions := requester.requests[1].Instructions
+	executionInstructions := requester.requests[0].Instructions
 	if !strings.Contains(executionInstructions, "Project-only execution guidance") || !strings.Contains(executionInstructions, personalInstructions) {
 		t.Fatal("project or personal guidance was not included for task execution")
 	}

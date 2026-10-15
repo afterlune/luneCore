@@ -16,7 +16,6 @@ import (
 type faultHostProvider struct {
 	inner         *scriptedHostProvider
 	mu            sync.Mutex
-	stage         string
 	failAt        int
 	requests      int
 	failed        bool
@@ -34,12 +33,10 @@ func (p *faultHostProvider) StreamResponse(ctx context.Context, request publicmo
 func (p *faultHostProvider) respond(ctx context.Context, request publicmodel.ModelRequest, profile publicmodel.ModelProfile, emit func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {
 	p.mu.Lock()
 	fail := false
-	if acceptanceRequestStage(request) == p.stage {
-		p.requests++
-		fail = !p.failed && p.requests == p.failAt
-		if fail {
-			p.failed = true
-		}
+	p.requests++
+	fail = !p.failed && p.requests == p.failAt
+	if fail {
+		p.failed = true
 	}
 	p.mu.Unlock()
 	if fail {
@@ -59,7 +56,7 @@ func (p *faultHostProvider) respond(ctx context.Context, request publicmodel.Mod
 func TestModelRecoverySurvivesRestartAndDoesNotReplayTools(t *testing.T) {
 	ctx := context.Background()
 	hostTool := &hostEchoTool{}
-	provider := &faultHostProvider{stage: "execution", failAt: 3, retryAfter: 2 * time.Second, streamPartial: true, inner: &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
+	provider := &faultHostProvider{failAt: 3, retryAfter: 2 * time.Second, streamPartial: true, inner: &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
 		hostToolCallResponse("select-host", "select_tool_category", `{"category":"host"}`),
 		hostToolCallResponse("finished-tool", "host_echo", `{}`),
 		hostTextResponse("recovered result"), hostTextResponse("next queued result"),
@@ -156,63 +153,6 @@ func TestModelRecoverySurvivesRestartAndDoesNotReplayTools(t *testing.T) {
 	}
 	if !required || !resumed {
 		t.Fatalf("required=%v resumed=%v", required, resumed)
-	}
-}
-
-func TestModelRecoveryAcceptanceAndDiscard(t *testing.T) {
-	for _, stage := range []string{"criteria", "review"} {
-		t.Run(stage, func(t *testing.T) {
-			provider := &faultHostProvider{stage: stage, failAt: 1, retryAfter: time.Minute, inner: &scriptedHostProvider{responses: []*publicmodel.ModelResponse{hostTextResponse("candidate")}}}
-			config := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
-			client, err := New(config)
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer client.Close()
-			saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			result, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: mustSettingsTaskInput(t, "answer this question")})
-			if !errors.Is(err, ErrTaskPaused) || result.ModelFailure == nil || result.ModelFailure.Attempts != 1 || len(result.AcceptanceReports) != 0 {
-				t.Fatalf("result=%+v error=%v", result, err)
-			}
-			runtime, _ := client.OpenSessionRuntime(context.Background(), saved.ID)
-			if _, found, err := runtime.PendingAcceptance(context.Background()); err != nil || found {
-				t.Fatalf("acceptance pending=%v error=%v", found, err)
-			}
-			if _, err := runtime.DiscardPaused(context.Background()); err != nil {
-				t.Fatal(err)
-			}
-			if _, found, err := runtime.PendingModelRecovery(context.Background()); err != nil || found {
-				t.Fatalf("model pending=%v error=%v", found, err)
-			}
-		})
-	}
-}
-
-func TestModelFailureKeepsHostVerifierAuthority(t *testing.T) {
-	provider := &faultHostProvider{stage: "review", failAt: 1, retryAfter: time.Minute, inner: &scriptedHostProvider{responses: []*publicmodel.ModelResponse{hostTextResponse("candidate")}}}
-	config := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
-	config.AcceptanceVerifier = acceptanceVerifierFunc(func(_ context.Context, input AcceptanceVerificationInput) (AcceptanceReport, error) {
-		results := make([]AcceptanceCriterionResult, len(input.Criteria))
-		for i, criterion := range input.Criteria {
-			results[i] = AcceptanceCriterionResult{CriterionID: criterion.ID, Outcome: AcceptancePassed, Reason: "host confirmed", Evidence: []string{input.Evidence[0].Reference}}
-		}
-		return AcceptanceReport{Results: results}, nil
-	})
-	client, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer client.Close()
-	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: mustSettingsTaskInput(t, "answer the current question")})
-	if err != nil || result.Status != TaskCompleted || result.ModelFailure != nil || len(result.AcceptanceReports) != 1 || result.AcceptanceReports[0].Source != AcceptanceSourceHost {
-		t.Fatalf("result=%+v error=%v", result, err)
 	}
 }
 

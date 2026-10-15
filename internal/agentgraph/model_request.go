@@ -11,9 +11,7 @@ import (
 
 func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
 	ensureTranscript(&state)
-	loadProjectInstructions := !state.ProjectInstructionsReady &&
-		state.AcceptancePhase != "criteria" && state.AcceptancePhase != "acceptance" &&
-		a.options.ProjectInstructionsForTask != nil
+	loadProjectInstructions := !state.ProjectInstructionsReady && a.options.ProjectInstructionsForTask != nil
 	if loadProjectInstructions {
 		instructions, err := a.options.ProjectInstructionsForTask(ctx, state)
 		if err != nil {
@@ -35,12 +33,6 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 	usagePurpose := model.UsagePurposeMain
 	if state.TeamBranch {
 		usagePurpose = model.UsagePurposeTeam
-	}
-	switch state.AcceptancePhase {
-	case "criteria":
-		usagePurpose = model.UsagePurposeCriteria
-	case "acceptance":
-		usagePurpose = model.UsagePurposeAcceptance
 	}
 	requestCtx = model.WithUsagePurpose(requestCtx, usagePurpose)
 	requester := a.requester
@@ -81,34 +73,11 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 	if permissionMode == "" && a.options.CurrentPermissionMode != nil {
 		permissionMode = a.options.CurrentPermissionMode()
 	}
-	var visibleTools []model.ResponseTool
-	var visibleNames []string
-	var err error
-	switch state.AcceptancePhase {
-	case "criteria":
-		visibleTools = []model.ResponseTool{criteriaDefinition()}
-		visibleNames = []string{submitCriteriaToolName}
-		if a.options.AskUser && !state.NoInteractiveDecisions && !state.TeamBranch {
-			visibleTools = append(visibleTools, askUserDefinition())
-			visibleNames = append(visibleNames, askUserToolName)
-		}
-	case "acceptance":
-		visibleTools = []model.ResponseTool{acceptanceDefinition(), requestEvidenceDefinition()}
-		visibleNames = []string{submitAcceptanceToolName, requestEvidenceToolName}
-	default:
-		visibleTools, visibleNames, err = a.visibleTools(state, state.SelectedCategory, permissionMode)
-		if err != nil {
-			return a.failTask(state, err)
-		}
+	visibleTools, visibleNames, err := a.visibleTools(state, state.SelectedCategory, permissionMode)
+	if err != nil {
+		return a.failTask(state, err)
 	}
 	requestInput := model.NewResponseInputItems(state.History.Items...)
-	if state.AcceptancePhase == "criteria" || state.AcceptancePhase == "acceptance" {
-		var inputErr error
-		requestInput, inputErr = acceptancePhaseInput(state)
-		if inputErr != nil {
-			return a.failTask(state, inputErr)
-		}
-	}
 	request := model.ModelRequest{
 		Model: state.Model,
 		Input: requestInput,
@@ -124,44 +93,23 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 		request.Model = a.options.Model
 	}
 	request.Instructions = taskInstructions(state.Goal, permissionMode)
-	switch state.AcceptancePhase {
-	case "criteria":
-		request.Instructions = acceptanceCriteriaInstructions(state)
-	case "acceptance":
-		request.Instructions = acceptanceReviewInstructions(state)
-	default:
-		if state.AcceptanceEvidenceRequest != "" {
-			request.Instructions += "\n\nThe acceptance reviewer requested more evidence before deciding: " + state.AcceptanceEvidenceRequest
-			state.AcceptanceEvidenceRequest = ""
-		}
-		if !state.TeamBranch && a.options.MemorySummaryFor != nil {
-			if summary, summaryErr := a.options.MemorySummaryFor(ctx, state); summaryErr != nil {
-				a.options.Logger.WarnContext(ctx, "load workspace memory summary", "error_type", fmt.Sprintf("%T", summaryErr))
-			} else if summary != "" {
-				request.Instructions += "\n\n" + summary
-			}
+	if !state.TeamBranch && a.options.MemorySummaryFor != nil {
+		if summary, summaryErr := a.options.MemorySummaryFor(ctx, state); summaryErr != nil {
+			a.options.Logger.WarnContext(ctx, "load workspace memory summary", "error_type", fmt.Sprintf("%T", summaryErr))
+		} else if summary != "" {
+			request.Instructions += "\n\n" + summary
 		}
 	}
-	if state.AcceptancePhase != "criteria" && state.AcceptancePhase != "acceptance" {
-		if personalContext := personalInstructionContext(state.PersonalInstructions); personalContext != "" {
-			request.Instructions += "\n\n" + personalContext
-		}
-		if projectContext := projectInstructionContext(state.ProjectInstructions); projectContext != "" {
-			request.Instructions += "\n\n" + projectContext
-		}
+	if personalContext := personalInstructionContext(state.PersonalInstructions); personalContext != "" {
+		request.Instructions += "\n\n" + personalContext
+	}
+	if projectContext := projectInstructionContext(state.ProjectInstructions); projectContext != "" {
+		request.Instructions += "\n\n" + projectContext
 	}
 	if state.NoInteractiveDecisions {
 		request.Instructions += "\n\nHost approved this plan. Do not ask the user or seek new permission. Stop and report if an unapproved action is required."
 	}
-	if state.AcceptancePhase == "criteria" {
-		auto := "auto"
-		request.ToolChoice = &model.ToolChoice{Mode: &auto}
-	}
-	if state.AcceptancePhase == "acceptance" {
-		auto := "auto"
-		request.ToolChoice = &model.ToolChoice{Mode: &auto}
-	}
-	if a.options.CommandSummary != nil && state.AcceptancePhase != "criteria" && state.AcceptancePhase != "acceptance" {
+	if a.options.CommandSummary != nil {
 		summary, err := a.options.CommandSummary(ctx, state)
 		if err != nil {
 			return a.failTask(state, err)
@@ -281,12 +229,5 @@ func (a *Agent) tokenBudgetRetryNode(state State) string {
 	if state.TeamBranch {
 		return teamModelNode
 	}
-	switch state.AcceptancePhase {
-	case "criteria":
-		return criteriaNode
-	case "acceptance":
-		return acceptanceNode
-	default:
-		return modelNode
-	}
+	return modelNode
 }

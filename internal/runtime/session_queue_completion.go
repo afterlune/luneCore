@@ -11,7 +11,7 @@ import (
 )
 
 func (c *Core) completeQueuedTurnFromRuntime(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response json.RawMessage, runtime *agentruntime.Responder) error {
-	var history, modelContext, acceptanceReports, acceptanceCriteria, acceptanceEvidence json.RawMessage
+	var history, modelContext json.RawMessage
 	contextKey := ""
 	var err error
 	if runtime != nil {
@@ -31,51 +31,21 @@ func (c *Core) completeQueuedTurnFromRuntime(ctx context.Context, queued session
 			}
 		}
 		contextKey = runtime.ContextKey()
-		if state, found := runtime.LastState(); found {
-			if len(state.AcceptanceReports) > 0 {
-				acceptanceReports, err = json.Marshal(state.AcceptanceReports)
-				if err != nil {
-					return fmt.Errorf("encode acceptance reports: %w", err)
-				}
-			}
-			if len(state.AcceptanceCriteria) > 0 {
-				acceptanceCriteria, err = json.Marshal(state.AcceptanceCriteria)
-				if err != nil {
-					return fmt.Errorf("encode acceptance criteria: %w", err)
-				}
-			}
-			if len(state.AcceptanceEvidence) > 0 {
-				acceptanceEvidence, err = json.Marshal(state.AcceptanceEvidence)
-				if err != nil {
-					return fmt.Errorf("encode acceptance evidence: %w", err)
-				}
-			}
-		}
 	}
 	if status != TaskCompleted {
 		response = nil
 	}
-	return c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey, acceptanceReports, acceptanceCriteria, acceptanceEvidence)
+	return c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey)
 }
 
-func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response, history, modelContext json.RawMessage, contextKey string, artifacts ...json.RawMessage) error {
+func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response, history, modelContext json.RawMessage, contextKey string) error {
 	taskState, ok := c.StateForSession(queued.SessionID)
 	var taskID string
 	if ok && taskState.ExecutionID == queued.ExecutionID {
 		taskID = taskState.TaskID
 	}
 	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, TaskID: taskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: status}
-	var acceptanceReports, acceptanceCriteria, acceptanceEvidence json.RawMessage
-	if len(artifacts) > 0 {
-		acceptanceReports = artifacts[0]
-	}
-	if len(artifacts) > 1 {
-		acceptanceCriteria = artifacts[1]
-	}
-	if len(artifacts) > 2 {
-		acceptanceEvidence = artifacts[2]
-	}
-	if _, err := c.sessions.CompleteQueuedTurnWithAcceptance(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(status), response, history, modelContext, contextKey, acceptanceReports, acceptanceCriteria, acceptanceEvidence, mustMarshalEvent(event)); err != nil {
+	if _, err := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(status), response, history, modelContext, contextKey, mustMarshalEvent(event)); err != nil {
 		return err
 	}
 	c.rememberQueuedTaskStatus(queued.SessionID, queued.ExecutionID, queued.QueueID, status)

@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/memory"
 	publicmodel "github.com/afterlune/luneCore/model"
@@ -15,13 +14,12 @@ import (
 
 const UserQuestionContinuation = "user_question"
 const ModelRecoveryContinuation = "model_recovery"
-const AcceptanceContinuation = "acceptance_resolution"
 const CommandCompletionBlocker = "running_commands"
 const ExecutionBlockerContinuation = "execution_blocker"
 const TokenBudgetContinuation = "token_budget"
 
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
-const CurrentTaskSettingsVersion = 9
+const CurrentTaskSettingsVersion = 10
 
 // Requester sends one Responses API request without managing history or tools.
 type Requester interface {
@@ -57,7 +55,6 @@ type AgentOptions struct {
 	ActiveCommands             func(State) bool
 	StopCommands               func(State) error
 	CommandSummary             func(context.Context, State) (string, error)
-	CommandEvidence            func(context.Context, State) ([]acceptance.Evidence, error)
 	ID                         string
 	Name                       string
 	Logger                     *slog.Logger
@@ -72,9 +69,6 @@ type AgentOptions struct {
 	Execution                  ExecutionOptions
 	Team                       TeamExecutor
 	AskUser                    bool
-	AcceptanceEnabled          bool
-	AcceptanceVerifier         acceptance.Verifier
-	AcceptanceObserver         func(State, string, string, string)
 	MemoryEnabled              bool
 	MemoryRequester            Requester
 	MemorySummaryFor           func(context.Context, State) (string, error)
@@ -111,78 +105,61 @@ type State struct {
 	ModelFailure            *publicmodel.Failure `json:"model_failure,omitempty"`
 	RunID                   string               `json:"run_id,omitempty"`
 	// ExecutionID is stable across resume attempts and namespaces tool calls.
-	ExecutionID               string                       `json:"execution_id,omitempty"`
-	AgentID                   string                       `json:"agent_id,omitempty"`
-	AgentName                 string                       `json:"agent_name,omitempty"`
-	Provider                  string                       `json:"provider,omitempty"`
-	Protocol                  string                       `json:"protocol,omitempty"`
-	ServerCompaction          bool                         `json:"server_compaction,omitempty"`
-	SupportsInputAudio        bool                         `json:"supports_input_audio"`
-	ServerCompactionFallback  bool                         `json:"server_compaction_fallback,omitempty"`
-	ModelProfile              string                       `json:"model_profile,omitempty"`
-	Model                     string                       `json:"model,omitempty"`
-	ModelOverride             string                       `json:"model_override,omitempty"`
-	ReasoningEffort           string                       `json:"reasoning_effort,omitempty"`
-	TaskSettingsVersion       int                          `json:"task_settings_version,omitempty"`
-	Execution                 ExecutionOptions             `json:"execution,omitempty"`
-	PermissionOverride        string                       `json:"permission_override,omitempty"`
-	PlanAuthorization         publictool.PlanAuthorization `json:"plan_authorization,omitempty"`
-	NoInteractiveDecisions    bool                         `json:"no_interactive_decisions,omitempty"`
-	BlockerID                 string                       `json:"blocker_id,omitempty"`
-	BlockerTool               string                       `json:"blocker_tool,omitempty"`
-	BlockerReason             string                       `json:"blocker_reason,omitempty"`
-	Goal                      string                       `json:"goal,omitempty"`
-	PersonalInstructions      string                       `json:"personal_instructions,omitempty"`
-	ProjectInstructionsReady  bool                         `json:"project_instructions_ready,omitempty"`
-	ProjectInstructions       []ProjectInstruction         `json:"project_instructions,omitempty"`
-	ContextWindow             int64                        `json:"context_window,omitempty"`
-	ReserveOutputTokens       int64                        `json:"reserve_output_tokens,omitempty"`
-	AutoCompact               bool                         `json:"auto_compact,omitempty"`
-	AutoCompactThreshold      float64                      `json:"auto_compact_threshold,omitempty"`
-	History                   model.ResponseInput          `json:"history"`
-	Transcript                model.ResponseInput          `json:"transcript,omitempty"`
-	CompactionWarningEmitted  bool                         `json:"compaction_warning_emitted,omitempty"`
-	SelectedCategory          string                       `json:"selected_category,omitempty"`
-	PendingCalls              []model.OutputFunctionCall   `json:"pending_calls,omitempty"`
-	PendingIndex              int                          `json:"pending_index,omitempty"`
-	VisibleTools              []string                     `json:"visible_tools,omitempty"`
-	ToolRounds                int                          `json:"tool_rounds,omitempty"`
-	MaxToolRounds             int                          `json:"max_tool_rounds,omitempty"`
-	TaskError                 string                       `json:"task_error,omitempty"`
-	FinalResponse             *model.Response              `json:"final_response,omitempty"`
-	TeamBranch                bool                         `json:"team_branch,omitempty"`
-	TeamTaskID                string                       `json:"team_task_id,omitempty"`
-	TeamModel                 string                       `json:"team_model,omitempty"`
-	TeamProvider              string                       `json:"team_provider,omitempty"`
-	TeamText                  string                       `json:"team_text,omitempty"`
-	TeamError                 string                       `json:"team_error,omitempty"`
-	TeamStarted               bool                         `json:"team_started,omitempty"`
-	TeamRunID                 string                       `json:"team_run_id,omitempty"`
-	TeamDispatchID            string                       `json:"team_dispatch_id,omitempty"`
-	TeamAssignments           []TeamAssignment             `json:"team_assignments,omitempty"`
-	TeamMinimumSuccesses      int                          `json:"team_minimum_successes,omitempty"`
-	UserQuestion              string                       `json:"user_question,omitempty"`
-	UserQuestionOptions       []model.UserQuestionOption   `json:"user_question_options,omitempty"`
-	UserAnswer                string                       `json:"user_answer,omitempty"`
-	UserAnswerReady           bool                         `json:"user_answer_ready,omitempty"`
-	TaskInput                 json.RawMessage              `json:"task_input,omitempty"`
-	AcceptancePhase           string                       `json:"acceptance_phase,omitempty"`
-	AcceptanceKind            acceptance.TaskKind          `json:"acceptance_kind,omitempty"`
-	AcceptanceClarifications  []string                     `json:"acceptance_clarifications,omitempty"`
-	AcceptanceCriteria        []acceptance.Criterion       `json:"acceptance_criteria,omitempty"`
-	AcceptanceCandidate       string                       `json:"acceptance_candidate,omitempty"`
-	AcceptanceCandidateID     string                       `json:"acceptance_candidate_id,omitempty"`
-	AcceptanceCandidateCount  int                          `json:"acceptance_candidate_count,omitempty"`
-	AcceptanceEvidenceRequest string                       `json:"acceptance_evidence_request,omitempty"`
-	AcceptanceReports         []acceptance.Report          `json:"acceptance_reports,omitempty"`
-	AcceptanceEvidence        []acceptance.Evidence        `json:"acceptance_evidence,omitempty"`
-	AcceptanceRepairs         int                          `json:"acceptance_repairs,omitempty"`
-	AcceptanceFormatRetries   int                          `json:"acceptance_format_retries,omitempty"`
-	AcceptancePauseReason     acceptance.PauseReason       `json:"acceptance_pause_reason,omitempty"`
-	AcceptancePaused          bool                         `json:"acceptance_paused,omitempty"`
-	AcceptanceDecision        acceptance.Decision          `json:"acceptance_decision,omitempty"`
-	AcceptanceDecisionRunID   string                       `json:"acceptance_decision_run_id,omitempty"`
-	AcceptanceDecisionCallID  string                       `json:"acceptance_decision_call_id,omitempty"`
+	ExecutionID              string                       `json:"execution_id,omitempty"`
+	AgentID                  string                       `json:"agent_id,omitempty"`
+	AgentName                string                       `json:"agent_name,omitempty"`
+	Provider                 string                       `json:"provider,omitempty"`
+	Protocol                 string                       `json:"protocol,omitempty"`
+	ServerCompaction         bool                         `json:"server_compaction,omitempty"`
+	SupportsInputAudio       bool                         `json:"supports_input_audio"`
+	ServerCompactionFallback bool                         `json:"server_compaction_fallback,omitempty"`
+	ModelProfile             string                       `json:"model_profile,omitempty"`
+	Model                    string                       `json:"model,omitempty"`
+	ModelOverride            string                       `json:"model_override,omitempty"`
+	ReasoningEffort          string                       `json:"reasoning_effort,omitempty"`
+	TaskSettingsVersion      int                          `json:"task_settings_version,omitempty"`
+	Execution                ExecutionOptions             `json:"execution,omitempty"`
+	PermissionOverride       string                       `json:"permission_override,omitempty"`
+	PlanAuthorization        publictool.PlanAuthorization `json:"plan_authorization,omitempty"`
+	NoInteractiveDecisions   bool                         `json:"no_interactive_decisions,omitempty"`
+	BlockerID                string                       `json:"blocker_id,omitempty"`
+	BlockerTool              string                       `json:"blocker_tool,omitempty"`
+	BlockerReason            string                       `json:"blocker_reason,omitempty"`
+	Goal                     string                       `json:"goal,omitempty"`
+	PersonalInstructions     string                       `json:"personal_instructions,omitempty"`
+	ProjectInstructionsReady bool                         `json:"project_instructions_ready,omitempty"`
+	ProjectInstructions      []ProjectInstruction         `json:"project_instructions,omitempty"`
+	ContextWindow            int64                        `json:"context_window,omitempty"`
+	ReserveOutputTokens      int64                        `json:"reserve_output_tokens,omitempty"`
+	AutoCompact              bool                         `json:"auto_compact,omitempty"`
+	AutoCompactThreshold     float64                      `json:"auto_compact_threshold,omitempty"`
+	History                  model.ResponseInput          `json:"history"`
+	Transcript               model.ResponseInput          `json:"transcript,omitempty"`
+	CompactionWarningEmitted bool                         `json:"compaction_warning_emitted,omitempty"`
+	SelectedCategory         string                       `json:"selected_category,omitempty"`
+	PendingCalls             []model.OutputFunctionCall   `json:"pending_calls,omitempty"`
+	PendingIndex             int                          `json:"pending_index,omitempty"`
+	VisibleTools             []string                     `json:"visible_tools,omitempty"`
+	ToolRounds               int                          `json:"tool_rounds,omitempty"`
+	MaxToolRounds            int                          `json:"max_tool_rounds,omitempty"`
+	TaskError                string                       `json:"task_error,omitempty"`
+	FinalResponse            *model.Response              `json:"final_response,omitempty"`
+	TeamBranch               bool                         `json:"team_branch,omitempty"`
+	TeamTaskID               string                       `json:"team_task_id,omitempty"`
+	TeamModel                string                       `json:"team_model,omitempty"`
+	TeamProvider             string                       `json:"team_provider,omitempty"`
+	TeamText                 string                       `json:"team_text,omitempty"`
+	TeamError                string                       `json:"team_error,omitempty"`
+	TeamStarted              bool                         `json:"team_started,omitempty"`
+	TeamRunID                string                       `json:"team_run_id,omitempty"`
+	TeamDispatchID           string                       `json:"team_dispatch_id,omitempty"`
+	TeamAssignments          []TeamAssignment             `json:"team_assignments,omitempty"`
+	TeamMinimumSuccesses     int                          `json:"team_minimum_successes,omitempty"`
+	UserQuestion             string                       `json:"user_question,omitempty"`
+	UserQuestionOptions      []model.UserQuestionOption   `json:"user_question_options,omitempty"`
+	UserAnswer               string                       `json:"user_answer,omitempty"`
+	UserAnswerReady          bool                         `json:"user_answer_ready,omitempty"`
+	TaskInput                json.RawMessage              `json:"task_input,omitempty"`
 }
 
 // TaskOptions configures one user task. A zero tool-round limit is unlimited.

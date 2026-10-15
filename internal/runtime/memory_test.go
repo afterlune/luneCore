@@ -165,15 +165,13 @@ func memorySubmissionResponse(items string) *publicmodel.ModelResponse {
 	return hostToolCallResponse("memory-submit", "propose_workspace_memories", `{"items":`+items+`}`)
 }
 
-func TestAcceptedTaskExtractsAndSharesWorkspaceMemory(t *testing.T) {
+func TestTaskExtractsAndSharesWorkspaceMemory(t *testing.T) {
 	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
-		criteriaToolResponse(AcceptanceTaskAnswer, "first_request", "Answer the current request.", "请用简洁中文回答"),
 		hostTextResponse("收到，我会用简洁中文回答。"),
 		memorySubmissionResponse(`[{
 			"category":"preference","content":"Prefers concise Chinese answers.","importance":3,
 			"basis":"请用简洁中文回答"
 		}]`),
-		criteriaToolResponse(AcceptanceTaskAnswer, "second_request", "Answer the current request.", "如何组织说明"),
 		hostTextResponse("先给结论，再列出要点。"),
 		memorySubmissionResponse(`[]`),
 	}}
@@ -189,7 +187,7 @@ func TestAcceptedTaskExtractsAndSharesWorkspaceMemory(t *testing.T) {
 	}
 	first, err := client.RunTask(ctx, TaskRequest{SessionID: firstSession.ID, Input: mustSettingsTaskInput(t, "请用简洁中文回答")})
 	if err != nil || first.Status != TaskCompleted {
-		t.Fatalf("first accepted task = %#v, error=%v", first, err)
+		t.Fatalf("first task = %#v, error=%v", first, err)
 	}
 	memories, err := client.ListMemories(ctx, 10)
 	if err != nil || len(memories) != 2 {
@@ -228,15 +226,15 @@ func TestAcceptedTaskExtractsAndSharesWorkspaceMemory(t *testing.T) {
 	}
 	second, err := client.RunTask(ctx, TaskRequest{SessionID: secondSession.ID, Input: mustSettingsTaskInput(t, "如何组织说明")})
 	if err != nil || second.Status != TaskCompleted {
-		t.Fatalf("second accepted task = %#v, error=%v", second, err)
+		t.Fatalf("second task = %#v, error=%v", second, err)
 	}
 	provider.mu.Lock()
 	requests := append([]publicmodel.ModelRequest(nil), provider.seenRequests...)
 	provider.mu.Unlock()
-	if len(requests) != 6 || !strings.Contains(requests[4].Instructions, "Prefers concise Chinese answers.") {
+	if len(requests) != 4 || !strings.Contains(requests[2].Instructions, "Prefers concise Chinese answers.") {
 		t.Fatalf("second session did not receive workspace memory; request count=%d", len(requests))
 	}
-	for _, definition := range requests[2].Tools {
+	for _, definition := range requests[1].Tools {
 		if function, ok := definition.(publicmodel.FunctionTool); !ok || function.Name != "propose_workspace_memories" {
 			t.Fatalf("memory extractor received an unexpected tool: %#v", definition)
 		}

@@ -71,10 +71,6 @@ func (p *loggingProvider) CreateResponse(_ context.Context, request model.ModelR
 		}
 	}
 	switch {
-	case names["prepare_task_criteria"]:
-		return externalResponseForRequest(request), nil
-	case names["submit_acceptance"]:
-		return externalResponseForRequest(request), nil
 	case names["logging_tool"]:
 		if !p.toolCallSent {
 			p.toolCallSent = true
@@ -141,37 +137,7 @@ func externalResponse() *model.ModelResponse {
 }
 
 func externalResponseForRequest(request model.ModelRequest) *model.ModelResponse {
-	stage := "execution"
-	for _, definition := range request.Tools {
-		if function, ok := definition.(model.FunctionTool); ok {
-			switch function.Name {
-			case "prepare_task_criteria":
-				stage = "criteria"
-			case "submit_acceptance", "request_acceptance_evidence":
-				stage = "acceptance"
-			}
-		}
-	}
-	if stage == "criteria" {
-		arguments, _ := json.Marshal(map[string]any{
-			"kind": "answer", "criteria": []map[string]string{{
-				"id": "user_request", "description": "Answer the current user request.", "basis": "hello",
-			}},
-		})
-		return &model.ModelResponse{Status: "completed", Output: []model.ResponseOutputItem{
-			model.OutputFunctionCall{CallID: "criteria-call", Name: "prepare_task_criteria", Arguments: string(arguments)},
-		}}
-	}
-	if stage == "acceptance" {
-		arguments, _ := json.Marshal(map[string]any{
-			"candidate_id": "candidate-1", "results": []map[string]any{{
-				"criterion_id": "user_request", "outcome": "passed", "evidence": []string{"candidate:candidate-1"}, "reason": "The candidate answers the user.",
-			}},
-		})
-		return &model.ModelResponse{Status: "completed", Output: []model.ResponseOutputItem{
-			model.OutputFunctionCall{CallID: "acceptance-call", Name: "submit_acceptance", Arguments: string(arguments)},
-		}}
-	}
+	_ = request
 	return externalResponse()
 }
 
@@ -239,7 +205,7 @@ func TestExternalGoPackageCanEmbedAndExtendCore(t *testing.T) {
 	}
 }
 
-func TestHostPersonalInstructionsReachOnlyNormalTaskRequests(t *testing.T) {
+func TestHostPersonalInstructionsReachTaskRequests(t *testing.T) {
 	provider := &personalInstructionsProvider{}
 	client, err := core.New(core.Config{
 		Workspace: t.TempDir(), StateDir: t.TempDir(),
@@ -268,14 +234,10 @@ func TestHostPersonalInstructionsReachOnlyNormalTaskRequests(t *testing.T) {
 	if err != nil || result.Status != core.TaskCompleted {
 		t.Fatalf("RunTask result=%#v error=%v", result, err)
 	}
-	if len(provider.requests) != 3 {
-		t.Fatalf("model requests = %d, want criteria, execution, and acceptance", len(provider.requests))
+	if len(provider.requests) != 1 {
+		t.Fatalf("model requests = %d, want one task request", len(provider.requests))
 	}
-	if strings.Contains(provider.requests[0].Instructions, "Prefers concise answers.") ||
-		strings.Contains(provider.requests[2].Instructions, "Prefers concise answers.") {
-		t.Fatal("personal instructions appeared in acceptance criteria or review")
-	}
-	if !strings.Contains(provider.requests[1].Instructions, "Prefers concise answers.") {
+	if !strings.Contains(provider.requests[0].Instructions, "Prefers concise answers.") {
 		t.Fatal("normal task request is missing host personal instructions")
 	}
 }

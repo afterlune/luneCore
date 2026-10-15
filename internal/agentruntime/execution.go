@@ -95,10 +95,9 @@ func (r *Responder) finish(ctx context.Context, result graph.Result[agentgraph.S
 		r.lastState = &state
 	}
 	if (result.Status == graph.StatusBudget || result.Status == graph.StatusCancelled) && result.Final != nil &&
-		result.Final.AcceptancePhase == "complete" && result.Final.FinalResponse != nil && result.Final.TaskError == "" {
-		// Acceptance has already completed. An optional post-acceptance memory
-		// node may be skipped when the remaining graph budget is exhausted or
-		// the caller cancels; neither should revoke the accepted result.
+		result.Final.FinalResponse != nil && result.Final.TaskError == "" {
+		// The user response is ready. Optional post-response memory extraction
+		// cannot turn the completed task back into a pause or cancellation.
 		result.Status = graph.StatusCompleted
 		runErr = nil
 	}
@@ -113,9 +112,6 @@ func (r *Responder) finish(ctx context.Context, result graph.Result[agentgraph.S
 		}
 		state := result.Final
 		history := model.NewResponseInputItems(state.History.Items...)
-		if state.AcceptancePhase == "complete" {
-			history = PruneCompletedAcceptanceContext(history)
-		}
 		r.historyMu.Lock()
 		r.history = history
 		transcript := state.Transcript

@@ -81,12 +81,8 @@ type TaskResult struct {
 	Response     json.RawMessage
 	// ProposedPlan is set only for a completed response containing one complete
 	// proposed-plan block. Hosts can offer handoff choices when it is non-nil.
-	ProposedPlan       *ProposedPlan
-	BudgetReason       BudgetReason
-	AcceptanceCriteria []AcceptanceCriterion
-	AcceptanceEvidence []AcceptanceEvidence
-	// AcceptanceReports contains every candidate judgment for this execution.
-	AcceptanceReports []AcceptanceReport
+	ProposedPlan *ProposedPlan
+	BudgetReason BudgetReason
 }
 
 type TurnResult = TaskResult
@@ -97,11 +93,10 @@ const (
 	PendingModelRecoveryRequest PendingRequestKind = "model_recovery"
 	PendingApproval             PendingRequestKind = "approval"
 	// PendingUserQuestion is a lead-agent clarification waiting for the host.
-	PendingUserQuestion      PendingRequestKind = "user_question"
-	PendingUserInteraction   PendingRequestKind = "user_interaction"
-	PendingToolRecovery      PendingRequestKind = "tool_recovery"
-	PendingAcceptanceRequest PendingRequestKind = "acceptance"
-	PendingExecutionBlocker  PendingRequestKind = "execution_blocker"
+	PendingUserQuestion     PendingRequestKind = "user_question"
+	PendingUserInteraction  PendingRequestKind = "user_interaction"
+	PendingToolRecovery     PendingRequestKind = "tool_recovery"
+	PendingExecutionBlocker PendingRequestKind = "execution_blocker"
 )
 
 type PendingRequest struct {
@@ -111,7 +106,6 @@ type PendingRequest struct {
 	UserQuestion  *UserQuestionRequest
 	Interaction   *UserInteractionRequest
 	ToolRecovery  *ToolRecoveryRequest
-	Acceptance    *PendingAcceptance
 	Blocker       *ExecutionBlocker
 }
 
@@ -222,24 +216,6 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 				}
 			}
 			response := append(json.RawMessage(nil), stored.Response...)
-			var reports []AcceptanceReport
-			if len(stored.AcceptanceReports) > 0 {
-				if err := json.Unmarshal(stored.AcceptanceReports, &reports); err != nil {
-					return TurnResult{}, fmt.Errorf("decode acceptance reports: %w", err)
-				}
-			}
-			var criteria []AcceptanceCriterion
-			if len(stored.AcceptanceCriteria) > 0 {
-				if err := json.Unmarshal(stored.AcceptanceCriteria, &criteria); err != nil {
-					return TurnResult{}, fmt.Errorf("decode acceptance criteria: %w", err)
-				}
-			}
-			var evidence []AcceptanceEvidence
-			if len(stored.AcceptanceEvidence) > 0 {
-				if err := json.Unmarshal(stored.AcceptanceEvidence, &evidence); err != nil {
-					return TurnResult{}, fmt.Errorf("decode acceptance evidence: %w", err)
-				}
-			}
 			var failure *ModelFailure
 			if len(stored.ModelFailure) > 0 {
 				if err := json.Unmarshal(stored.ModelFailure, &failure); err != nil {
@@ -252,13 +228,10 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 			}
 			return TurnResult{
 				ModelFailure: failure, ExecutionID: stored.ExecutionID,
-				Status:             TaskStatus(stored.Status),
-				Response:           response,
-				ProposedPlan:       plan,
-				BudgetReason:       BudgetReason(stored.BudgetReason),
-				AcceptanceReports:  reports,
-				AcceptanceCriteria: criteria,
-				AcceptanceEvidence: evidence,
+				Status:       TaskStatus(stored.Status),
+				Response:     response,
+				ProposedPlan: plan,
+				BudgetReason: BudgetReason(stored.BudgetReason),
 			}, nil
 		}
 		_, queued, err := r.core.sessions.QueuedTurnByExecutionID(ctx, r.sessionID, executionID)

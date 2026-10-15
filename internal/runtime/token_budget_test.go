@@ -19,10 +19,10 @@ import (
 )
 
 type executionBudgetProvider struct {
-	mu                      sync.Mutex
-	calls                   map[string]int
-	seen                    []publicmodel.ModelRequest
-	incompleteFirstCriteria bool
+	mu                           sync.Mutex
+	calls                        map[string]int
+	seen                         []publicmodel.ModelRequest
+	incompleteFirstModelResponse bool
 }
 
 func (p *executionBudgetProvider) Name() string { return "host" }
@@ -40,21 +40,21 @@ func (p *executionBudgetProvider) CreateResponse(_ context.Context, request publ
 
 	var response *publicmodel.ModelResponse
 	switch stage {
-	case "criteria":
-		if p.incompleteFirstCriteria && callNumber == 1 && request.MaxOutputTokens != nil && *request.MaxOutputTokens < profile.MaxOutputTokens {
+	case "model":
+		if p.incompleteFirstModelResponse && callNumber == 1 && request.MaxOutputTokens != nil && *request.MaxOutputTokens < profile.MaxOutputTokens {
 			input := model.EstimateInputTokens(request)
 			return &publicmodel.ModelResponse{
 				Status: "incomplete", IncompleteDetails: &publicmodel.IncompleteDetails{Reason: "max_output_tokens"},
 				Usage: publicmodel.ResponseUsage{InputTokens: input, OutputTokens: 1, TotalTokens: input + 1},
 			}, nil
 		}
-		response = scriptedCriteriaResponse(request)
 		if callNumber == 1 {
+			response = hostToolCallResponse("budget-select", "select_tool_category", `{"category":"files"}`)
 			input := model.EstimateInputTokens(request)
 			response.Usage = publicmodel.ResponseUsage{InputTokens: input, OutputTokens: 100_000 - input, TotalTokens: 100_000}
+		} else {
+			response = hostTextResponse("The requested task is complete.")
 		}
-	case "acceptance":
-		response = scriptedAcceptanceResponse(request)
 	case "memory":
 		response = &publicmodel.ModelResponse{Status: "completed", Output: []publicmodel.ResponseOutputItem{
 			publicmodel.OutputFunctionCall{CallID: "memory-empty", Name: "propose_workspace_memories", Arguments: `{"items":[]}`},
@@ -80,10 +80,6 @@ func executionBudgetStage(request publicmodel.ModelRequest) string {
 			continue
 		}
 		switch function.Name {
-		case "prepare_task_criteria":
-			return "criteria"
-		case "submit_acceptance", "request_acceptance_evidence":
-			return "acceptance"
 		case "propose_workspace_memories":
 			return "memory"
 		}
@@ -120,10 +116,10 @@ func TestExecutionTokenBudgetPersistsAcrossPauseAndRecovery(t *testing.T) {
 		t.Fatal("paused task has no execution id")
 	}
 	provider.mu.Lock()
-	initialCalls := provider.calls["criteria"] + provider.calls["model"] + provider.calls["acceptance"] + provider.calls["memory"]
+	initialCalls := provider.calls["model"] + provider.calls["memory"]
 	provider.mu.Unlock()
 	if initialCalls != 1 {
-		t.Fatalf("model calls before first pause = %d, want one completed criteria call", initialCalls)
+		t.Fatalf("model calls before first pause = %d, want one completed task-tool call", initialCalls)
 	}
 	if err := client.Close(); err != nil {
 		t.Fatalf("close before recovery: %v", err)
@@ -138,7 +134,7 @@ func TestExecutionTokenBudgetPersistsAcrossPauseAndRecovery(t *testing.T) {
 		t.Fatalf("resume below spent usage = %#v, error=%v; want same execution paused", stillPaused, err)
 	}
 	provider.mu.Lock()
-	if provider.calls["criteria"] != 1 || provider.calls["model"] != 0 {
+	if provider.calls["model"] != 1 {
 		provider.mu.Unlock()
 		t.Fatalf("recovery repeated completed work or called with exhausted budget: calls=%v", provider.calls)
 	}
@@ -150,8 +146,8 @@ func TestExecutionTokenBudgetPersistsAcrossPauseAndRecovery(t *testing.T) {
 	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	if provider.calls["criteria"] != 1 || provider.calls["model"] != 1 || provider.calls["acceptance"] != 1 || provider.calls["memory"] != 1 {
-		t.Fatalf("execution model calls = %v; want one criteria, lead, acceptance, and memory call", provider.calls)
+	if provider.calls["model"] != 2 || provider.calls["memory"] != 1 {
+		t.Fatalf("execution model calls = %v; want two lead requests and one memory call", provider.calls)
 	}
 	for _, request := range provider.seen {
 		if request.MaxOutputTokens == nil || *request.MaxOutputTokens != 2048 {
@@ -219,7 +215,7 @@ func TestForkPausedTaskStartsWithFreshTokenBudget(t *testing.T) {
 	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	if provider.calls["criteria"] != 1 || provider.calls["model"] != 1 || provider.calls["acceptance"] != 1 {
+	if provider.calls["model"] != 2 {
 		t.Fatalf("fork repeated completed work or exhausted inherited usage: calls=%v", provider.calls)
 	}
 }
@@ -280,8 +276,8 @@ func TestDiscardPausedTaskClearsTokenBudget(t *testing.T) {
 	}
 }
 
-func TestBudgetCappedIncompleteCriteriaIsNotAccepted(t *testing.T) {
-	provider := &executionBudgetProvider{incompleteFirstCriteria: true}
+func TestBudgetCappedIncompleteResponsePausesTask(t *testing.T) {
+	provider := &executionBudgetProvider{incompleteFirstModelResponse: true}
 	config := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
 	config.ModelConfig.Models["host"] = publicmodel.ModelProfile{Provider: "host", Model: "test-model", MaxOutputTokens: 50_000}
 	client, err := New(config)
@@ -301,15 +297,12 @@ func TestBudgetCappedIncompleteCriteriaIsNotAccepted(t *testing.T) {
 	}
 	result, err := client.RunTask(ctx, TaskRequest{SessionID: saved.ID, Input: input, Execution: ExecutionOptions{TokenBudget: 10_000}})
 	if !errors.Is(err, ErrTaskPaused) || result.Status != TaskPaused || result.BudgetReason != BudgetMaxTokens {
-		t.Fatalf("incomplete criteria result = %#v, error=%v; want token budget pause", result, err)
-	}
-	if len(result.AcceptanceCriteria) != 0 || len(result.AcceptanceReports) != 0 {
-		t.Fatalf("incomplete model output entered acceptance: criteria=%#v reports=%#v", result.AcceptanceCriteria, result.AcceptanceReports)
+		t.Fatalf("incomplete response result = %#v, error=%v; want token budget pause", result, err)
 	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	if provider.calls["criteria"] != 1 || provider.calls["model"] != 0 || provider.calls["acceptance"] != 0 {
-		t.Fatalf("incomplete criteria call advanced the task: %v", provider.calls)
+	if provider.calls["model"] != 1 || provider.calls["memory"] != 0 {
+		t.Fatalf("incomplete model call advanced the task: %v", provider.calls)
 	}
 	request := provider.seen[0]
 	if request.MaxOutputTokens == nil || *request.MaxOutputTokens >= 50_000 {
@@ -379,12 +372,12 @@ func TestConcurrentAgentsShareExecutionTokenReservations(t *testing.T) {
 	}
 }
 
-func TestLegacyCheckpointDefaultsTokenBudgetToUnlimited(t *testing.T) {
+func TestOlderCheckpointKeepsItsVersionAndUnlimitedTokenBudget(t *testing.T) {
 	var state agentgraph.State
 	if err := json.Unmarshal([]byte(`{"task_settings_version":9,"execution":{"max_steps":3}}`), &state); err != nil {
 		t.Fatal(err)
 	}
-	if state.TaskSettingsVersion != agentgraph.CurrentTaskSettingsVersion || state.Execution.MaxSteps != 3 || state.Execution.TokenBudget != 0 {
+	if state.TaskSettingsVersion != 9 || state.Execution.MaxSteps != 3 || state.Execution.TokenBudget != 0 {
 		t.Fatalf("legacy task settings decoded as %#v", state)
 	}
 }

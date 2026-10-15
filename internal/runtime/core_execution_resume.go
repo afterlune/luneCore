@@ -20,7 +20,7 @@ func (c *Core) graphResumeInputs(ctx context.Context, sessionID, runID string, i
 	seen := make(map[string]bool)
 	for _, input := range stored {
 		for _, invocation := range cp.Invocations {
-			if invocation.Status == graph.InvocationWaiting && (invocation.Continuation == agentgraph.UserQuestionContinuation || invocation.Continuation == agentgraph.AcceptanceContinuation || invocation.Continuation == agentgraph.ModelRecoveryContinuation || invocation.Continuation == agentgraph.ExecutionBlockerContinuation) && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
+			if invocation.Status == graph.InvocationWaiting && (invocation.Continuation == agentgraph.UserQuestionContinuation || invocation.Continuation == agentgraph.ModelRecoveryContinuation || invocation.Continuation == agentgraph.ExecutionBlockerContinuation) && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
 				inputs = append(inputs, graph.ResumeInput{InvocationID: input.InvocationID, CallID: input.CallID, Payload: append([]byte(nil), input.Payload...)})
 				seen[input.InvocationID+"\x00"+input.CallID] = true
 				break
@@ -50,7 +50,7 @@ func (c *Core) reconcileGraphResumeInputs(ctx context.Context, sessionID, runID 
 	for _, input := range stored {
 		stillPending := false
 		for _, invocation := range cp.Invocations {
-			if invocation.Status == graph.InvocationWaiting && (invocation.Continuation == agentgraph.UserQuestionContinuation || invocation.Continuation == agentgraph.AcceptanceContinuation || invocation.Continuation == agentgraph.ModelRecoveryContinuation || invocation.Continuation == agentgraph.ExecutionBlockerContinuation) && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
+			if invocation.Status == graph.InvocationWaiting && (invocation.Continuation == agentgraph.UserQuestionContinuation || invocation.Continuation == agentgraph.ModelRecoveryContinuation || invocation.Continuation == agentgraph.ExecutionBlockerContinuation) && invocation.ID == input.InvocationID && invocation.CallID == input.CallID {
 				stillPending = true
 				break
 			}

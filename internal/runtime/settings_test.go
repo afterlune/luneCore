@@ -309,17 +309,6 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 			<-r.Context().Done()
 			return
 		}
-		stage := acceptanceRequestStage(request)
-		if stage == "criteria" || stage == "review" {
-			response := scriptedCriteriaResponse(request)
-			if stage == "review" {
-				response = scriptedAcceptanceResponse(request)
-			}
-			if err := writeCompletedSSE(w, response); err != nil {
-				t.Errorf("write acceptance response: %v", err)
-			}
-			return
-		}
 		writeCompletedResponseSSE(w, request.Model)
 	}))
 	defer server.Close()
@@ -424,8 +413,8 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	if current.Settings.ModelProfile != "review" || current.Settings.ReasoningEffort != model.ReasoningEffortHigh {
 		t.Fatalf("session settings after resume = %#v", current.Settings)
 	}
-	if len(current.UsageRequests) != 3 {
-		t.Fatalf("usage requests = %#v; want criteria, execution, and acceptance requests", current.UsageRequests)
+	if len(current.UsageRequests) != 1 {
+		t.Fatalf("usage requests = %#v; want one resumed task request", current.UsageRequests)
 	}
 	for _, request := range current.UsageRequests {
 		if request.Model != taskModel {
@@ -465,17 +454,6 @@ func TestDefaultReasoningEffortIsOmittedFromModelRequest(t *testing.T) {
 		var request model.ModelRequest
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode request: %v", err)
-			return
-		}
-		stage := acceptanceRequestStage(request)
-		if stage == "criteria" || stage == "review" {
-			response := scriptedCriteriaResponse(request)
-			if stage == "review" {
-				response = scriptedAcceptanceResponse(request)
-			}
-			if err := writeCompletedSSE(w, response); err != nil {
-				t.Errorf("write acceptance response: %v", err)
-			}
 			return
 		}
 		select {

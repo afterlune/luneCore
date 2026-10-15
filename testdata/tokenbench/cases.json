@@ -44,7 +44,7 @@
     "input": "根据工作区记忆，说明会话历史压缩时必须保留什么。"
   },
   {
-    "id": "plan-acceptance",
+    "id": "implementation-plan",
     "input": "为给 JSON API 增加请求超时提供完整实施计划，列出接口、取消行为和测试；只规划，不实现。"
   }
 ]

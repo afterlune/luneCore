@@ -122,21 +122,14 @@ func (a *Agent) sendModel(ctx context.Context, state State, requester Requester,
 
 func (a *Agent) failOrPauseModel(ctx context.Context, state State, err error) (graph.Transition[State], error) {
 	var failure *attemptFailure
-	if errors.As(err, &failure) && !state.TeamBranch && !(state.AcceptancePhase == "acceptance" && a.options.AcceptanceVerifier != nil) {
+	if errors.As(err, &failure) && !state.TeamBranch {
 		state.ModelFailure = &failure.failure
 		if a.options.ModelObserver != nil {
 			a.options.ModelObserver(state, "required", failure.failure)
 		}
-		next := modelNode
-		if state.AcceptancePhase == "criteria" {
-			next = criteriaNode
-		}
-		if state.AcceptancePhase == "acceptance" {
-			next = acceptanceNode
-		}
-		return graph.Wait(state, ModelRecoveryContinuation, next), nil
+		return graph.Wait(state, ModelRecoveryContinuation, modelNode), nil
 	}
-	return a.failOrPauseAcceptance(ctx, state, err)
+	return a.failTask(state, err)
 }
 
 // RetryResponse applies the same policy to manual compaction, without graph waits.

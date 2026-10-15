@@ -39,13 +39,6 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 		publicQuestion := publicUserQuestionRequest(question)
 		requests = append(requests, PendingRequest{Kind: PendingUserQuestion, UserQuestion: &publicQuestion})
 	}
-	pendingAcceptance, hasAcceptance, err := c.pendingAcceptance(ctx, r.sessionID)
-	if err != nil {
-		return nil, err
-	}
-	if hasAcceptance {
-		requests = append(requests, PendingRequest{Kind: PendingAcceptanceRequest, Acceptance: &pendingAcceptance})
-	}
 	modelRecovery, hasModelRecovery, err := c.pendingModelRecovery(ctx, r.sessionID)
 	if err != nil {
 		return nil, err
@@ -77,38 +70,6 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 	return requests, nil
 }
 
-func (r *SessionRuntime) PendingAcceptance(ctx context.Context) (PendingAcceptance, bool, error) {
-	if r == nil || r.core == nil || ctx == nil {
-		return PendingAcceptance{}, false, errors.New("session runtime and context are required")
-	}
-	return r.core.pendingAcceptance(ctx, r.sessionID)
-}
-
-func (c *Core) pendingAcceptance(ctx context.Context, sessionID string) (PendingAcceptance, bool, error) {
-	cp, err := c.runtime.CheckpointForSession(ctx, sessionID)
-	if errors.Is(err, checkpoint.ErrNotFound) {
-		return PendingAcceptance{}, false, nil
-	}
-	if err != nil {
-		return PendingAcceptance{}, false, err
-	}
-	for _, invocation := range cp.Invocations {
-		if invocation.Status != graph.InvocationWaiting || invocation.Continuation != agentgraph.AcceptanceContinuation || !invocation.State.AcceptancePaused {
-			continue
-		}
-		state := invocation.State
-		return PendingAcceptance{
-			RunID: cp.RunID, InvocationID: invocation.ID, CallID: invocation.CallID, ExecutionID: state.ExecutionID,
-			CandidateID: state.AcceptanceCandidateID, Candidate: state.AcceptanceCandidate, Kind: state.AcceptanceKind,
-			Criteria:             append([]AcceptanceCriterion(nil), state.AcceptanceCriteria...),
-			ClarificationAnswers: append([]string(nil), state.AcceptanceClarifications...),
-			Evidence:             append([]AcceptanceEvidence(nil), state.AcceptanceEvidence...),
-			Reports:              cloneAcceptanceReports(state.AcceptanceReports), Reason: state.AcceptancePauseReason, Repairs: state.AcceptanceRepairs,
-		}, true, nil
-	}
-	return PendingAcceptance{}, false, nil
-}
-
 func (c *Core) pendingExecutionBlocker(ctx context.Context, sessionID string) (ExecutionBlocker, bool, error) {
 	cp, err := c.runtime.CheckpointForSession(ctx, sessionID)
 	if errors.Is(err, checkpoint.ErrNotFound) {
@@ -129,19 +90,6 @@ func (c *Core) pendingExecutionBlocker(ctx context.Context, sessionID string) (E
 	return ExecutionBlocker{}, false, nil
 }
 
-func cloneAcceptanceReports(reports []AcceptanceReport) []AcceptanceReport {
-	cloned := make([]AcceptanceReport, len(reports))
-	for i, report := range reports {
-		cloned[i] = report
-		cloned[i].Results = make([]AcceptanceCriterionResult, len(report.Results))
-		for j, result := range report.Results {
-			cloned[i].Results[j] = result
-			cloned[i].Results[j].Evidence = append([]string(nil), result.Evidence...)
-		}
-	}
-	return cloned
-}
-
 func pendingRequestID(request PendingRequest) string {
 	switch request.Kind {
 	case PendingApproval:
@@ -159,10 +107,6 @@ func pendingRequestID(request PendingRequest) string {
 	case PendingToolRecovery:
 		if request.ToolRecovery != nil {
 			return request.ToolRecovery.InvocationID
-		}
-	case PendingAcceptanceRequest:
-		if request.Acceptance != nil {
-			return request.Acceptance.CallID
 		}
 	case PendingModelRecoveryRequest:
 		if request.ModelRecovery != nil {
@@ -189,15 +133,6 @@ func (r *SessionRuntime) ResolveUserQuestion(ctx context.Context, answer UserQue
 		return errors.New("session runtime and context are required")
 	}
 	return r.core.resolveUserQuestion(ctx, r.sessionID, answer)
-}
-
-// ResolveAcceptance explicitly confirms the candidate or grants a fresh pair
-// of correction attempts for a paused acceptance.
-func (r *SessionRuntime) ResolveAcceptance(ctx context.Context, resolution AcceptanceResolution) error {
-	if r == nil || r.core == nil || ctx == nil {
-		return errors.New("session runtime and context are required")
-	}
-	return r.core.resolveAcceptance(ctx, r.sessionID, resolution)
 }
 
 func (r *SessionRuntime) ResolveUserInteraction(id string, response json.RawMessage) error {

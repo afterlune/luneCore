@@ -36,11 +36,6 @@ const (
 	EventModelStream              EventKind = "model_stream"
 	EventContextCompaction        EventKind = "context_compaction"
 	EventToolRecoveryRequired     EventKind = "tool_recovery_required"
-	EventAcceptanceStarted        EventKind = "acceptance_started"
-	EventAcceptanceCriteriaReady  EventKind = "acceptance_criteria_ready"
-	EventAcceptanceReported       EventKind = "acceptance_reported"
-	EventAcceptanceRequired       EventKind = "acceptance_required"
-	EventAcceptanceResolved       EventKind = "acceptance_resolved"
 	EventExecutionBlocked         EventKind = "execution_blocked"
 	EventMemoryStarted            EventKind = "memory_started"
 	EventMemorySaved              EventKind = "memory_saved"
@@ -65,41 +60,35 @@ type Event struct {
 	QueueID string
 	TaskID  string
 	// ExecutionID remains stable when a paused task resumes with a new TaskID.
-	ExecutionID            string
-	SessionID              string
-	Status                 TaskStatus
-	BudgetReason           BudgetReason
-	ContextWindow          int64
-	EstimatedInputTokens   int64
-	Tool                   ToolCall
-	Usage                  Usage
-	UsagePurpose           UsagePurpose
-	Approval               *ApprovalRequest
-	ApprovalID             string
-	UserQuestion           *UserQuestionRequest
-	Interaction            *UserInteractionRequest
-	InteractionID          string
-	Err                    string
-	AgentID                string
-	AgentName              string
-	AgentRole              string
-	TeamRunID              string
-	Provider               string
-	ModelProfile           string
-	Model                  string
-	Stream                 *ModelStreamEvent
-	Compaction             *ContextCompactionDetails
-	ToolRecovery           *ToolRecoveryRequest
-	AcceptanceStatus       string
-	AcceptanceSource       AcceptanceSource
-	AcceptanceOutcome      AcceptanceOutcome
-	AcceptanceReason       AcceptancePauseReason
-	AcceptanceCandidateID  string
-	AcceptanceCriterionIDs []string
-	BlockerID              string
-	BlockerTool            string
-	MemoryStatus           string
-	MemoryIDs              []string
+	ExecutionID          string
+	SessionID            string
+	Status               TaskStatus
+	BudgetReason         BudgetReason
+	ContextWindow        int64
+	EstimatedInputTokens int64
+	Tool                 ToolCall
+	Usage                Usage
+	UsagePurpose         UsagePurpose
+	Approval             *ApprovalRequest
+	ApprovalID           string
+	UserQuestion         *UserQuestionRequest
+	Interaction          *UserInteractionRequest
+	InteractionID        string
+	Err                  string
+	AgentID              string
+	AgentName            string
+	AgentRole            string
+	TeamRunID            string
+	Provider             string
+	ModelProfile         string
+	Model                string
+	Stream               *ModelStreamEvent
+	Compaction           *ContextCompactionDetails
+	ToolRecovery         *ToolRecoveryRequest
+	BlockerID            string
+	BlockerTool          string
+	MemoryStatus         string
+	MemoryIDs            []string
 }
 
 // ExecutionBlocker is a persisted, non-interactive report for an operation

@@ -170,17 +170,6 @@ func TestRunTaskPersistsImageDataForSessionReplay(t *testing.T) {
 			http.Error(w, "invalid request", http.StatusBadRequest)
 			return
 		}
-		stage := acceptanceRequestStage(request)
-		if stage == "criteria" || stage == "review" {
-			response := scriptedCriteriaResponse(request)
-			if stage == "review" {
-				response = scriptedAcceptanceResponse(request)
-			}
-			if err := writeCompletedSSE(w, response); err != nil {
-				t.Errorf("write acceptance response: %v", err)
-			}
-			return
-		}
 		if request.Input == nil {
 			t.Errorf("request input = %#v", request.Input)
 			return
@@ -199,7 +188,7 @@ func TestRunTaskPersistsImageDataForSessionReplay(t *testing.T) {
 			}
 		}
 		if !foundImage {
-			t.Errorf("execution request did not retain the user image: %#v", request.Input)
+			t.Errorf("task request did not retain the user image: %#v", request.Input)
 		}
 		if err := writeCompletedSSE(w, &model.ModelResponse{
 			ID: "response-image", Object: "response", Status: "completed", Model: request.Model,

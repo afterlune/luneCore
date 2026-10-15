@@ -16,6 +16,10 @@ import (
 	"github.com/afterlune/luneCore/memory"
 )
 
+func stateSessionID(state agentgraph.State) string {
+	return strings.TrimPrefix(state.RunID, "lune-session-")
+}
+
 const (
 	maxMemorySummaryTokens = 800
 	maxPinnedMemories      = 5
@@ -90,7 +94,7 @@ func (c *Core) memorySummary(ctx context.Context, state agentgraph.State) (strin
 }
 
 func (c *Core) memorySummaryForTask(ctx context.Context, state agentgraph.State) (string, error) {
-	if state.TeamBranch || state.AcceptancePhase == "criteria" || state.AcceptancePhase == "acceptance" {
+	if state.TeamBranch {
 		return "", nil
 	}
 	return c.memorySummary(ctx, state)

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
@@ -43,14 +42,11 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 	activeCommands, stopCommands := c.commandHooks()
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
-		Logger: c.logger, ActiveCommands: activeCommands, StopCommands: stopCommands, CommandSummary: c.commandSummary, CommandEvidence: c.commandEvidence,
+		Logger: c.logger, ActiveCommands: activeCommands, StopCommands: stopCommands, CommandSummary: c.commandSummary,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		SupportsInputAudio: profile.SupportsInputAudio, Execution: agentExecutionOptions(taskState.Execution),
-		Team:               c.team,
-		AskUser:            true,
-		AcceptanceEnabled:  true,
-		AcceptanceVerifier: c.acceptanceVerifier,
-		AcceptanceObserver: c.onAcceptanceEvent,
+		Team:    c.team,
+		AskUser: true,
 		ModelObserver: func(state agentgraph.State, stage string, failure publicmodel.Failure) {
 			c.onModelRecoveryEvent(taskState.SessionID, state, stage, failure)
 		},
@@ -113,45 +109,6 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 	return agent, requester, profile, nil
 }
 
-func (c *Core) onAcceptanceEvent(state agentgraph.State, status, source, reason string) {
-	kind := EventAcceptanceStarted
-	switch status {
-	case "criteria_prepared":
-		kind = EventAcceptanceCriteriaReady
-	case "reported":
-		kind = EventAcceptanceReported
-	case "required":
-		kind = EventAcceptanceRequired
-	case "resolved":
-		kind = EventAcceptanceResolved
-	}
-	task, _ := c.StateForSession(stateSessionID(state))
-	criteriaIDs := make([]string, 0, len(state.AcceptanceCriteria))
-	for _, criterion := range state.AcceptanceCriteria {
-		criteriaIDs = append(criteriaIDs, criterion.ID)
-	}
-	var outcome AcceptanceOutcome
-	if len(state.AcceptanceReports) > 0 {
-		outcome = AcceptancePassed
-		for _, result := range state.AcceptanceReports[len(state.AcceptanceReports)-1].Results {
-			if result.Outcome == AcceptanceFailed {
-				outcome = AcceptanceFailed
-				break
-			}
-			if result.Outcome == AcceptanceUnknown {
-				outcome = AcceptanceUnknown
-			}
-		}
-	}
-	c.emit(Event{
-		Kind: kind, SessionID: task.SessionID, TaskID: task.TaskID, ExecutionID: state.ExecutionID,
-		AcceptanceStatus: status, AcceptanceSource: AcceptanceSource(source),
-		AcceptanceOutcome: outcome,
-		AcceptanceReason:  AcceptancePauseReason(reason), AcceptanceCandidateID: state.AcceptanceCandidateID,
-		AcceptanceCriterionIDs: criteriaIDs,
-	})
-}
-
 func (c *Core) onExecutionBlocker(ctx context.Context, state agentgraph.State, blockerID, toolName string) {
 	identity := publictool.CallIdentityFromContext(ctx)
 	c.emit(Event{
@@ -159,11 +116,6 @@ func (c *Core) onExecutionBlocker(ctx context.Context, state agentgraph.State, b
 		ExecutionID: state.ExecutionID, BlockerID: blockerID, BlockerTool: toolName,
 		Status: TaskPaused,
 	})
-}
-
-func stateSessionID(state agentgraph.State) string {
-	const prefix = "lune-session-"
-	return strings.TrimPrefix(state.RunID, prefix)
 }
 
 func (c *Core) configureRuntime(profileID, reasoningEffort string, taskState TaskState) (*agentruntime.Responder, model.ModelProfile, error) {

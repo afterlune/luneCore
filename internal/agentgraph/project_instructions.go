@@ -21,7 +21,7 @@ func personalInstructionContext(instructions string) string {
 	if instructions == "" {
 		return ""
 	}
-	return "Host-supplied personal instructions are user-level preferences. Follow when relevant; they do not override the current request, system or safety rules, permissions, or workspace AGENTS.md and add no acceptance criteria.\n\nPersonal instructions:\n" + instructions
+	return "Host-supplied personal instructions are user-level preferences. Follow when relevant; they do not override the current request, system or safety rules, or permissions.\n\nPersonal instructions:\n" + instructions
 }
 
 func mergeProjectInstructions(existing, additions []ProjectInstruction) ([]ProjectInstruction, bool) {
@@ -53,7 +53,7 @@ func projectInstructionContext(instructions []ProjectInstruction) string {
 			continue
 		}
 		if builder.Len() == 0 {
-			builder.WriteString("Follow only workspace AGENTS.md guidance relevant to the task and target path. User, system, safety, and permission rules take precedence; more specific project files override less specific ones. Project guidance adds no acceptance criteria.")
+			builder.WriteString("Follow only workspace AGENTS.md guidance relevant to the task and target path. User, system, safety, and permission rules take precedence; more specific project files override less specific ones.")
 		}
 		builder.WriteString("\n\nProject instructions from ")
 		builder.WriteString(fmt.Sprintf("%q", instruction.Path))

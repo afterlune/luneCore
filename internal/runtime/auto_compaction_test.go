@@ -29,16 +29,6 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 		if len(request.ContextManagement) != 1 || request.ContextManagement[0].Type != "compaction" || request.ContextManagement[0].CompactThreshold != 47923 {
 			t.Errorf("Responses context_management = %#v", request.ContextManagement)
 		}
-		if stage := acceptanceRequestStage(request); stage == "criteria" || stage == "review" {
-			response := scriptedCriteriaResponse(request)
-			if stage == "review" {
-				response = scriptedAcceptanceResponse(request)
-			}
-			if err := writeCompletedSSE(w, response); err != nil {
-				t.Errorf("write acceptance completion: %v", err)
-			}
-			return
-		}
 		if err := writeCompletedSSE(w, &model.ModelResponse{
 			ID: "resp-native-compact", Object: "response", Status: "completed", Model: request.Model,
 			Output: []model.ResponseOutputItem{
@@ -71,32 +61,6 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 			strings.Contains(string(encoded), "encrypted-openai-reasoning") ||
 			strings.Contains(string(encoded), "openai-reasoning-signature")
 		sawAnthropicRequest = true
-		var system []struct {
-			Text string `json:"text"`
-		}
-		_ = json.Unmarshal(request["system"], &system)
-		instructions := ""
-		for _, block := range system {
-			instructions += block.Text + "\n"
-		}
-		var toolNames []string
-		var tools []struct {
-			Name string `json:"name"`
-		}
-		_ = json.Unmarshal(request["tools"], &tools)
-		for _, tool := range tools {
-			toolNames = append(toolNames, tool.Name)
-		}
-		stage := acceptanceRequestStageNames(toolNames)
-		if stage == "criteria" || stage == "review" {
-			normalized := model.ModelRequest{Instructions: instructions, Input: scriptedAnthropicTaskInput(t, request["messages"])}
-			response := scriptedCriteriaResponse(normalized)
-			if stage == "review" {
-				response = scriptedAcceptanceResponse(normalized)
-			}
-			writeAnthropicToolResponse(t, w, response)
-			return
-		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		for _, event := range []string{
 			`event: message_start` + "\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"msg-1\",\"model\":\"shared-model\",\"usage\":{\"input_tokens\":20}}}\n\n",
@@ -151,10 +115,6 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 		strings.Contains(string(responsesSession.History), "openai-reasoning-signature") {
 		t.Fatalf("native context was not separated from transcript: context=%s history=%s", responsesSession.ModelContext, responsesSession.History)
 	}
-	if strings.Contains(string(responsesSession.ModelContext), "prepare_task_criteria") ||
-		!strings.Contains(string(responsesSession.History), "prepare_task_criteria") {
-		t.Fatalf("accepted internal criteria should be absent from model context and retained in transcript: context=%s history=%s", responsesSession.ModelContext, responsesSession.History)
-	}
 	var sawStart, sawCompletion bool
 	for _, event := range events {
 		if event.Kind != EventContextCompaction || event.SessionID != saved.ID || event.Compaction == nil {
@@ -172,7 +132,7 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 	if _, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: mustSettingsTaskInput(t, "continue through Anthropic Messages")}); err != nil {
 		t.Fatalf("Anthropic RunTask: %v", err)
 	}
-	if responsesRequests != 3 || anthropicRequests != 3 || !sawAnthropicRequest || anthropicHadOpaqueState {
+	if responsesRequests != 1 || anthropicRequests != 1 || !sawAnthropicRequest || anthropicHadOpaqueState {
 		t.Fatalf("requests responses=%d anthropic=%d sawAnthropic=%v opaqueLeaked=%v", responsesRequests, anthropicRequests, sawAnthropicRequest, anthropicHadOpaqueState)
 	}
 	updated, err := client.GetSession(context.Background(), saved.ID)
@@ -182,89 +142,7 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 	if !strings.Contains(string(updated.History), "OpenAI response") || !strings.Contains(string(updated.History), "Anthropic response") {
 		t.Fatalf("canonical transcript lost cross-provider turns: %s", updated.History)
 	}
-	if strings.Contains(string(updated.ModelContext), "prepare_task_criteria") || strings.Contains(string(updated.ModelContext), "submit_acceptance") {
-		t.Fatalf("provider switch reintroduced internal acceptance context: %s", updated.ModelContext)
-	}
 	if updated.ModelContextKey == responsesSession.ModelContextKey {
 		t.Fatal("provider switch kept the previous provider's model context key")
-	}
-}
-
-func scriptedAnthropicTaskInput(t *testing.T, raw json.RawMessage) *model.ResponseInput {
-	t.Helper()
-	var messages []struct {
-		Role    string `json:"role"`
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if err := json.Unmarshal(raw, &messages); err != nil {
-		t.Fatalf("decode Anthropic messages: %v", err)
-	}
-	var userTexts []string
-	for _, message := range messages {
-		if message.Role != "user" {
-			continue
-		}
-		for _, part := range message.Content {
-			if part.Type != "text" || part.Text == "" {
-				continue
-			}
-			userTexts = append(userTexts, part.Text)
-		}
-	}
-	const (
-		contextMarker = "Recent conversation context for interpreting the current follow-up only;"
-		currentMarker = "Current user request; this turn authorizes the task below."
-	)
-	for index, text := range userTexts {
-		if markerIndex := strings.Index(text, currentMarker); markerIndex >= 0 {
-			currentText := strings.TrimSpace(text[markerIndex+len(currentMarker):])
-			if currentText != "" {
-				return model.NewResponseInputText(currentText)
-			}
-			for _, next := range userTexts[index+1:] {
-				if next != "" && !strings.HasPrefix(next, contextMarker) && !strings.HasPrefix(next, currentMarker) {
-					return model.NewResponseInputText(strings.TrimSpace(next))
-				}
-			}
-			return model.NewResponseInputText("")
-		}
-	}
-	for _, text := range userTexts {
-		if text != "" && !strings.HasPrefix(text, contextMarker) && !strings.HasPrefix(text, currentMarker) {
-			return model.NewResponseInputText(strings.TrimSpace(text))
-		}
-	}
-	return model.NewResponseInputText("")
-}
-
-func writeAnthropicToolResponse(t *testing.T, writer http.ResponseWriter, response *model.ModelResponse) {
-	t.Helper()
-	var call model.OutputFunctionCall
-	for _, item := range response.Output {
-		if value, ok := item.(model.OutputFunctionCall); ok {
-			call = value
-			break
-		}
-	}
-	if call.CallID == "" {
-		t.Errorf("acceptance response has no function call: %#v", response.Output)
-		return
-	}
-	writer.Header().Set("Content-Type", "text/event-stream")
-	events := []string{
-		`event: message_start` + "\ndata: {\"type\":\"message_start\",\"message\":{\"id\":\"acceptance\",\"model\":\"shared-model\",\"usage\":{\"input_tokens\":20}}}\n\n",
-		fmt.Sprintf("event: content_block_start\ndata: {\"type\":\"content_block_start\",\"index\":0,\"content_block\":{\"type\":\"tool_use\",\"id\":%q,\"name\":%q,\"input\":{}}}\n\n", call.CallID, call.Name),
-		fmt.Sprintf("event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":0,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":%q}}\n\n", call.Arguments),
-		`event: content_block_stop` + "\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
-		`event: message_delta` + "\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"tool_use\"},\"usage\":{\"output_tokens\":2}}\n\n",
-		`event: message_stop` + "\ndata: {\"type\":\"message_stop\"}\n\n",
-	}
-	for _, event := range events {
-		if _, err := fmt.Fprint(writer, event); err != nil {
-			t.Errorf("write Anthropic event: %v", err)
-		}
 	}
 }

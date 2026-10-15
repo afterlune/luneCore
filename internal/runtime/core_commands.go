@@ -8,7 +8,6 @@ import (
 	graph "github.com/afterlune/luneGraph"
 	"time"
 
-	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	commandruntime "github.com/afterlune/luneCore/internal/command"
 	"github.com/afterlune/luneCore/internal/tool"
@@ -114,37 +113,4 @@ func (c *Core) admitCommandCompletionRecovery(ctx context.Context, sessionID str
 		}
 	}
 	return errors.New("command completion wait is missing")
-}
-
-func (c *Core) commandEvidence(ctx context.Context, state agentgraph.State) ([]acceptance.Evidence, error) {
-	sessionID := publictool.CallIdentityFromContext(ctx).SessionID
-	infos, err := c.commands.List(ctx, sessionID, state.ExecutionID)
-	if err != nil {
-		return nil, err
-	}
-	var result []acceptance.Evidence
-	for _, info := range infos {
-		if info.Status.Active() {
-			continue
-		}
-		saved, err := c.commands.Read(ctx, sessionID, info.ID, state.ExecutionID, info.AgentID, CommandReadOptions{})
-		if err != nil {
-			return nil, err
-		}
-		cursor := saved.EndCursor - 2048
-		if cursor < 0 {
-			cursor = 0
-		}
-		tail, err := c.commands.Read(ctx, sessionID, info.ID, state.ExecutionID, info.AgentID, CommandReadOptions{Cursor: cursor})
-		if err != nil {
-			return nil, err
-		}
-		tail.Truncated = tail.Truncated || tail.Cursor > 0
-		data, err := json.Marshal(tail)
-		if err != nil {
-			return nil, err
-		}
-		result = append(result, acceptance.Evidence{Reference: "command:" + info.ID, Content: string(data)})
-	}
-	return result, nil
 }

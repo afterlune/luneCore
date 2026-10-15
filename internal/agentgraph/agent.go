@@ -21,10 +21,8 @@ const (
 	teamToolNode       = "team_execute_tool"
 	teamJoinNode       = "team_join"
 	teamBranchJoinNode = "team_branch_join"
-	criteriaNode       = "prepare_acceptance_criteria"
-	acceptanceNode     = "accept_candidate"
 	memoryNode         = "extract_workspace_memory"
-	machineID          = "lune-agent-v3"
+	machineID          = "lune-agent-v4"
 )
 
 // Agent runs one model request or one tool call per graph step.
@@ -80,22 +78,12 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 		}
 	}
 
-	startNode := modelNode
-	if options.AcceptanceEnabled {
-		startNode = criteriaNode
-	}
-	workflow := graph.New[State](startNode)
-	if err := workflow.AddNode(graph.NodeSpec[State]{Name: criteriaNode, Run: agent.requestCriteria, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
-		return nil, fmt.Errorf("add acceptance criteria node: %w", err)
-	}
+	workflow := graph.New[State](modelNode)
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: modelNode, Run: agent.requestLead, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
 		return nil, fmt.Errorf("add model node: %w", err)
 	}
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: toolNode, Run: agent.executeLeadTool, OnError: graph.FailExecution, Timeout: options.Execution.ToolTimeout}); err != nil {
 		return nil, fmt.Errorf("add tool node: %w", err)
-	}
-	if err := workflow.AddNode(graph.NodeSpec[State]{Name: acceptanceNode, Run: agent.requestAcceptance, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
-		return nil, fmt.Errorf("add acceptance node: %w", err)
 	}
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: memoryNode, Run: agent.extractMemory, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
 		return nil, fmt.Errorf("add memory node: %w", err)
@@ -117,14 +105,6 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 		return state, nil
 	}); err != nil {
 		return nil, fmt.Errorf("register user question continuation: %w", err)
-	}
-	if err := graph.RegisterJSONContinuation[State, acceptanceResolution](workflow, AcceptanceContinuation, func(_ context.Context, call graph.CallInfo, state State, decision acceptanceResolution) (State, error) {
-		state.AcceptanceDecision = decision.Decision
-		state.AcceptanceDecisionRunID = call.RunID
-		state.AcceptanceDecisionCallID = call.CallID
-		return state, nil
-	}); err != nil {
-		return nil, fmt.Errorf("register acceptance continuation: %w", err)
 	}
 	if err := graph.RegisterJSONContinuation[State, string](workflow, ModelRecoveryContinuation, func(_ context.Context, _ graph.CallInfo, state State, _ string) (State, error) {
 		if state.ModelFailure != nil && time.Now().Before(state.ModelFailure.RetryNotBefore) {
@@ -153,19 +133,13 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	}); err != nil {
 		return nil, fmt.Errorf("register token budget continuation: %w", err)
 	}
-	if err := workflow.AddEdge(criteriaNode, toolNode); err != nil {
-		return nil, fmt.Errorf("add criteria-to-tool edge: %w", err)
-	}
-	for _, edge := range [][2]string{{modelNode, modelNode}, {criteriaNode, modelNode}, {criteriaNode, criteriaNode}, {criteriaNode, acceptanceNode}, {modelNode, acceptanceNode}, {toolNode, criteriaNode}, {toolNode, acceptanceNode}, {toolNode, memoryNode}, {acceptanceNode, modelNode}, {acceptanceNode, criteriaNode}, {acceptanceNode, acceptanceNode}, {acceptanceNode, memoryNode}} {
+	for _, edge := range [][2]string{{modelNode, modelNode}, {modelNode, memoryNode}, {toolNode, memoryNode}} {
 		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
 			return nil, fmt.Errorf("add %s-to-%s edge: %w", edge[0], edge[1], err)
 		}
 	}
 	if err := workflow.AddEdge(modelNode, toolNode); err != nil {
 		return nil, fmt.Errorf("add model-to-tool edge: %w", err)
-	}
-	if err := workflow.AddEdge(acceptanceNode, toolNode); err != nil {
-		return nil, fmt.Errorf("add acceptance-to-tool edge: %w", err)
 	}
 	if err := workflow.AddEdge(toolNode, toolNode); err != nil {
 		return nil, fmt.Errorf("add tool-to-tool edge: %w", err)
@@ -236,13 +210,8 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	if input != nil {
 		state.TaskInput, err = json.Marshal(input)
 		if err != nil {
-			return nil, graph.Result[State]{Status: graph.StatusFailed}, fmt.Errorf("encode task input for acceptance: %w", err)
+			return nil, graph.Result[State]{Status: graph.StatusFailed}, fmt.Errorf("encode task input: %w", err)
 		}
-	}
-	if a.options.AcceptanceEnabled {
-		state.AcceptancePhase = "criteria"
-	} else {
-		state.AcceptancePhase = "execution"
 	}
 	return a.runner.Start(ctx, runID, state, store, options)
 }

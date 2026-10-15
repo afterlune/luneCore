@@ -57,6 +57,14 @@ func (c *Core) admitModelRecovery(ctx context.Context, sessionID string) error {
 	return err
 }
 
+func (c *Core) modelFailureArtifact(ctx context.Context, sessionID string) (json.RawMessage, error) {
+	state, found, err := c.runtime.PendingStateFor(ctx, sessionID)
+	if err != nil || !found || state.ModelFailure == nil {
+		return nil, err
+	}
+	return json.Marshal(state.ModelFailure)
+}
+
 func (c *Core) onModelRecoveryEvent(sessionID string, state agentgraph.State, stage string, failure publicmodel.Failure) {
 	kind := EventModelRetry
 	if stage == "required" {

@@ -36,44 +36,12 @@ func (a *Agent) handleModelResponse(ctx context.Context, state State, request mo
 	}
 	calls := responseFunctionCalls(response.Output)
 	if len(calls) == 0 {
-		switch state.AcceptancePhase {
-		case "criteria":
-			return a.retryAcceptanceFormat(state, response, criteriaNode, "Submit the task criteria with prepare_task_criteria. Ask the user with ask_user if a key ambiguity blocks a correct scope.")
-		case "acceptance":
-			return a.retryAcceptanceFormat(state, response, acceptanceNode, "Submit a structured acceptance report with submit_acceptance, or request more evidence with request_acceptance_evidence.")
-		default:
-			if a.options.ActiveCommands != nil && a.options.ActiveCommands(state) {
-				return a.deferCommandCompletion(ctx, state)
-			}
-			state.CommandFinalizeAttempts = 0
-			state.FinalResponse = response
-			if a.options.AcceptanceEnabled && !state.TeamBranch {
-				if a.options.CommandEvidence != nil {
-					evidence, err := a.options.CommandEvidence(ctx, state)
-					if err != nil {
-						return a.failTask(state, err)
-					}
-					known := map[string]bool{}
-					for _, saved := range state.AcceptanceEvidence {
-						known[saved.Reference] = true
-					}
-					for _, saved := range evidence {
-						if !known[saved.Reference] {
-							state.AcceptanceEvidence = append(state.AcceptanceEvidence, saved)
-							known[saved.Reference] = true
-						}
-					}
-				}
-				state.AcceptancePhase = "acceptance"
-				state.AcceptanceCandidate = responseText(response.Output)
-				state.AcceptanceCandidateCount++
-				state.AcceptanceCandidateID = fmt.Sprintf("candidate-%d", state.AcceptanceCandidateCount)
-				state.AcceptanceEvidence = append(state.AcceptanceEvidence, modelEvidence("candidate:"+state.AcceptanceCandidateID, state.AcceptanceCandidate))
-				a.observeAcceptance(state, "started", "", "")
-				return graph.To(state, acceptanceNode), nil
-			}
-			return a.finishAgent(state)
+		if a.options.ActiveCommands != nil && a.options.ActiveCommands(state) {
+			return a.deferCommandCompletion(ctx, state)
 		}
+		state.CommandFinalizeAttempts = 0
+		state.FinalResponse = response
+		return a.finishAgent(state)
 	}
 	if state.MaxToolRounds > 0 && state.ToolRounds >= state.MaxToolRounds {
 		for _, call := range calls {

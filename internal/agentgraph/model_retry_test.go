@@ -191,7 +191,7 @@ func TestModelRetryMemoryFailureKeepsTaskComplete(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, result, err := runner.Start(context.Background(), "memory-retry", State{AcceptancePhase: "complete", AcceptanceCandidate: "accepted"}, store, graph.Options{})
+	_, result, err := runner.Start(context.Background(), "memory-retry", State{}, store, graph.Options{})
 	if err != nil || result.Status != graph.StatusCompleted || status != "failed" || r.calls != 3 {
 		t.Fatalf("status=%s memory=%s calls=%d error=%v", result.Status, status, r.calls, err)
 	}

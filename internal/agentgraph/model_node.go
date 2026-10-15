@@ -13,29 +13,13 @@ func (a *Agent) requestLead(ctx context.Context, call graph.CallInfo, state Stat
 	return a.requestModel(ctx, call, state)
 }
 
-func (a *Agent) requestCriteria(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
-	if !a.options.AcceptanceEnabled {
-		state.AcceptancePhase = "execution"
-		return graph.To(state, modelNode), nil
-	}
-	state.AcceptancePhase = "criteria"
-	return a.requestModel(ctx, call, state)
-}
-
-func (a *Agent) requestAcceptance(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
-	if state.AcceptanceDecision != "" {
-		return a.resolveAcceptanceDecision(state)
-	}
-	state.AcceptancePhase = "acceptance"
-	return a.requestModel(ctx, call, state)
-}
-
 func (a *Agent) requestTeam(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
 	return a.requestModel(ctx, call, state)
 }
 
 func taskInstructions(goal, permissionMode string) string {
 	var instructions []string
+	instructions = append(instructions, "Prefer reasonable assumptions and continue instead of asking routine questions. Inspect the workspace and use available tools to resolve discoverable facts first. Use ask_user only when a user-owned decision or material ambiguity cannot be resolved from available context and blocks a safe or correct result. If the user has not requested a concrete task, reply naturally instead of opening a blocking question.")
 	switch permissionMode {
 	case "read-only":
 		instructions = append(instructions, "Active permission is read-only. Inspect and explain only; do not modify files or run commands. Web and network access require host approval. For plans, return the complete plan inside <proposed_plan> and </proposed_plan> tags; do not claim execution.")
@@ -72,12 +56,6 @@ func (a *Agent) nextModelTransition(state State) graph.Transition[State] {
 	if state.TeamBranch {
 		return graph.To(state, teamModelNode)
 	}
-	if state.AcceptancePhase == "criteria" {
-		return graph.To(state, criteriaNode)
-	}
-	if state.AcceptancePhase == "acceptance" {
-		return graph.To(state, acceptanceNode)
-	}
 	return graph.To(state, modelNode)
 }
 
@@ -88,6 +66,9 @@ func (a *Agent) finishAgent(state State) (graph.Transition[State], error) {
 		}
 	}
 	if !state.TeamBranch {
+		if state.TaskError == "" && state.FinalResponse != nil && a.options.MemoryEnabled && a.options.MemoryRequester != nil && a.options.MemoryWriter != nil {
+			return graph.To(state, memoryNode), nil
+		}
 		return graph.EndExecution(state), nil
 	}
 	state.TeamText = responseText(state.FinalResponse.Output)

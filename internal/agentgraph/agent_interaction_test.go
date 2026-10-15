@@ -17,6 +17,9 @@ func TestAgentCanAskUserDuringTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := registry.SetPermissionMode(tool.PermissionModeReadOnly); err != nil {
+		t.Fatal(err)
+	}
 	requester := &scriptedRequester{responses: []*model.Response{
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"ask-1","name":"ask_user","arguments":"{\"question\":\"Which environment?\",\"options\":[{\"label\":\"local\",\"description\":\"Local workspace\"},{\"label\":\"staging\",\"description\":\"Staging environment\"}]}"}]}`),
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will use staging."}]}]}`),
@@ -82,5 +85,54 @@ func TestAgentCanAskUserDuringTask(t *testing.T) {
 	}
 	if !bytes.Contains(encodedInput, []byte("User's answer: staging")) {
 		t.Fatalf("user answer was not returned to the model: %s", encodedInput)
+	}
+}
+
+func TestGreetingDoesNotAskForUserDecision(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(tool.PermissionModeReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi!"}]}]}`),
+	}}
+	agent, err := NewWithOptions(requester, registry, AgentOptions{
+		ID: "lead", Name: "Lead", Profile: "main", Provider: model.ProviderDeepSeek, Model: "test-model",
+		AskUser: true,
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("hi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "greeting-no-ask", nil, input, TaskOptions{}, store, graph.Options{})
+	if err != nil || result.Status != graph.StatusCompleted {
+		t.Fatalf("Start = status %q, error %v", result.Status, err)
+	}
+	if len(requester.requests) != 1 {
+		t.Fatalf("model requests = %d, want one response", len(requester.requests))
+	}
+	containsAsk := func(request model.ResponseRequest) bool {
+		for _, definition := range request.Tools {
+			if function, ok := definition.(model.FunctionTool); ok && function.Name == askUserToolName {
+				return true
+			}
+		}
+		return false
+	}
+	if !containsAsk(requester.requests[0]) {
+		t.Fatal("read-only task did not expose ask_user")
+	}
+	if result.Final == nil || result.Final.UserQuestion != "" || len(result.Final.UserQuestionOptions) != 0 {
+		t.Fatalf("hidden ask_user call left a user question in completed state: %#v", result.Final)
 	}
 }

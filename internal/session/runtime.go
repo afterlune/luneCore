@@ -231,10 +231,10 @@ func (s *Store) SetQueuedTurnWithEvent(ctx context.Context, sessionID, queueID, 
 // PauseQueuedTurn stores the resumable state and the observable paused result
 // together. Recovering the turn clears this result before it is queued again.
 func (s *Store) PauseQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, event json.RawMessage) (int64, error) {
-	return s.PauseQueuedTurnWithReason(ctx, sessionID, queueID, executionID, status, "", event)
+	return s.PauseQueuedTurnWithReason(ctx, sessionID, queueID, executionID, status, "", event, nil)
 }
 
-func (s *Store) PauseQueuedTurnWithReason(ctx context.Context, sessionID, queueID, executionID, status, budgetReason string, event json.RawMessage, artifacts ...json.RawMessage) (int64, error) {
+func (s *Store) PauseQueuedTurnWithReason(ctx context.Context, sessionID, queueID, executionID, status, budgetReason string, event, modelFailure json.RawMessage) (int64, error) {
 	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
 		return 0, errors.New("session store, turn identity, status, and valid event JSON are required")
 	}
@@ -255,24 +255,14 @@ func (s *Store) PauseQueuedTurnWithReason(ctx context.Context, sessionID, queueI
 	if updated == 0 {
 		return 0, fmt.Errorf("queued turn %q does not exist in session %q", queueID, sessionID)
 	}
-	var acceptanceReports, acceptanceCriteria, acceptanceEvidence json.RawMessage
-	if len(artifacts) > 0 {
-		acceptanceReports = artifacts[0]
-	}
-	if len(artifacts) > 1 {
-		acceptanceCriteria = artifacts[1]
-	}
-	if len(artifacts) > 2 {
-		acceptanceEvidence = artifacts[2]
-	}
-	if err := upsertTurnResultWithAcceptanceTx(ctx, tx, sessionID, executionID, status, nil, time.Now(), acceptanceReports, acceptanceCriteria, acceptanceEvidence, budgetReason); err != nil {
+	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, nil, time.Now(), budgetReason); err != nil {
 		return 0, err
 	}
-	if len(artifacts) > 3 && len(artifacts[3]) > 0 {
-		if !json.Valid(artifacts[3]) {
+	if len(modelFailure) > 0 {
+		if !json.Valid(modelFailure) {
 			return 0, errors.New("invalid model failure JSON")
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE turn_results SET model_failure = ? WHERE session_id = ? AND execution_id = ?`, []byte(artifacts[3]), sessionID, executionID); err != nil {
+		if _, err := tx.ExecContext(ctx, `UPDATE turn_results SET model_failure = ? WHERE session_id = ? AND execution_id = ?`, []byte(modelFailure), sessionID, executionID); err != nil {
 			return 0, err
 		}
 	}
@@ -289,16 +279,10 @@ func (s *Store) PauseQueuedTurnWithReason(ctx context.Context, sessionID, queueI
 // CompleteQueuedTurn atomically saves conversation state, the durable result,
 // the terminal event, and queue removal.
 func (s *Store) CompleteQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, response, history, modelContext json.RawMessage, contextKey string, event json.RawMessage) (int64, error) {
-	return s.CompleteQueuedTurnWithAcceptance(ctx, sessionID, queueID, executionID, status, response, history, modelContext, contextKey, nil, nil, nil, event)
-}
-
-// CompleteQueuedTurnWithAcceptance atomically saves acceptance details alongside
-// its conversation, terminal event, and queue removal.
-func (s *Store) CompleteQueuedTurnWithAcceptance(ctx context.Context, sessionID, queueID, executionID, status string, response, history, modelContext json.RawMessage, contextKey string, acceptanceReports, acceptanceCriteria, acceptanceEvidence, event json.RawMessage) (int64, error) {
 	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
 		return 0, errors.New("session store, turn identity, status, and valid event JSON are required")
 	}
-	if len(response) > 0 && !json.Valid(response) || len(history) > 0 && !json.Valid(history) || len(modelContext) > 0 && !json.Valid(modelContext) || len(acceptanceReports) > 0 && !json.Valid(acceptanceReports) || len(acceptanceCriteria) > 0 && !json.Valid(acceptanceCriteria) || len(acceptanceEvidence) > 0 && !json.Valid(acceptanceEvidence) {
+	if len(response) > 0 && !json.Valid(response) || len(history) > 0 && !json.Valid(history) || len(modelContext) > 0 && !json.Valid(modelContext) {
 		return 0, errors.New("turn response and conversation must be valid JSON")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -332,7 +316,7 @@ func (s *Store) CompleteQueuedTurnWithAcceptance(ctx context.Context, sessionID,
 			return 0, fmt.Errorf("session %q does not exist", sessionID)
 		}
 	}
-	if err := upsertTurnResultWithAcceptanceTx(ctx, tx, sessionID, executionID, status, response, time.Now(), acceptanceReports, acceptanceCriteria, acceptanceEvidence); err != nil {
+	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, response, time.Now()); err != nil {
 		return 0, err
 	}
 	result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ? AND execution_id = ?`, sessionID, queueID, executionID)

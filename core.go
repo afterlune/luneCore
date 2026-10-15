@@ -4,27 +4,6 @@ package core
 import coreruntime "github.com/afterlune/luneCore/internal/runtime"
 
 const (
-	AcceptanceTaskAnswer    = coreruntime.AcceptanceTaskAnswer
-	AcceptanceTaskPlan      = coreruntime.AcceptanceTaskPlan
-	AcceptanceTaskExecution = coreruntime.AcceptanceTaskExecution
-
-	AcceptancePassed  = coreruntime.AcceptancePassed
-	AcceptanceFailed  = coreruntime.AcceptanceFailed
-	AcceptanceUnknown = coreruntime.AcceptanceUnknown
-
-	AcceptanceSourceModel = coreruntime.AcceptanceSourceModel
-	AcceptanceSourceHost  = coreruntime.AcceptanceSourceHost
-	AcceptanceSourceUser  = coreruntime.AcceptanceSourceUser
-
-	AcceptancePauseUnknown       = coreruntime.AcceptancePauseUnknown
-	AcceptancePauseRepairLimit   = coreruntime.AcceptancePauseRepairLimit
-	AcceptancePauseInvalidReport = coreruntime.AcceptancePauseInvalidReport
-
-	AcceptanceContinue = coreruntime.AcceptanceContinue
-	AcceptanceConfirm  = coreruntime.AcceptanceConfirm
-)
-
-const (
 	CommandRunning     = coreruntime.CommandRunning
 	CommandStopping    = coreruntime.CommandStopping
 	CommandSucceeded   = coreruntime.CommandSucceeded
@@ -42,8 +21,6 @@ const (
 
 const (
 	UsagePurposeMain       = coreruntime.UsagePurposeMain
-	UsagePurposeCriteria   = coreruntime.UsagePurposeCriteria
-	UsagePurposeAcceptance = coreruntime.UsagePurposeAcceptance
 	UsagePurposeCompaction = coreruntime.UsagePurposeCompaction
 	UsagePurposeMemory     = coreruntime.UsagePurposeMemory
 	UsagePurposeTeam       = coreruntime.UsagePurposeTeam
@@ -82,11 +59,6 @@ const (
 	EventModelStream              = coreruntime.EventModelStream
 	EventContextCompaction        = coreruntime.EventContextCompaction
 	EventToolRecoveryRequired     = coreruntime.EventToolRecoveryRequired
-	EventAcceptanceStarted        = coreruntime.EventAcceptanceStarted
-	EventAcceptanceCriteriaReady  = coreruntime.EventAcceptanceCriteriaReady
-	EventAcceptanceReported       = coreruntime.EventAcceptanceReported
-	EventAcceptanceRequired       = coreruntime.EventAcceptanceRequired
-	EventAcceptanceResolved       = coreruntime.EventAcceptanceResolved
 	EventExecutionBlocked         = coreruntime.EventExecutionBlocked
 	EventMemoryStarted            = coreruntime.EventMemoryStarted
 	EventMemorySaved              = coreruntime.EventMemorySaved
@@ -100,7 +72,6 @@ const (
 	PendingUserQuestion         = coreruntime.PendingUserQuestion
 	PendingUserInteraction      = coreruntime.PendingUserInteraction
 	PendingToolRecovery         = coreruntime.PendingToolRecovery
-	PendingAcceptanceRequest    = coreruntime.PendingAcceptanceRequest
 	PendingExecutionBlocker     = coreruntime.PendingExecutionBlocker
 )
 
@@ -154,18 +125,6 @@ var (
 	ErrToolInvocationPersistence = coreruntime.ErrToolInvocationPersistence
 )
 
-type AcceptanceCriterion = coreruntime.AcceptanceCriterion
-type AcceptanceCriterionResult = coreruntime.AcceptanceCriterionResult
-type AcceptanceDecision = coreruntime.AcceptanceDecision
-type AcceptanceEvidence = coreruntime.AcceptanceEvidence
-type AcceptanceOutcome = coreruntime.AcceptanceOutcome
-type AcceptancePauseReason = coreruntime.AcceptancePauseReason
-type AcceptanceReport = coreruntime.AcceptanceReport
-type AcceptanceResolution = coreruntime.AcceptanceResolution
-type AcceptanceSource = coreruntime.AcceptanceSource
-type AcceptanceTaskKind = coreruntime.AcceptanceTaskKind
-type AcceptanceVerificationInput = coreruntime.AcceptanceVerificationInput
-type AcceptanceVerifier = coreruntime.AcceptanceVerifier
 type ApprovalRequest = coreruntime.ApprovalRequest
 type AttachmentLimits = coreruntime.AttachmentLimits
 type BudgetReason = coreruntime.BudgetReason
@@ -192,7 +151,6 @@ type MemoryConfig = coreruntime.MemoryConfig
 type ModelFailure = coreruntime.ModelFailure
 type ModelOption = coreruntime.ModelOption
 type ModelStreamEvent = coreruntime.ModelStreamEvent
-type PendingAcceptance = coreruntime.PendingAcceptance
 type PendingModelRecovery = coreruntime.PendingModelRecovery
 type PendingRequest = coreruntime.PendingRequest
 type PendingRequestKind = coreruntime.PendingRequestKind

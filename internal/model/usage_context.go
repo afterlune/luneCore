@@ -6,8 +6,6 @@ type UsagePurpose string
 
 const (
 	UsagePurposeMain       UsagePurpose = "main"
-	UsagePurposeCriteria   UsagePurpose = "criteria"
-	UsagePurposeAcceptance UsagePurpose = "acceptance"
 	UsagePurposeCompaction UsagePurpose = "compaction"
 	UsagePurposeMemory     UsagePurpose = "memory"
 	UsagePurposeTeam       UsagePurpose = "team"

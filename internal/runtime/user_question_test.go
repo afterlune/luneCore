@@ -17,6 +17,9 @@ func TestSessionRuntimeResumesDurableUserQuestion(t *testing.T) {
 		hostTextResponse("I will use the target you chose."),
 	}}
 	client, sessionID := newQuestionTestCore(t, provider)
+	if err := client.SetPermissionMode(PermissionReadOnly); err != nil {
+		t.Fatal(err)
+	}
 	runtime, err := client.OpenSessionRuntime(context.Background(), sessionID)
 	if err != nil {
 		t.Fatal(err)

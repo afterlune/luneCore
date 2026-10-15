@@ -49,21 +49,15 @@ func (p *commandProbe) Execute(ctx context.Context, request publictool.CommandRe
 }
 
 type commandFlowProvider struct {
-	mu     sync.Mutex
-	step   int
-	mode   string
-	probe  *commandProbe
-	id     string
-	t      *testing.T
-	script scriptedHostProvider
+	mu    sync.Mutex
+	step  int
+	mode  string
+	probe *commandProbe
+	id    string
 }
 
 func (*commandFlowProvider) Name() string { return "host" }
 func (p *commandFlowProvider) CreateResponse(ctx context.Context, request publicmodel.ModelRequest, profile publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
-	stage := acceptanceRequestStage(request)
-	if stage != "execution" {
-		return p.script.CreateResponse(ctx, request, profile)
-	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	step := p.step
@@ -146,7 +140,7 @@ func latestCommandOutput(request publicmodel.ModelRequest) CommandOutput {
 
 func TestLongCommandRuntimeOutputAndTermination(t *testing.T) {
 	probe := newCommandProbe()
-	provider := &commandFlowProvider{probe: probe, t: t}
+	provider := &commandFlowProvider{probe: probe}
 	config := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
 	config.CommandExecutor = probe
 	client, err := New(config)
@@ -161,15 +155,6 @@ func TestLongCommandRuntimeOutputAndTermination(t *testing.T) {
 	result, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: mustSettingsTaskInput(t, "Run and inspect a command")})
 	if err != nil || result.Status != TaskCompleted || probe.calls.Load() != 1 || !probe.ended.Load() {
 		t.Fatalf("result=%+v calls=%d error=%v", result, probe.calls.Load(), err)
-	}
-	var terminalEvidence bool
-	for _, evidence := range result.AcceptanceEvidence {
-		if strings.HasPrefix(evidence.Reference, "command:") && strings.Contains(evidence.Content, "private-command-text") && strings.Contains(evidence.Content, "succeeded") {
-			terminalEvidence = true
-		}
-	}
-	if !terminalEvidence {
-		t.Fatal("saved terminal command evidence was not included in acceptance")
 	}
 	runtime, _ := client.OpenSessionRuntime(context.Background(), saved.ID)
 	infos, err := runtime.ListCommands(context.Background())
@@ -210,7 +195,7 @@ func TestLongCommandRuntimeOutputAndTermination(t *testing.T) {
 func TestCoreClosePersistsTerminalCommandEvent(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	probe := newCommandProbe()
-	provider := &commandFlowProvider{probe: probe, t: t}
+	provider := &commandFlowProvider{probe: probe}
 	config := runtimeTestConfig(workspace, stateDir, provider)
 	config.CommandExecutor = probe
 	client, err := New(config)
@@ -277,7 +262,7 @@ func TestCoreClosePersistsTerminalCommandEvent(t *testing.T) {
 func TestRunningCommandsBlockCompletionAndSurviveRestartAsRecords(t *testing.T) {
 	ctx := context.Background()
 	probe := newCommandProbe()
-	provider := &commandFlowProvider{probe: probe, mode: "ignore", t: t}
+	provider := &commandFlowProvider{probe: probe, mode: "ignore"}
 	config := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
 	config.CommandExecutor = probe
 	client, err := New(config)
@@ -290,7 +275,7 @@ func TestRunningCommandsBlockCompletionAndSurviveRestartAsRecords(t *testing.T) 
 		t.Fatal(err)
 	}
 	result, err := client.RunTask(ctx, TaskRequest{SessionID: saved.ID, Input: mustSettingsTaskInput(t, "Inspect the running command")})
-	if !errors.Is(err, ErrTaskPaused) || result.Status != TaskPaused || len(result.AcceptanceReports) != 0 || !probe.ended.Load() {
+	if !errors.Is(err, ErrTaskPaused) || result.Status != TaskPaused || !probe.ended.Load() {
 		t.Fatalf("result=%+v error=%v ended=%v", result, err, probe.ended.Load())
 	}
 	runtime, _ := client.OpenSessionRuntime(ctx, saved.ID)
@@ -354,7 +339,7 @@ func TestRunningCommandsBlockCompletionAndSurviveRestartAsRecords(t *testing.T) 
 
 func TestClarificationStopsCommandsWithoutReplay(t *testing.T) {
 	probe := newCommandProbe()
-	provider := &commandFlowProvider{probe: probe, mode: "question", t: t}
+	provider := &commandFlowProvider{probe: probe, mode: "question"}
 	config := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
 	config.CommandExecutor = probe
 	client, err := New(config)

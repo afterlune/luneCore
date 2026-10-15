@@ -24,22 +24,21 @@ type benchmarkReport struct {
 }
 
 type caseReport struct {
-	ID                string           `json:"id"`
-	Repeat            int              `json:"repeat"`
-	Provider          string           `json:"provider"`
-	Protocol          string           `json:"protocol"`
-	Model             string           `json:"model"`
-	Status            string           `json:"status"`
-	ErrorType         string           `json:"errorType,omitempty"`
-	DurationMillis    int64            `json:"durationMillis"`
-	RequestCount      int              `json:"requestCount"`
-	Measured          bool             `json:"measured"`
-	EstimatedInput    int64            `json:"estimatedInput,omitempty"`
-	Usage             core.UsageTotals `json:"usage"`
-	PurposeUsage      purposeUsage     `json:"purposeUsage,omitempty"`
-	AcceptanceOutcome string           `json:"acceptanceOutcome,omitempty"`
-	FinalText         string           `json:"finalText,omitempty"`
-	Checks            []checkResult    `json:"checks,omitempty"`
+	ID             string           `json:"id"`
+	Repeat         int              `json:"repeat"`
+	Provider       string           `json:"provider"`
+	Protocol       string           `json:"protocol"`
+	Model          string           `json:"model"`
+	Status         string           `json:"status"`
+	ErrorType      string           `json:"errorType,omitempty"`
+	DurationMillis int64            `json:"durationMillis"`
+	RequestCount   int              `json:"requestCount"`
+	Measured       bool             `json:"measured"`
+	EstimatedInput int64            `json:"estimatedInput,omitempty"`
+	Usage          core.UsageTotals `json:"usage"`
+	PurposeUsage   purposeUsage     `json:"purposeUsage,omitempty"`
+	FinalText      string           `json:"finalText,omitempty"`
+	Checks         []checkResult    `json:"checks,omitempty"`
 }
 
 type checkResult struct {
@@ -106,8 +105,8 @@ func compareReports(baselinePath, candidatePath string, output io.Writer) error 
 		if before.RequestCount != after.RequestCount && after.RequestCount > before.RequestCount {
 			return fmt.Errorf("case run %s increased model requests from %d to %d", key, before.RequestCount, after.RequestCount)
 		}
-		if before.Status != after.Status || before.AcceptanceOutcome != after.AcceptanceOutcome {
-			return fmt.Errorf("case run %s changed task or acceptance outcome (%s/%s -> %s/%s)", key, before.Status, before.AcceptanceOutcome, after.Status, after.AcceptanceOutcome)
+		if before.Status != after.Status {
+			return fmt.Errorf("case run %s changed task status (%s -> %s)", key, before.Status, after.Status)
 		}
 		if failedCheck(before.Checks) {
 			return fmt.Errorf("baseline case run %s failed an objective check and cannot establish a quality baseline", key)

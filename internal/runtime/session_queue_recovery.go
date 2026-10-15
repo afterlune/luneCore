@@ -77,17 +77,6 @@ func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool, 
 			return TurnSubmission{}, nil, err
 		}
 	}
-	if pending.AcceptancePaused {
-		accepted, decisionErr := c.hasAcceptanceResolutionInput(ctx, sessionID)
-		if decisionErr != nil {
-			c.mu.Unlock()
-			return TurnSubmission{}, nil, fmt.Errorf("inspect acceptance resolution: %w", decisionErr)
-		}
-		if !accepted {
-			c.mu.Unlock()
-			return TurnSubmission{}, nil, errors.New("paused acceptance requires an explicit continue or confirm decision")
-		}
-	}
 	queued, err := c.sessions.QueuedTurns(ctx, sessionID)
 	if err != nil {
 		c.mu.Unlock()
@@ -224,27 +213,9 @@ func (c *Core) completeQueuedTurnFromCheckpoint(ctx context.Context, queued sess
 		return false, nil, nil
 	}
 	status := TaskFailed
-	var response, history, modelContext, acceptanceReports, acceptanceCriteria, acceptanceEvidence json.RawMessage
+	var response, history, modelContext json.RawMessage
 	contextKey := ""
 	if state != nil {
-		if len(state.AcceptanceReports) > 0 {
-			acceptanceReports, err = json.Marshal(state.AcceptanceReports)
-			if err != nil {
-				return true, nil, fmt.Errorf("encode acceptance reports: %w", err)
-			}
-		}
-		if len(state.AcceptanceCriteria) > 0 {
-			acceptanceCriteria, err = json.Marshal(state.AcceptanceCriteria)
-			if err != nil {
-				return true, nil, fmt.Errorf("encode acceptance criteria: %w", err)
-			}
-		}
-		if len(state.AcceptanceEvidence) > 0 {
-			acceptanceEvidence, err = json.Marshal(state.AcceptanceEvidence)
-			if err != nil {
-				return true, nil, fmt.Errorf("encode acceptance evidence: %w", err)
-			}
-		}
 		transcript := state.Transcript
 		if transcript.Items == nil && transcript.Text == nil {
 			transcript = state.History
@@ -285,7 +256,7 @@ func (c *Core) completeQueuedTurnFromCheckpoint(ctx context.Context, queued sess
 	if status != TaskCompleted {
 		response = nil
 	}
-	if err := c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey, acceptanceReports, acceptanceCriteria, acceptanceEvidence); err != nil {
+	if err := c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey); err != nil {
 		return true, nil, err
 	}
 	return true, response, nil

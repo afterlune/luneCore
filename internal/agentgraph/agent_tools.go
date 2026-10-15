@@ -42,8 +42,8 @@ func askUserDefinition() model.FunctionTool {
 	strict := true
 	return model.FunctionTool{
 		Name: askUserToolName,
-		Description: "Ask the user a concise question only when missing information blocks useful progress. " +
-			"Optionally provide answer choices; the user may choose one or reply with free text.",
+		Description: "Ask the user only for a user-owned decision or material unresolved ambiguity that blocks safe or correct progress. " +
+			"First inspect facts available in the workspace and use reasonable defaults for non-blocking details. Ask a concise, targeted question; optionally provide answer choices, and accept free text.",
 		Parameters: parameters,
 		Strict:     &strict,
 	}

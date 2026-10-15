@@ -172,23 +172,6 @@ func Open(path string) (*Store, error) {
 			return nil, fmt.Errorf("migrate model failure: %w", err)
 		}
 	}
-	if version < 8 {
-		if _, err := tx.Exec(`ALTER TABLE turn_results ADD COLUMN acceptance_reports BLOB`); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return nil, fmt.Errorf("migrate turn result acceptance reports: %w", err)
-		}
-		if _, err := tx.Exec(`ALTER TABLE turn_results ADD COLUMN acceptance_criteria BLOB`); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return nil, fmt.Errorf("migrate turn result acceptance criteria: %w", err)
-		}
-		if _, err := tx.Exec(`ALTER TABLE turn_results ADD COLUMN acceptance_evidence BLOB`); err != nil {
-			_ = tx.Rollback()
-			_ = db.Close()
-			return nil, fmt.Errorf("migrate turn result acceptance evidence: %w", err)
-		}
-	}
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS graph_resume_inputs (
 		session_id TEXT NOT NULL,
 		run_id TEXT NOT NULL,

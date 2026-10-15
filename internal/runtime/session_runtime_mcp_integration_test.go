@@ -90,24 +90,13 @@ func TestMCPPromptAndResourceRunThroughCoreTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RunTask: %v", err)
 	}
-	if result.Status != TaskCompleted || len(result.AcceptanceReports) != 1 {
+	if result.Status != TaskCompleted {
 		t.Fatalf("task result = %#v", result)
 	}
-	report := result.AcceptanceReports[0]
-	if report.Source != AcceptanceSourceModel || len(report.Results) != 1 || report.Results[0].Outcome != AcceptancePassed {
-		t.Fatalf("acceptance report = %#v", report)
-	}
 
-	var executionRequest *publicmodel.ModelRequest
-	for _, request := range provider.modelRequests() {
-		if acceptanceRequestStage(request) == "execution" {
-			copy := request
-			executionRequest = &copy
-			break
-		}
+	requests := provider.modelRequests()
+	if len(requests) != 1 {
+		t.Fatalf("Core model requests = %d, want one", len(requests))
 	}
-	if executionRequest == nil {
-		t.Fatal("Core did not send an execution request to the model provider")
-	}
-	assertMCPPromptResourceInput(t, executionRequest.Input, expectedImageURL)
+	assertMCPPromptResourceInput(t, requests[0].Input, expectedImageURL)
 }

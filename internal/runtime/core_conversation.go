@@ -66,7 +66,6 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		}
 		modelContext = &decoded
 	}
-	modelContext = agentruntime.PruneCompletedAcceptanceContext(modelContext)
 	compactOptions := agentgraph.TaskOptions{
 		Execution:       agentExecutionOptions(c.executionDefaults),
 		ReasoningEffort: settings.ReasoningEffort, Goal: effective.Goal,

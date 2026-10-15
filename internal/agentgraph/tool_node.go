@@ -4,9 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 
-	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/model"
 	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
@@ -24,9 +22,6 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 	ensureTranscript(&state)
 	if state.UserAnswerReady {
 		call := state.PendingCalls[state.PendingIndex]
-		if state.AcceptancePhase == "criteria" {
-			state.AcceptanceClarifications = append(state.AcceptanceClarifications, state.UserAnswer)
-		}
 		output := model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("User's answer: " + state.UserAnswer)}
 		state.UserQuestion, state.UserQuestionOptions = "", nil
 		state.UserAnswer, state.UserAnswerReady = "", false
@@ -67,58 +62,21 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 	}
 	call := state.PendingCalls[state.PendingIndex]
 	var output model.InputFunctionCallOutput
-	evidenceEligible := false
 	switch {
-	case call.Name == submitCriteriaToolName && a.options.AcceptanceEnabled && !state.TeamBranch && state.AcceptancePhase == "criteria" && len(state.AcceptanceCriteria) == 0:
-		if len(state.PendingCalls) != 1 {
-			return a.rejectAcceptanceCall(state, call, criteriaNode, "Submit task criteria in a single tool call.")
+	case call.Name == askUserToolName && state.NoInteractiveDecisions && !state.TeamBranch:
+		return a.blockExecution(ctx, state, call.CallID, call.Name, "execution requires a user decision that was not resolved during planning"), nil
+	case !contains(state.VisibleTools, call.Name):
+		expectedCategory := a.categoryForTool(call.Name)
+		a.options.Logger.WarnContext(ctx, "tool call is not in the visible tool set",
+			"tool", call.Name,
+			"selected_category", state.SelectedCategory,
+			"visible_tools", state.VisibleTools,
+			"expected_category", expectedCategory,
+		)
+		output = model.InputFunctionCallOutput{
+			CallID: call.CallID,
+			Output: model.NewToolOutputText(unavailableToolMessage(call.Name, expectedCategory, a.categorized != nil)),
 		}
-		var submission criteriaSubmission
-		if err := parseJSONStrict(call.Arguments, &submission); err != nil {
-			return a.rejectAcceptanceCall(state, call, criteriaNode, "Criteria were not valid structured JSON: "+err.Error())
-		}
-		if err := validateCriteria(state, submission); err != nil {
-			return a.rejectAcceptanceCall(state, call, criteriaNode, "Criteria were rejected: "+err.Error())
-		}
-		state.AcceptanceCriteria = append([]acceptance.Criterion(nil), submission.Criteria...)
-		state.AcceptanceKind = submission.Kind
-		state.AcceptanceFormatRetries = 0
-		state.AcceptancePhase = "execution"
-		state = appendToolOutput(state, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Acceptance criteria saved for this execution.")})
-		state.PendingCalls, state.PendingIndex, state.VisibleTools = nil, 0, nil
-		a.observeAcceptance(state, "criteria_prepared", "", "")
-		return graph.To(state, modelNode), nil
-	case call.Name == submitAcceptanceToolName && a.options.AcceptanceEnabled && !state.TeamBranch && state.AcceptancePhase == "acceptance":
-		if len(state.PendingCalls) != 1 {
-			return a.rejectAcceptanceCall(state, call, acceptanceNode, "Submit one acceptance action in a single tool call.")
-		}
-		var submission acceptanceSubmission
-		if err := parseJSONStrict(call.Arguments, &submission); err != nil {
-			return a.rejectAcceptanceCall(state, call, acceptanceNode, "Acceptance report was not valid structured JSON: "+err.Error())
-		}
-		report, err := validateModelReport(state, submission)
-		if err != nil {
-			return a.rejectAcceptanceCall(state, call, acceptanceNode, "Acceptance report was rejected: "+err.Error())
-		}
-		state = appendToolOutput(state, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Acceptance report received.")})
-		state.PendingCalls, state.PendingIndex, state.VisibleTools = nil, 0, nil
-		return a.acceptModelReport(ctx, state, report)
-	case call.Name == requestEvidenceToolName && a.options.AcceptanceEnabled && !state.TeamBranch && state.AcceptancePhase == "acceptance":
-		if len(state.PendingCalls) != 1 {
-			return a.rejectAcceptanceCall(state, call, acceptanceNode, "Submit one acceptance action in a single tool call.")
-		}
-		var request evidenceRequest
-		if err := parseJSONStrict(call.Arguments, &request); err != nil || strings.TrimSpace(request.Question) == "" {
-			if err == nil {
-				err = errors.New("question must not be empty")
-			}
-			return a.rejectAcceptanceCall(state, call, acceptanceNode, "Evidence request was rejected: "+err.Error())
-		}
-		state.AcceptanceEvidenceRequest = strings.TrimSpace(request.Question)
-		state.AcceptancePhase = "execution"
-		state = appendToolOutput(state, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Returning to task execution to gather the requested evidence.")})
-		state.PendingCalls, state.PendingIndex, state.VisibleTools = nil, 0, nil
-		return graph.To(state, modelNode), nil
 	case call.Name == askUserToolName && a.options.AskUser && !state.NoInteractiveDecisions && !state.TeamBranch:
 		question, options, err := parseUserQuestion(call.Arguments)
 		if err != nil {
@@ -127,8 +85,6 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			state.UserQuestion, state.UserQuestionOptions = question, append([]model.UserQuestionOption(nil), options...)
 			return graph.Wait(state, UserQuestionContinuation, toolNode), nil
 		}
-	case call.Name == askUserToolName && state.NoInteractiveDecisions && !state.TeamBranch:
-		return a.blockExecution(ctx, state, call.CallID, call.Name, "execution requires a user decision that was not resolved during planning"), nil
 	case call.Name == teamDispatchToolName && a.options.Team != nil:
 		assignments, minimumSuccesses, err := parseTeamAssignments(call.Arguments, a.options.Team)
 		if err != nil {
@@ -209,18 +165,6 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			a.options.Logger.InfoContext(ctx, "tool category selected", "selected_category", category)
 		}
 		output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(text)}
-	case !contains(state.VisibleTools, call.Name):
-		expectedCategory := a.categoryForTool(call.Name)
-		a.options.Logger.WarnContext(ctx, "tool call is not in the visible tool set",
-			"tool", call.Name,
-			"selected_category", state.SelectedCategory,
-			"visible_tools", state.VisibleTools,
-			"expected_category", expectedCategory,
-		)
-		output = model.InputFunctionCallOutput{
-			CallID: call.CallID,
-			Output: model.NewToolOutputText(unavailableToolMessage(call.Name, expectedCategory, a.categorized != nil)),
-		}
 	default:
 		var err error
 		output, err = a.executeBusinessTool(ctx, state, call, info.CallID)
@@ -231,11 +175,6 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			}
 			return graph.Transition[State]{}, err
 		}
-		evidenceEligible = true
-	}
-
-	if a.options.AcceptanceEnabled && !state.TeamBranch && state.AcceptancePhase == "execution" && evidenceEligible {
-		state = saveToolEvidence(state, call.CallID, output)
 	}
 	state = appendToolOutput(state, output)
 	return a.nextToolTransition(state), nil
@@ -260,16 +199,6 @@ func (a *Agent) blockExecution(ctx context.Context, state State, callID, toolNam
 		a.options.BlockerObserver(ctx, state, state.BlockerID, state.BlockerTool)
 	}
 	return graph.Wait(state, ExecutionBlockerContinuation, toolNode)
-}
-
-func (a *Agent) rejectAcceptanceCall(state State, call model.OutputFunctionCall, target, reason string) (graph.Transition[State], error) {
-	state = appendToolOutput(state, model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(reason)})
-	state.PendingCalls, state.PendingIndex, state.VisibleTools = nil, 0, nil
-	if state.AcceptanceFormatRetries < 1 {
-		state.AcceptanceFormatRetries++
-		return graph.To(state, target), nil
-	}
-	return a.pauseAcceptanceFormat(state, reason), nil
 }
 
 func appendToolOutput(state State, output model.InputFunctionCallOutput) State {

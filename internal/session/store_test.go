@@ -310,11 +310,8 @@ func TestCompleteQueuedTurnAtomicallyPersistsConversationResultAndEvent(t *testi
 	}
 	history := json.RawMessage(`{"items":[{"role":"assistant","text":"done"}]}`)
 	response := json.RawMessage(`{"id":"response-1","output":[]}`)
-	reports := json.RawMessage(`[{"candidate_id":"candidate-1","attempt":1,"source":"model","results":[{"criterion_id":"answer","outcome":"passed","evidence":["candidate:candidate-1"],"reason":"complete"}]}]`)
-	criteria := json.RawMessage(`[{"id":"answer","description":"Answer the question.","basis":"hello"}]`)
-	evidence := json.RawMessage(`[{"reference":"candidate:candidate-1","content":"hello world"}]`)
 	event := json.RawMessage(`{"kind":"task_finished","status":"completed"}`)
-	if _, err := store.CompleteQueuedTurnWithAcceptance(ctx, "session", "queue", "execution", "completed", response, history, history, "context-key", reports, criteria, evidence, event); err == nil {
+	if _, err := store.CompleteQueuedTurn(ctx, "session", "queue", "execution", "completed", response, history, history, "context-key", event); err == nil {
 		t.Fatal("CompleteQueuedTurn succeeded despite a rejected terminal event")
 	}
 	snapshot, err := store.Get(ctx, "session", "workspace")
@@ -334,11 +331,11 @@ func TestCompleteQueuedTurnAtomicallyPersistsConversationResultAndEvent(t *testi
 	if _, err := store.db.Exec(`DROP TRIGGER reject_terminal_event`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CompleteQueuedTurnWithAcceptance(ctx, "session", "queue", "execution", "completed", response, history, history, "context-key", reports, criteria, evidence, event); err != nil {
+	if _, err := store.CompleteQueuedTurn(ctx, "session", "queue", "execution", "completed", response, history, history, "context-key", event); err != nil {
 		t.Fatalf("CompleteQueuedTurn: %v", err)
 	}
 	stored, found, err := store.TurnResult(ctx, "session", "execution")
-	if err != nil || !found || stored.Status != "completed" || string(stored.Response) != string(response) || string(stored.AcceptanceReports) != string(reports) || string(stored.AcceptanceCriteria) != string(criteria) || string(stored.AcceptanceEvidence) != string(evidence) {
+	if err != nil || !found || stored.Status != "completed" || string(stored.Response) != string(response) {
 		t.Fatalf("turn result = %#v found=%t error=%v", stored, found, err)
 	}
 	queued, err = store.QueuedTurns(ctx, "session")
@@ -358,7 +355,7 @@ func TestCompleteQueuedTurnAtomicallyPersistsConversationResultAndEvent(t *testi
 	}
 	defer reopened.Close()
 	stored, found, err = reopened.TurnResult(ctx, "session", "execution")
-	if err != nil || !found || string(stored.Response) != string(response) || string(stored.AcceptanceReports) != string(reports) || string(stored.AcceptanceCriteria) != string(criteria) || string(stored.AcceptanceEvidence) != string(evidence) {
+	if err != nil || !found || string(stored.Response) != string(response) {
 		t.Fatalf("reopened turn result = %#v found=%t error=%v", stored, found, err)
 	}
 	if deleted, err := reopened.Delete(ctx, "session", "workspace"); err != nil || !deleted {
@@ -369,7 +366,7 @@ func TestCompleteQueuedTurnAtomicallyPersistsConversationResultAndEvent(t *testi
 	}
 }
 
-func TestV7TurnResultsMigrateWithEmptyAcceptanceReports(t *testing.T) {
+func TestV7TurnResultsMigrate(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.db")
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -397,7 +394,7 @@ func TestV7TurnResultsMigrateWithEmptyAcceptanceReports(t *testing.T) {
 	}
 	defer store.Close()
 	result, found, err := store.TurnResult(context.Background(), "old-session", "old-execution")
-	if err != nil || !found || result.Status != "completed" || len(result.AcceptanceReports) != 0 || len(result.AcceptanceCriteria) != 0 || len(result.AcceptanceEvidence) != 0 {
+	if err != nil || !found || result.Status != "completed" || string(result.Response) != `{"id":"old-response"}` {
 		t.Fatalf("migrated old result = %#v, found=%v, error=%v", result, found, err)
 	}
 }

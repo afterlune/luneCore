@@ -31,14 +31,6 @@ func TestRunBenchmarkUsesMeasuredCoreUsageWithoutExternalProvider(t *testing.T) 
 		}
 		var response *publicmodel.ModelResponse
 		switch {
-		case containsName(names, "prepare_task_criteria"):
-			input := firstUserText(request.Input)
-			arguments, _ := json.Marshal(map[string]any{
-				"kind": "answer", "criteria": []map[string]string{{"id": "answer", "description": "Answer the current request.", "basis": input}},
-			})
-			response = tokenbenchToolResponse("prepare_task_criteria", string(arguments))
-		case containsName(names, "submit_acceptance"):
-			response = tokenbenchToolResponse("submit_acceptance", `{"candidate_id":"candidate-1","results":[{"criterion_id":"answer","outcome":"passed","evidence":["candidate:candidate-1"],"reason":"The candidate answers the request."}]}`)
 		case containsName(names, "propose_workspace_memories"):
 			response = tokenbenchToolResponse("propose_workspace_memories", `{"items":[]}`)
 		default:
@@ -90,10 +82,10 @@ func TestRunBenchmarkUsesMeasuredCoreUsageWithoutExternalProvider(t *testing.T) 
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Cases) != 1 || report.Cases[0].Status != "completed" || !report.Cases[0].Measured || report.Cases[0].Usage.Total != 408 {
+	if len(report.Cases) != 1 || report.Cases[0].Status != "completed" || !report.Cases[0].Measured || report.Cases[0].Usage.Total != 204 {
 		t.Fatalf("benchmark report = %#v", report)
 	}
-	if report.Cases[0].RequestCount != 4 || requests != 4 || !report.Cases[0].Checks[0].Passed {
+	if report.Cases[0].RequestCount != 2 || requests != 2 || !report.Cases[0].Checks[0].Passed {
 		t.Fatalf("request count=%d provider requests=%d checks=%#v", report.Cases[0].RequestCount, requests, report.Cases[0].Checks)
 	}
 	if report.Cases[0].PurposeUsage["memory"].Requests != 1 {
@@ -111,30 +103,6 @@ func containsName(names []string, expected string) bool {
 		}
 	}
 	return false
-}
-
-func firstUserText(input *publicmodel.ResponseInput) string {
-	if input == nil {
-		return ""
-	}
-	if input.Text != nil {
-		return *input.Text
-	}
-	for _, item := range input.Items {
-		message, ok := item.(publicmodel.InputMessage)
-		if !ok || message.Role != publicmodel.RoleUser {
-			continue
-		}
-		if message.Content.Text != nil {
-			return *message.Content.Text
-		}
-		for _, part := range message.Content.Parts {
-			if text, ok := part.(publicmodel.InputText); ok {
-				return text.Text
-			}
-		}
-	}
-	return ""
 }
 
 func tokenbenchToolResponse(name, arguments string) *publicmodel.ModelResponse {

@@ -193,11 +193,11 @@ func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
 			return
 		}
 		persistErr := c.persistQueuedEvent(context.Background(), event, func(payload json.RawMessage) (int64, error) {
-			artifacts, artifactErr := c.acceptanceArtifacts(context.Background(), sessionID)
-			if artifactErr != nil {
-				return 0, artifactErr
+			modelFailure, failureErr := c.modelFailureArtifact(context.Background(), sessionID)
+			if failureErr != nil {
+				return 0, failureErr
 			}
-			return c.sessions.PauseQueuedTurnWithReason(context.Background(), sessionID, state.QueueID, state.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload, artifacts...)
+			return c.sessions.PauseQueuedTurnWithReason(context.Background(), sessionID, state.QueueID, state.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload, modelFailure)
 		})
 		if persistErr != nil {
 			c.logger.Warn("persist paused queued task", "error", persistErr)

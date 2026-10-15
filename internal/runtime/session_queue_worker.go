@@ -134,11 +134,11 @@ func (c *Core) drainQueue(sessionID string) {
 				if current.Status != session.QueuedTurnPaused && current.Status != session.QueuedTurnQueued {
 					event := Event{Kind: EventTaskFinished, SessionID: sessionID, TaskID: state.TaskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskPaused, BudgetReason: budgetReasonFromError(runErr), Err: errorString(runErr)}
 					if persistErr := c.persistQueuedEvent(ctx, event, func(payload json.RawMessage) (int64, error) {
-						artifacts, artifactErr := c.acceptanceArtifacts(ctx, sessionID)
-						if artifactErr != nil {
-							return 0, artifactErr
+						modelFailure, failureErr := c.modelFailureArtifact(ctx, sessionID)
+						if failureErr != nil {
+							return 0, failureErr
 						}
-						return c.sessions.PauseQueuedTurnWithReason(ctx, sessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload, artifacts...)
+						return c.sessions.PauseQueuedTurnWithReason(ctx, sessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload, modelFailure)
 					}); persistErr != nil {
 						c.logger.Warn("restore paused queued turn", "error", persistErr)
 					}

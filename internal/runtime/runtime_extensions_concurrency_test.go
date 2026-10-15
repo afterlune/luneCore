@@ -75,13 +75,6 @@ type barrierHostProvider struct {
 func (p *barrierHostProvider) Name() string { return "host" }
 
 func (p *barrierHostProvider) CreateResponse(ctx context.Context, request publicmodel.ModelRequest, _ publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
-	stage := acceptanceRequestStage(request)
-	if stage == "criteria" {
-		return scriptedCriteriaResponse(request), nil
-	}
-	if stage == "review" {
-		return scriptedAcceptanceResponse(request), nil
-	}
 	text := ""
 	if request.Input != nil && request.Input.Text != nil {
 		text = *request.Input.Text

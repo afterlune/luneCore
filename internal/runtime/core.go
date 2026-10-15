@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/afterlune/luneCore/acceptance"
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
 	commandruntime "github.com/afterlune/luneCore/internal/command"
@@ -48,9 +47,6 @@ type Config struct {
 	// Deprecated: local commands now always run through the kernel sandbox.
 	AllowLocalCommand bool
 	Execution         ExecutionOptions
-	// AcceptanceVerifier optionally overrides the model's acceptance judgment.
-	// Implementations should be idempotent, read-only, and honor ctx cancellation.
-	AcceptanceVerifier acceptance.Verifier
 	// PersonalInstructions supplies user-level guidance shared by this Core's sessions.
 	// New tasks snapshot the text for recovery; changes require creating a new Core.
 	PersonalInstructions string
@@ -82,7 +78,6 @@ type Core struct {
 	sessions             *session.Store
 	executionDefaults    ExecutionOptions
 	callbackLimiter      *graph.Limiter
-	acceptanceVerifier   acceptance.Verifier
 	personalInstructions string
 	memoryConfig         MemoryConfig
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
@@ -232,7 +227,6 @@ func New(config Config) (_ *Core, err error) {
 		sessions:             sessions,
 		executionDefaults:    config.Execution,
 		callbackLimiter:      callbackLimiter,
-		acceptanceVerifier:   config.AcceptanceVerifier,
 		personalInstructions: config.PersonalInstructions,
 		memoryConfig:         config.Memory,
 		liveExecutions:       make(map[string]*graph.Execution[agentgraph.State]),
@@ -256,7 +250,7 @@ func New(config Config) (_ *Core, err error) {
 		registrations, err := tool.HostToolRegistrations([]publictool.Registration{{
 			Tool: memorySearchTool{core: c},
 			Metadata: publictool.Metadata{
-				Category:        publictool.Category{Name: "workspace_memory", Description: "Search saved workspace memories from earlier accepted tasks."},
+				Category:        publictool.Category{Name: "workspace_memory", Description: "Search saved workspace memories from earlier tasks."},
 				PermissionClass: publictool.PermissionWorkspaceRead,
 				ReadOnly:        true,
 			},

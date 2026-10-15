@@ -8,7 +8,6 @@ import (
 	"strings"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
-	"github.com/afterlune/luneCore/internal/agentruntime"
 	"github.com/afterlune/luneCore/internal/model"
 	publictool "github.com/afterlune/luneCore/tool"
 )
@@ -156,6 +155,5 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 		}
 		modelContext = &decoded
 	}
-	modelContext = agentruntime.PruneCompletedAcceptanceContext(modelContext)
 	return taskRunSetup{saved: saved, settings: settings, profile: profile, effectiveModel: effectiveModel, taskOptions: taskOptions, transcript: transcript, modelContext: modelContext, contextKey: contextKey}, nil
 }

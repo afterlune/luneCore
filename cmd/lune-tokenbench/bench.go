@@ -180,7 +180,6 @@ func runCase(configData []byte, profileConfig publicmodel.ModelProfile, profile,
 	caseResult := caseReport{
 		ID: testCase.ID, Status: string(result.Status), DurationMillis: duration.Milliseconds(),
 		FinalText: finalText(result.Response), Usage: saved.TaskUsage, Protocol: protocol, Checks: checks,
-		AcceptanceOutcome: acceptanceOutcome(result.AcceptanceReports),
 	}
 	recordedRequests := 0
 	measuredRequests := 0
@@ -277,17 +276,4 @@ func finalText(raw json.RawMessage) string {
 		}
 	}
 	return builder.String()
-}
-
-func acceptanceOutcome(reports []core.AcceptanceReport) string {
-	if len(reports) == 0 {
-		return ""
-	}
-	latest := reports[len(reports)-1]
-	for _, result := range latest.Results {
-		if result.Outcome != core.AcceptancePassed {
-			return string(result.Outcome)
-		}
-	}
-	return "passed"
 }
