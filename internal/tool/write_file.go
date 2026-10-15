@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+	"io/fs"
 
 	"github.com/afterlune/luneCore/internal/model"
 )
@@ -20,7 +20,7 @@ type WriteFileTool struct {
 }
 
 func (WriteFileTool) Definition() model.FunctionTool {
-	return functionDefinition("write_file", "Create or replace a file in the workspace with the supplied contents.", writeFileSchema)
+	return functionDefinition("write_file", "Create or replace a workspace file. The complete new contents are staged before replacing the existing file.", writeFileSchema)
 }
 
 func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -50,40 +50,32 @@ func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if err := ctx.Err(); err != nil {
 		return Result{Err: fmt.Errorf("write stopped: %w", err)}
 	}
-	file, err := root.OpenFile(relative, os.O_RDWR|os.O_CREATE, 0o644)
-	readable := err == nil
-	if errors.Is(err, os.ErrPermission) {
-		// A presentation preview must not require read access to perform an
-		// otherwise permitted write.
-		file, err = root.OpenFile(relative, os.O_WRONLY|os.O_CREATE, 0o644)
-	}
-	if err != nil {
-		return Result{Err: fmt.Errorf("write %q: %w", args.Path, err)}
-	}
-	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return Result{Err: fmt.Errorf("stat %q: %w", args.Path, err)}
-	}
-	if !info.Mode().IsRegular() {
-		return Result{Err: fmt.Errorf("path %q does not refer to a regular file", args.Path)}
-	}
+
+	mode := fs.FileMode(0o644)
+	preserveMode := false
 	var before []byte
-	captured := readable && info.Size() <= maxDiffSourceBytes && len(args.Content) <= maxDiffSourceBytes
-	if captured {
-		before, err = io.ReadAll(io.LimitReader(file, maxDiffSourceBytes+1))
-		captured = err == nil && len(before) <= maxDiffSourceBytes
+	captured := false
+	info, statErr := root.Stat(relative)
+	if statErr == nil {
+		if !info.Mode().IsRegular() {
+			return Result{Err: fmt.Errorf("path %q does not refer to a regular file", args.Path)}
+		}
+		mode = info.Mode().Perm()
+		preserveMode = true
+		if info.Size() <= maxDiffSourceBytes && len(args.Content) <= maxDiffSourceBytes {
+			if oldFile, openErr := root.Open(relative); openErr == nil {
+				before, openErr = io.ReadAll(io.LimitReader(oldFile, maxDiffSourceBytes+1))
+				_ = oldFile.Close()
+				captured = openErr == nil && len(before) <= maxDiffSourceBytes
+			}
+		}
+	} else if !errors.Is(statErr, fs.ErrNotExist) {
+		return Result{Err: fmt.Errorf("stat %q: %w", args.Path, statErr)}
 	}
-	if err := ctx.Err(); err != nil {
-		return Result{Err: fmt.Errorf("write stopped: %w", err)}
-	}
-	if err := file.Truncate(0); err != nil {
-		return Result{Err: fmt.Errorf("truncate %q: %w", args.Path, err)}
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return Result{Err: fmt.Errorf("seek %q: %w", args.Path, err)}
-	}
-	if _, err := io.WriteString(file, args.Content); err != nil {
+
+	if err := replaceFile(ctx, root, relative, mode, preserveMode, func(destination io.Writer) error {
+		return writeContextString(ctx, destination, args.Content)
+	}); err != nil {
 		return Result{Err: fmt.Errorf("write %q: %w", args.Path, err)}
 	}
 	result := Result{Output: fmt.Sprintf("Wrote %d bytes to %s", len(args.Content), args.Path)}

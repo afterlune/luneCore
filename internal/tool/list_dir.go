@@ -5,24 +5,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
 
 	"github.com/afterlune/luneCore/internal/model"
 )
 
-const (
-	listDirSchema  = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative directory; use . for the workspace root"}},"additionalProperties":false}`
-	maxListEntries = 500
-)
+const listDirSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative directory; use . for the workspace root"},"offset":{"type":"integer","minimum":0,"description":"Zero-based entry offset; defaults to 0"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum entries to return; defaults to 100"}},"additionalProperties":false}`
 
-// ListDirTool lists the direct children of a workspace directory.
+// ListDirTool lists a page of sorted direct children of a workspace directory.
 type ListDirTool struct {
 	Workspace string
 	workspace *workspaceIdentity
 }
 
 func (ListDirTool) Definition() model.FunctionTool {
-	return optionalPathDefinition("list_dir", "List names and types of entries in a workspace directory.", listDirSchema)
+	return optionalPathDefinition("list_dir", "List sorted workspace directory entries. Use offset and limit to continue through large directories.", listDirSchema)
 }
 
 func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -30,10 +28,16 @@ func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: fmt.Errorf("list_dir stopped: %w", err)}
 	}
 	var args struct {
-		Path string `json:"path"`
+		Path   string `json:"path"`
+		Offset *int   `json:"offset"`
+		Limit  *int   `json:"limit"`
 	}
 	if err := decodeArguments(raw, &args); err != nil {
 		return Result{Err: fmt.Errorf("invalid list_dir arguments: %w", err)}
+	}
+	page, err := parsePageRequest(args.Offset, args.Limit)
+	if err != nil {
+		return Result{Err: fmt.Errorf("invalid list_dir pagination: %w", err)}
 	}
 	root, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
 	if err != nil {
@@ -66,30 +70,44 @@ func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if !openedInfo.IsDir() {
 		return Result{Err: errors.New("path is not a directory")}
 	}
-	entries, err := directoryFile.ReadDir(-1)
-	if err != nil {
+	entries, err := directoryFile.ReadDir(maxDirectoryEntries + 1)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return Result{Err: fmt.Errorf("list directory: %w", err)}
 	}
+	scanLimited := len(entries) > maxDirectoryEntries
+	if scanLimited {
+		entries = entries[:maxDirectoryEntries]
+	}
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Name() < entries[j].Name() })
-	if len(entries) == 0 {
-		return Result{Output: "Directory is empty."}
+	if err := ctx.Err(); err != nil {
+		return Result{Err: fmt.Errorf("list_dir stopped: %w", err)}
 	}
 
-	output := newToolText()
-	limit := len(entries)
-	if limit > maxListEntries {
-		limit = maxListEntries
-	}
-	for _, entry := range entries[:limit] {
+	var output pageText
+	start := min(page.offset, len(entries))
+	end := min(start+page.limit, len(entries))
+	nextOffset := start
+	for index := start; index < end; index++ {
 		if err := ctx.Err(); err != nil {
 			return Result{Err: fmt.Errorf("list_dir stopped: %w", err)}
 		}
-		if !output.Write(fmt.Sprintf("%s\t%s\n", entryKind(entry), entry.Name())) {
+		record := fmt.Sprintf("%s\t%s\n", entryKind(entries[index]), entries[index].Name())
+		if !output.Add(record) {
+			if output.Empty() && output.AddClipped(record, "\n[entry truncated]") {
+				nextOffset = index + 1
+			} else {
+				nextOffset = index
+			}
 			break
 		}
+		nextOffset = index + 1
 	}
-	if len(entries) > limit {
-		output.Truncate("entry limit reached")
+	more := nextOffset < len(entries)
+	if output.Empty() && len(entries) == 0 {
+		return Result{Output: "Directory is empty.\n[end of results]"}
 	}
-	return Result{Output: output.String()}
+	if output.Empty() {
+		return Result{Output: output.String(pageFooter(nextOffset, more, scanLimited))}
+	}
+	return Result{Output: output.String(pageFooter(nextOffset, more, scanLimited))}
 }

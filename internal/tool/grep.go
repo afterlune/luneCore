@@ -19,8 +19,7 @@ import (
 )
 
 const (
-	grepSchema      = `{"type":"object","properties":{"pattern":{"type":"string","description":"Case-sensitive regular expression matched against each text line"},"path":{"type":"string","description":"Workspace-relative file or directory; defaults to the workspace root"}},"required":["pattern"],"additionalProperties":false}`
-	maxGrepMatches  = 200
+	grepSchema      = `{"type":"object","properties":{"pattern":{"type":"string","description":"Case-sensitive regular expression matched against each text line"},"path":{"type":"string","description":"Workspace-relative file or directory; defaults to the workspace root"},"offset":{"type":"integer","minimum":0,"description":"Zero-based match offset; defaults to 0"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum matches to return; defaults to 100"}},"required":["pattern"],"additionalProperties":false}`
 	maxGrepLineSize = 1 << 20
 )
 
@@ -31,7 +30,7 @@ type GrepTool struct {
 }
 
 func (GrepTool) Definition() model.FunctionTool {
-	return optionalPathDefinition("grep", "Search text files by case-sensitive regular expression. Directories are searched recursively; .git is skipped.", grepSchema)
+	return optionalPathDefinition("grep", "Search text files by case-sensitive regular expression. Directories are searched recursively; .git is skipped. Use offset and limit to continue through large result sets.", grepSchema)
 }
 
 func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -41,9 +40,15 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	var args struct {
 		Pattern string `json:"pattern"`
 		Path    string `json:"path"`
+		Offset  *int   `json:"offset"`
+		Limit   *int   `json:"limit"`
 	}
 	if err := decodeArguments(raw, &args); err != nil {
 		return Result{Err: fmt.Errorf("invalid grep arguments: %w", err)}
+	}
+	page, err := parsePageRequest(args.Offset, args.Limit)
+	if err != nil {
+		return Result{Err: fmt.Errorf("invalid grep pagination: %w", err)}
 	}
 	if strings.TrimSpace(args.Pattern) == "" {
 		return Result{Err: errors.New("pattern must not be empty")}
@@ -69,8 +74,11 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Output: "Search skipped: .git is excluded."}
 	}
 
-	output := newToolText()
+	var output pageText
 	matches := 0
+	nextOffset := page.offset
+	more := false
+	scanLimited := false
 	matchFile := func(relative string, info fs.FileInfo) error {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -92,14 +100,34 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 			return nil
 		}
 		err = grepFile(ctx, file, pattern, func(lineNumber int, line string) error {
-			if matches == maxGrepMatches {
-				output.Truncate("match limit reached")
+			if matches == maxSearchMatches {
+				scanLimited = true
+				more = true
+				return errStopWalk
+			}
+			index := matches
+			if index < page.offset {
+				matches++
+				return nil
+			}
+			if index >= page.offset+page.limit {
+				nextOffset = index
+				more = true
+				return errStopWalk
+			}
+			record := fmt.Sprintf("%s:%d:%s\n", filepath.ToSlash(relative), lineNumber, line)
+			if !output.Add(record) {
+				if output.Empty() && output.AddClipped(record, "\n[match line truncated]") {
+					matches++
+					nextOffset = matches
+				} else {
+					nextOffset = index
+				}
+				more = true
 				return errStopWalk
 			}
 			matches++
-			if !output.Write(fmt.Sprintf("%s:%d:%s\n", filepath.ToSlash(relative), lineNumber, line)) {
-				return errStopWalk
-			}
+			nextOffset = matches
 			return nil
 		})
 		return err
@@ -123,16 +151,19 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		err = nil
 	}
 	if errors.Is(err, errWalkLimit) {
-		output.Truncate("scan limit reached")
+		scanLimited = true
 		err = nil
 	}
 	if err != nil {
 		return Result{Err: fmt.Errorf("search files: %w", err)}
 	}
-	if matches == 0 && !output.truncated {
-		return Result{Output: "No matches."}
+	if output.Empty() && matches == 0 && !scanLimited {
+		return Result{Output: "No matches.\n[end of results]"}
 	}
-	return Result{Output: output.String()}
+	if output.Empty() {
+		return Result{Output: pageFooter(nextOffset, more, scanLimited)}
+	}
+	return Result{Output: output.String(pageFooter(nextOffset, more, scanLimited))}
 }
 
 func isInsideGitDirectory(root, candidate string) bool {

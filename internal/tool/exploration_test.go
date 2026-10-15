@@ -111,7 +111,7 @@ func TestGrepToolSearchesTextLinesAndSkipsGitAndBinary(t *testing.T) {
 	}
 
 	caseSensitive := (GrepTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"TARGET","path":"src"}`))
-	if caseSensitive.Err != nil || caseSensitive.Output != "No matches." {
+	if caseSensitive.Err != nil || caseSensitive.Output != "No matches.\n[end of results]" {
 		t.Fatalf("case-sensitive grep = %#v", caseSensitive)
 	}
 	invalid := (GrepTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"[","path":"."}`))
@@ -155,18 +155,22 @@ func TestExplorationToolsRespectCanceledContext(t *testing.T) {
 	}
 }
 
-func TestGrepToolMarksMatchLimit(t *testing.T) {
+func TestGrepToolPaginatesMatches(t *testing.T) {
 	root := t.TempDir()
-	lines := strings.Repeat("match\n", maxGrepMatches+1)
+	lines := strings.Repeat("match\n", maxPageSize+10)
 	if err := os.WriteFile(filepath.Join(root, "many.txt"), []byte(lines), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	result := (GrepTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"match"}`))
+	result := (GrepTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"match","limit":50}`))
 	if result.Err != nil {
 		t.Fatalf("grep: %v", result.Err)
 	}
-	if !strings.Contains(result.Output, "[truncated: match limit reached]") {
-		t.Fatalf("grep output has no match-limit marker: %q", result.Output[len(result.Output)-80:])
+	if !strings.Contains(result.Output, "many.txt:1:match") || !strings.Contains(result.Output, "next_offset=50") {
+		t.Fatalf("grep first page = %q", result.Output[len(result.Output)-100:])
+	}
+	result = (GrepTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"match","offset":50,"limit":50}`))
+	if result.Err != nil || !strings.Contains(result.Output, "many.txt:51:match") || !strings.Contains(result.Output, "next_offset=100") {
+		t.Fatalf("grep second page = %#v", result)
 	}
 }
 
@@ -180,8 +184,8 @@ func TestGrepToolBoundsOutputSize(t *testing.T) {
 	if result.Err != nil {
 		t.Fatalf("grep: %v", result.Err)
 	}
-	if !strings.Contains(result.Output, "[truncated: output limit reached]") {
-		t.Fatalf("grep output has no output-limit marker")
+	if !strings.Contains(result.Output, "[match line truncated]") {
+		t.Fatalf("grep output has no line-truncation marker")
 	}
 	if count := utf8.RuneCountInString(result.Output); count > maxToolRunes {
 		t.Fatalf("grep output is %d runes, limit %d", count, maxToolRunes)
@@ -240,11 +244,47 @@ func TestGlobAndGrepMarkScanLimit(t *testing.T) {
 		}
 	}
 	glob := (GlobTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"**/*.go"}`))
-	if glob.Err != nil || !strings.Contains(glob.Output, "[truncated: scan limit reached]") {
+	if glob.Err != nil || !strings.Contains(glob.Output, "[scan limit reached") {
 		t.Fatalf("glob scan limit result = %#v", glob)
 	}
 	grep := (GrepTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"not-present"}`))
-	if grep.Err != nil || !strings.Contains(grep.Output, "[truncated: scan limit reached]") {
+	if grep.Err != nil || !strings.Contains(grep.Output, "[scan limit reached") {
 		t.Fatalf("grep scan limit result = %#v", grep)
+	}
+}
+
+func TestListDirPaginatesSortedEntries(t *testing.T) {
+	root := t.TempDir()
+	for index := 0; index < 650; index++ {
+		name := filepath.Join(root, fmt.Sprintf("entry-%04d.txt", index))
+		if err := os.WriteFile(name, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := (ListDirTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"limit":200}`))
+	if first.Err != nil || !strings.Contains(first.Output, "file\tentry-0000.txt") || !strings.Contains(first.Output, "next_offset=200") {
+		t.Fatalf("list_dir first page = %#v", first)
+	}
+	second := (ListDirTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"offset":200,"limit":200}`))
+	if second.Err != nil || !strings.Contains(second.Output, "file\tentry-0200.txt") || strings.Contains(second.Output, "entry-0199.txt") {
+		t.Fatalf("list_dir second page = %#v", second)
+	}
+}
+
+func TestGlobPaginatesMatches(t *testing.T) {
+	root := t.TempDir()
+	for index := 0; index < 250; index++ {
+		name := filepath.Join(root, fmt.Sprintf("entry-%04d.go", index))
+		if err := os.WriteFile(name, nil, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := (GlobTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"*.go","limit":100}`))
+	if first.Err != nil || !strings.Contains(first.Output, "entry-0000.go") || !strings.Contains(first.Output, "next_offset=100") {
+		t.Fatalf("glob first page = %#v", first)
+	}
+	second := (GlobTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"*.go","offset":100,"limit":100}`))
+	if second.Err != nil || !strings.Contains(second.Output, "entry-0100.go") || strings.Contains(second.Output, "entry-0099.go") {
+		t.Fatalf("glob second page = %#v", second)
 	}
 }

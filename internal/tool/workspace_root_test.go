@@ -136,7 +136,7 @@ func TestWorkspaceFileToolsKeepFollowingSymlinksInsideWorkspace(t *testing.T) {
 	}
 
 	read := (ReadFileTool{Workspace: workspace}).Run(context.Background(), json.RawMessage(`{"path":"alias.txt"}`))
-	if read.Err != nil || read.Output != "first" {
+	if read.Err != nil || !strings.Contains(read.Output, "1 | first") {
 		t.Fatalf("read through an in-workspace symlink = %#v", read)
 	}
 	write := (WriteFileTool{Workspace: workspace}).Run(context.Background(), json.RawMessage(`{"path":"alias.txt","content":"second"}`))

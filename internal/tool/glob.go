@@ -14,8 +14,7 @@ import (
 )
 
 const (
-	globSchema     = `{"type":"object","properties":{"pattern":{"type":"string","description":"Workspace-relative glob pattern; supports ** for recursive matching"}},"required":["pattern"],"additionalProperties":false}`
-	maxGlobMatches = 500
+	globSchema = `{"type":"object","properties":{"pattern":{"type":"string","description":"Workspace-relative glob pattern; supports ** for recursive matching"},"offset":{"type":["integer","null"],"minimum":0,"description":"Zero-based match offset; defaults to 0"},"limit":{"type":["integer","null"],"minimum":1,"maximum":500,"description":"Maximum matches to return; defaults to 100"}},"required":["pattern","offset","limit"],"additionalProperties":false}`
 )
 
 // GlobTool returns workspace-relative paths matching a glob pattern.
@@ -25,7 +24,7 @@ type GlobTool struct {
 }
 
 func (GlobTool) Definition() model.FunctionTool {
-	return functionDefinition("glob", "Find workspace files and directories by glob pattern; ** matches recursively.", globSchema)
+	return functionDefinition("glob", "Find workspace files and directories by glob pattern; ** matches recursively. Use offset and limit to continue through large result sets.", globSchema)
 }
 
 func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -34,9 +33,15 @@ func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 	var args struct {
 		Pattern string `json:"pattern"`
+		Offset  *int   `json:"offset"`
+		Limit   *int   `json:"limit"`
 	}
 	if err := decodeArguments(raw, &args); err != nil {
 		return Result{Err: fmt.Errorf("invalid glob arguments: %w", err)}
+	}
+	page, err := parsePageRequest(args.Offset, args.Limit)
+	if err != nil {
+		return Result{Err: fmt.Errorf("invalid glob pagination: %w", err)}
 	}
 	pattern, err := parseGlobPattern(args.Pattern)
 	if err != nil {
@@ -48,8 +53,11 @@ func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 	defer closeRoot()
 
-	output := newToolText()
+	var output pageText
 	matches := 0
+	nextOffset := page.offset
+	more := false
+	scanLimited := false
 	err = walkWorkspace(ctx, root, func(name string, entry fs.DirEntry) error {
 		if name == "." {
 			return nil
@@ -57,30 +65,53 @@ func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		if !globMatches(pattern, filepath.ToSlash(name)) {
 			return nil
 		}
-		if matches == maxGlobMatches {
-			output.Truncate("match limit reached")
+		if matches == maxSearchMatches {
+			scanLimited = true
+			more = true
+			return errStopWalk
+		}
+		index := matches
+		if index < page.offset {
+			matches++
+			return nil
+		}
+		if index >= page.offset+page.limit {
+			nextOffset = index
+			more = true
+			return errStopWalk
+		}
+		record := fmt.Sprintf("%s\t%s\n", entryKind(entry), name)
+		if !output.Add(record) {
+			if output.Empty() && output.AddClipped(record, "\n[match truncated]") {
+				matches++
+				nextOffset = matches
+			} else {
+				nextOffset = index
+			}
+			more = true
 			return errStopWalk
 		}
 		matches++
-		if !output.Write(fmt.Sprintf("%s\t%s\n", entryKind(entry), name)) {
-			return errStopWalk
-		}
+		nextOffset = matches
 		return nil
 	})
 	if errors.Is(err, errStopWalk) {
 		err = nil
 	}
 	if errors.Is(err, errWalkLimit) {
-		output.Truncate("scan limit reached")
+		scanLimited = true
 		err = nil
 	}
 	if err != nil {
 		return Result{Err: err}
 	}
-	if matches == 0 && !output.truncated {
-		return Result{Output: "No matches."}
+	if output.Empty() && matches == 0 && !scanLimited {
+		return Result{Output: "No matches.\n[end of results]"}
 	}
-	return Result{Output: output.String()}
+	if output.Empty() {
+		return Result{Output: pageFooter(nextOffset, more, scanLimited)}
+	}
+	return Result{Output: output.String(pageFooter(nextOffset, more, scanLimited))}
 }
 
 func parseGlobPattern(raw string) ([]string, error) {

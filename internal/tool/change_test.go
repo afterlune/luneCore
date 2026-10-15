@@ -31,6 +31,10 @@ func TestEditAndWriteReturnActualChangesOnlyAfterSuccess(t *testing.T) {
 	if err := os.WriteFile(path, []byte("first\nsecond\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	beforeInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
 	result := (EditFileTool{Workspace: workspace}).Run(context.Background(), json.RawMessage(`{"path":"file.txt","old_text":"second","new_text":"changed"}`))
 	if result.Err != nil || result.Details == nil || result.Details.Changes[0].Added != 1 || result.Details.Changes[0].Removed != 1 {
 		t.Fatalf("edit=%+v", result)
@@ -42,6 +46,13 @@ func TestEditAndWriteReturnActualChangesOnlyAfterSuccess(t *testing.T) {
 	result = (WriteFileTool{Workspace: workspace}).Run(context.Background(), json.RawMessage(`{"path":"file.txt","content":"new\n"}`))
 	if result.Err != nil || result.Details == nil || result.Details.Changes[0].Removed != 2 {
 		t.Fatalf("write=%+v", result)
+	}
+	afterInfo, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if beforeInfo.Mode().Perm() != afterInfo.Mode().Perm() {
+		t.Fatalf("replacement changed file permissions from %v to %v", beforeInfo.Mode().Perm(), afterInfo.Mode().Perm())
 	}
 }
 

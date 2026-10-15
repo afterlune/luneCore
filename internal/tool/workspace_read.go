@@ -10,6 +10,8 @@ import (
 	"strings"
 )
 
+const maxWorkspaceInstructionGlobMatches = 500
+
 // ReadWorkspaceFile reads a bounded regular file through the registry's
 // pinned workspace root.
 func (r *Registry) ReadWorkspaceFile(ctx context.Context, relativePath string, maxBytes int64) ([]byte, error) {
@@ -163,8 +165,8 @@ func (r *Registry) WorkspaceInstructionDirectories(ctx context.Context, relative
 	return directories, nil
 }
 
-// WorkspaceGlobDirectories returns the directories of paths that the built-in
-// glob would report, stopping at the same result and walk limits.
+// WorkspaceGlobDirectories returns the directories of matching paths for
+// project-instruction lookup, with bounded result and walk limits.
 func (r *Registry) WorkspaceGlobDirectories(ctx context.Context, rawPattern string) ([]string, error) {
 	if r == nil || ctx == nil {
 		return nil, errors.New("tool registry and context are required")
@@ -194,7 +196,7 @@ func (r *Registry) WorkspaceGlobDirectories(ctx context.Context, rawPattern stri
 			seen[directory] = struct{}{}
 			directories = append(directories, directory)
 		}
-		if matches >= maxGlobMatches {
+		if matches >= maxWorkspaceInstructionGlobMatches {
 			return errStopWalk
 		}
 		return nil
