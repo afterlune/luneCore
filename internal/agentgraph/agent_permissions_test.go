@@ -17,21 +17,21 @@ import (
 	"github.com/afterlune/luneGraph/checkpoint/memory"
 )
 
-func TestLegacyPlanModeCheckpointStillDecodes(t *testing.T) {
+func TestPlanModeCheckpointRoundTrips(t *testing.T) {
 	codec := checkpoint.JSON[State]{}
 	state, err := codec.Unmarshal([]byte(`{"plan_mode":true,"task_settings_version":5,"goal":"create a plan"}`))
 	if err != nil {
-		t.Fatalf("decode legacy checkpoint: %v", err)
+		t.Fatalf("decode plan checkpoint: %v", err)
 	}
-	if state.TaskSettingsVersion != 5 || state.Goal != "create a plan" {
-		t.Fatalf("decoded legacy checkpoint = %#v", state)
+	if !state.PlanMode || state.TaskSettingsVersion != 5 || state.Goal != "create a plan" {
+		t.Fatalf("decoded plan checkpoint = %#v", state)
 	}
 	encoded, err := codec.Append(nil, state)
 	if err != nil {
 		t.Fatalf("encode checkpoint: %v", err)
 	}
-	if bytes.Contains(encoded, []byte(`"plan_mode"`)) {
-		t.Fatalf("checkpoint retained removed field: %s", encoded)
+	if !bytes.Contains(encoded, []byte(`"plan_mode":true`)) {
+		t.Fatalf("checkpoint lost PlanMode: %s", encoded)
 	}
 }
 
@@ -49,7 +49,13 @@ func TestToolVisibilityFollowsPermissionMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	agent, err := NewWithOptions(&scriptedRequester{}, registry, AgentOptions{ToolVisible: registry.ToolVisible})
+	agent, err := NewWithOptions(&scriptedRequester{}, registry, AgentOptions{
+		ToolVisibleForMode: registry.ToolVisibleForMode,
+		ToolReadOnly: func(name string) bool {
+			metadata, ok := registry.ToolMetadata(name)
+			return ok && metadata.ReadOnly
+		},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,6 +96,29 @@ func TestToolVisibilityFollowsPermissionMode(t *testing.T) {
 		if !visible[name] {
 			t.Errorf("ask mode did not expose approval-gated tool %q", name)
 		}
+	}
+	definitions, _, err = agent.visibleTools(State{AgentID: "lead", PlanMode: true}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	visible = map[string]bool{}
+	for _, definition := range definitions {
+		if function, ok := definition.(model.FunctionTool); ok {
+			visible[function.Name] = true
+		}
+	}
+	for _, name := range []string{"custom_read", "network_lookup"} {
+		if !visible[name] {
+			t.Errorf("Plan mode hid read-only tool %q", name)
+		}
+	}
+	for _, name := range []string{"custom_write"} {
+		if visible[name] {
+			t.Errorf("Plan mode exposed non-read-only tool %q", name)
+		}
+	}
+	if !visible["unclassified_read"] {
+		t.Error("Plan mode hid a tool explicitly marked read-only and approved by Ask mode")
 	}
 }
 

@@ -55,6 +55,53 @@ func TestTaskGoalIsAppliedWithoutForcingPlanInstructions(t *testing.T) {
 	}
 }
 
+func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing.T) {
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<proposed_plan>Done.</proposed_plan>"}]}]}`),
+	}}
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := NewWithOptions(requester, registry, AgentOptions{AskUser: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("plan the change")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "plan-mode-instructions", nil, input, TaskOptions{PlanMode: true}, store, graph.Options{})
+	if err != nil || result.Status != graph.StatusCompleted || len(requester.requests) != 1 {
+		t.Fatalf("Start = status %q, requests %d, error %v", result.Status, len(requester.requests), err)
+	}
+	instructions := requester.requests[0].Instructions
+	for _, expected := range []string{
+		"You are in Plan mode.",
+		"decisions that belong to the user and would materially change the plan",
+		"MUST call ask_user before presenting a plan",
+		"do not emit a proposed plan until the user answers",
+		"reasonable defaults for routine implementation details",
+		"host presents the completed plan for review",
+		"<proposed_plan>",
+	} {
+		if !strings.Contains(instructions, expected) {
+			t.Errorf("Plan mode instructions missing %q: %s", expected, instructions)
+		}
+	}
+	if strings.Contains(instructions, "Prefer reasonable assumptions and continue instead of asking routine questions") {
+		t.Fatalf("generic no-routine-questions instruction should not override Plan mode: %s", instructions)
+	}
+	workerInstructions := taskInstructions("", "workspace", true, true)
+	if !strings.Contains(workerInstructions, "report any unresolved user-owned decision to the lead agent") || strings.Contains(workerInstructions, "MUST call ask_user") {
+		t.Fatalf("Plan mode worker instructions = %q", workerInstructions)
+	}
+}
+
 func TestProjectInstructionsPreflightSkipsWholeToolBatch(t *testing.T) {
 	readFile := &namedRecordingTool{name: "read_file"}
 	writeFile := &namedRecordingTool{name: "write_file"}

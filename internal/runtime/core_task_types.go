@@ -67,6 +67,7 @@ type TaskRequest struct {
 	Model                  string
 	MaxToolRounds          int
 	Execution              ExecutionOptions
+	PlanMode               bool
 	PlanAuthorization      publictool.PlanAuthorization
 	NoInteractiveDecisions bool
 }

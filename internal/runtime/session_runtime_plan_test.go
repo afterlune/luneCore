@@ -11,24 +11,24 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-func TestStoredTurnRequestIgnoresLegacyPlanMode(t *testing.T) {
+func TestStoredTurnRequestPreservesPlanMode(t *testing.T) {
 	var request storedTurnRequest
 	if err := json.Unmarshal([]byte(`{"input":"make a plan","plan_mode":true}`), &request); err != nil {
-		t.Fatalf("decode legacy turn request: %v", err)
+		t.Fatalf("decode plan turn request: %v", err)
 	}
-	if string(request.Input) != `"make a plan"` {
-		t.Fatalf("input = %s, want preserved request text", request.Input)
+	if string(request.Input) != `"make a plan"` || !request.PlanMode {
+		t.Fatalf("decoded turn request = %#v, want input and PlanMode preserved", request)
 	}
 	encoded, err := json.Marshal(request)
 	if err != nil {
 		t.Fatalf("encode turn request: %v", err)
 	}
-	if strings.Contains(string(encoded), "plan_mode") {
-		t.Fatalf("new turn request retained removed field: %s", encoded)
+	if !strings.Contains(string(encoded), `"plan_mode":true`) {
+		t.Fatalf("stored turn request lost PlanMode: %s", encoded)
 	}
 }
 
-func TestReadOnlyPlanHandoffImplementsInSameContextWithScopedPermission(t *testing.T) {
+func TestPlanModeHandoffImplementsInSameContextWithScopedPermission(t *testing.T) {
 	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
 		hostTextResponse("<proposed_plan>Write the requested workspace file.</proposed_plan>"),
 		hostToolCallResponse("select-host", "select_tool_category", `{"category":"host"}`),
@@ -43,7 +43,7 @@ func TestReadOnlyPlanHandoffImplementsInSameContextWithScopedPermission(t *testi
 			PermissionClass: publictool.PermissionWorkspaceWrite,
 		},
 	})
-	if err := client.SetPermissionMode(PermissionReadOnly); err != nil {
+	if err := client.SetPermissionMode(PermissionWorkspace); err != nil {
 		t.Fatal(err)
 	}
 	client.executionDefaults = ExecutionOptions{MaxSteps: 20}
@@ -59,7 +59,7 @@ func TestReadOnlyPlanHandoffImplementsInSameContextWithScopedPermission(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	planned, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: input}, StartIfIdle)
+	planned, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: input, PlanMode: true}, StartIfIdle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -74,13 +74,22 @@ func TestReadOnlyPlanHandoffImplementsInSameContextWithScopedPermission(t *testi
 	provider.mu.Lock()
 	planningRequest := provider.seenRequests[0]
 	provider.mu.Unlock()
-	if !strings.Contains(planningRequest.Instructions, "read-only") || !strings.Contains(planningRequest.Instructions, "<proposed_plan>") {
-		t.Fatalf("read-only planning instructions = %q", planningRequest.Instructions)
+	if !strings.Contains(planningRequest.Instructions, "Plan mode") || !strings.Contains(planningRequest.Instructions, "<proposed_plan>") || !strings.Contains(planningRequest.Instructions, "workspace") {
+		t.Fatalf("Plan mode instructions = %q", planningRequest.Instructions)
 	}
 	for _, definition := range planningRequest.Tools {
 		if function, ok := definition.(publicmodel.FunctionTool); ok && function.Name == "host_echo" {
 			t.Fatal("workspace write tool was visible during read-only planning")
 		}
+	}
+	foundAskUser := false
+	for _, definition := range planningRequest.Tools {
+		if function, ok := definition.(publicmodel.FunctionTool); ok && function.Name == "ask_user" {
+			foundAskUser = true
+		}
+	}
+	if !foundAskUser {
+		t.Fatal("Plan mode hid the user-question tool")
 	}
 
 	implementation, err := runtime.ImplementPlan(context.Background(), planned.ExecutionID, PlanImplementSameContext)
@@ -123,8 +132,8 @@ func TestReadOnlyPlanHandoffImplementsInSameContextWithScopedPermission(t *testi
 	if calls != 1 {
 		t.Fatalf("workspace write tool calls = %d, want 1", calls)
 	}
-	if client.PermissionMode() != PermissionReadOnly {
-		t.Fatalf("global permission mode = %q, want read-only", client.PermissionMode())
+	if client.PermissionMode() != PermissionWorkspace {
+		t.Fatalf("global permission mode = %q, want workspace preserved", client.PermissionMode())
 	}
 	provider.mu.Lock()
 	executionRequest := provider.seenRequests[2]
@@ -147,13 +156,13 @@ func TestReadOnlyPlanHandoffImplementsInSameContextWithScopedPermission(t *testi
 	}
 }
 
-func TestReadOnlyPlanHandoffStartsPlanOnlySession(t *testing.T) {
+func TestPlanModeHandoffStartsPlanOnlySession(t *testing.T) {
 	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
 		hostTextResponse("<proposed_plan>Only update the README.</proposed_plan>"),
 		hostTextResponse("Done."),
 	}}
 	client := newProgrammaticCore(t, provider)
-	if err := client.SetPermissionMode(PermissionReadOnly); err != nil {
+	if err := client.SetPermissionMode(PermissionAsk); err != nil {
 		t.Fatal(err)
 	}
 	source, err := client.CreateSession(context.Background(), json.RawMessage("null"))
@@ -168,7 +177,7 @@ func TestReadOnlyPlanHandoffStartsPlanOnlySession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	planned, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: input}, StartIfIdle)
+	planned, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: input, PlanMode: true}, StartIfIdle)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,8 +209,8 @@ func TestReadOnlyPlanHandoffStartsPlanOnlySession(t *testing.T) {
 	if !strings.Contains(string(encodedInput), "Only update the README") || strings.Contains(string(encodedInput), "Old conversation context") {
 		t.Fatalf("new-context input = %s", encodedInput)
 	}
-	if client.PermissionMode() != PermissionReadOnly {
-		t.Fatalf("global permission mode = %q, want read-only", client.PermissionMode())
+	if client.PermissionMode() != PermissionAsk {
+		t.Fatalf("global permission mode = %q, want ask preserved", client.PermissionMode())
 	}
 }
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/afterlune/luneCore/internal/model"
@@ -39,7 +40,7 @@ func TestAgentCanAskUserDuringTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	execution, waiting, err := agent.Start(context.Background(), "ask-user-task", nil, input, TaskOptions{}, store, graph.Options{})
+	execution, waiting, err := agent.Start(context.Background(), "ask-user-task", nil, input, TaskOptions{PlanMode: true}, store, graph.Options{})
 	if err != nil || waiting.Status != graph.StatusWaiting {
 		t.Fatalf("Start = status %q, error %v", waiting.Status, err)
 	}
@@ -78,6 +79,9 @@ func TestAgentCanAskUserDuringTask(t *testing.T) {
 	}
 	if !foundAskUser {
 		t.Fatalf("task tools = %#v, missing %q", requester.requests[0].Tools, askUserToolName)
+	}
+	if !strings.Contains(requester.requests[0].Instructions, "MUST call ask_user before presenting a plan") {
+		t.Fatalf("Plan mode user-question instructions = %q", requester.requests[0].Instructions)
 	}
 	encodedInput, err := json.Marshal(requester.requests[1].Input)
 	if err != nil {

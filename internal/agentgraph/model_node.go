@@ -17,18 +17,34 @@ func (a *Agent) requestTeam(ctx context.Context, call graph.CallInfo, state Stat
 	return a.requestModel(ctx, call, state)
 }
 
-func taskInstructions(goal, permissionMode string) string {
+func taskInstructions(goal, permissionMode string, planMode, teamBranch bool) string {
 	var instructions []string
-	instructions = append(instructions, "Prefer reasonable assumptions and continue instead of asking routine questions. Inspect the workspace and use available tools to resolve discoverable facts first. Use ask_user only when a user-owned decision or material ambiguity cannot be resolved from available context and blocks a safe or correct result. If the user has not requested a concrete task, reply naturally instead of opening a blocking question.")
-	switch permissionMode {
-	case "read-only":
-		instructions = append(instructions, "Active permission is read-only. Inspect and explain only; do not modify files or run commands. Web and network access require host approval. For plans, return the complete plan inside <proposed_plan> and </proposed_plan> tags; do not claim execution.")
-	case "workspace":
-		instructions = append(instructions, "Workspace mode permits reading and writing workspace files. Commands and network access require host approval.")
-	case "ask":
-		instructions = append(instructions, "Ask mode requires host approval for tools other than workspace reads.")
-	case "full-access":
-		instructions = append(instructions, "Full-access mode permits all available tools.")
+	if planMode {
+		if teamBranch {
+			instructions = append(instructions, "You are a delegated worker in Plan mode. Inspect and report facts using the available read-only tools. Do not ask the user directly or present the complete plan; report any unresolved user-owned decision to the lead agent. Do not modify files or claim execution.")
+		} else {
+			instructions = append(instructions, "You are in Plan mode. Before writing the plan, inspect the workspace and conversation to resolve facts you can discover. Then check for unanswered decisions that belong to the user and would materially change the plan. If one remains and there is no safe, conventional default, you MUST call ask_user before presenting a plan; do not emit a proposed plan until the user answers. Ask only about those consequential decisions, combining closely related choices into one concise question. Use reasonable defaults for routine implementation details. After the answer, continue planning and return the complete plan inside <proposed_plan> and </proposed_plan> tags. Do not use ask_user to request implementation approval; the host presents the completed plan for review. Do not modify files or claim execution.")
+		}
+	} else {
+		instructions = append(instructions, "Prefer reasonable assumptions and continue instead of asking routine questions. Inspect the workspace and use available tools to resolve discoverable facts first. Use ask_user only when a user-owned decision or material ambiguity cannot be resolved from available context and blocks a safe or correct result. If the user has not requested a concrete task, reply naturally instead of opening a blocking question.")
+	}
+	if planMode {
+		permission := "The active permission mode is " + permissionMode + "; it determines approval for visible read-only tools, including web access. Plan mode independently limits the visible tools to read-only operations."
+		if permissionMode == "" {
+			permission = "Plan mode limits the visible tools to read-only operations. The active permission mode still determines approval for visible tools."
+		}
+		instructions = append(instructions, permission)
+	} else {
+		switch permissionMode {
+		case "read-only":
+			instructions = append(instructions, "Active permission is read-only. Inspect and explain only; do not modify files or run commands. Web and network access require host approval.")
+		case "workspace":
+			instructions = append(instructions, "Workspace mode permits reading and writing workspace files. Commands and network access require host approval.")
+		case "ask":
+			instructions = append(instructions, "Ask mode requires host approval for tools other than workspace reads.")
+		case "full-access":
+			instructions = append(instructions, "Full-access mode permits all available tools.")
+		}
 	}
 	if goal = strings.TrimSpace(goal); goal != "" {
 		instructions = append(instructions,

@@ -54,7 +54,7 @@ func (c *Core) submitTurnWithPermission(ctx context.Context, sessionID string, r
 	storedRequest, err := json.Marshal(storedTurnRequest{
 		Input: append(json.RawMessage(nil), request.Input.Raw...),
 		Model: request.Model, MaxToolRounds: request.MaxToolRounds, Execution: request.Execution,
-		PermissionOverride: permissionOverride, PlanAuthorization: request.PlanAuthorization,
+		PermissionOverride: permissionOverride, PlanMode: request.PlanMode, PlanAuthorization: request.PlanAuthorization,
 		NoInteractiveDecisions: request.NoInteractiveDecisions,
 	})
 	if err != nil {

@@ -49,6 +49,7 @@ type TurnRequest struct {
 	Model                  string
 	MaxToolRounds          int
 	Execution              ExecutionOptions
+	PlanMode               bool
 	PlanAuthorization      publictool.PlanAuthorization
 	NoInteractiveDecisions bool
 }
@@ -123,6 +124,7 @@ type storedTurnRequest struct {
 	Execution              ExecutionOptions             `json:"execution,omitempty"`
 	ExecutionOverride      bool                         `json:"execution_override,omitempty"`
 	PermissionOverride     string                       `json:"permission_override,omitempty"`
+	PlanMode               bool                         `json:"plan_mode,omitempty"`
 	PlanAuthorization      publictool.PlanAuthorization `json:"plan_authorization,omitempty"`
 	NoInteractiveDecisions bool                         `json:"no_interactive_decisions,omitempty"`
 	Resume                 bool                         `json:"resume,omitempty"`

@@ -220,7 +220,7 @@ func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (TaskRes
 	}()
 	submission, waiter, err := c.submitTurn(ctx, request.SessionID, TurnRequest{
 		Input: request.Input, Model: request.Model, MaxToolRounds: request.MaxToolRounds,
-		Execution: request.Execution, PlanAuthorization: request.PlanAuthorization,
+		Execution: request.Execution, PlanMode: request.PlanMode, PlanAuthorization: request.PlanAuthorization,
 		NoInteractiveDecisions: request.NoInteractiveDecisions,
 	}, StartIfIdle, true)
 	if err != nil {

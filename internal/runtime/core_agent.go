@@ -58,7 +58,11 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		ProjectInstructionsForTask: c.projectInstructionsForTask,
 		ProjectInstructionsForTool: c.projectInstructionsForTool,
 		ToolVisibleForMode:         c.registry.ToolVisibleForMode,
-		CurrentPermissionMode:      func() string { return string(c.PermissionMode()) },
+		ToolReadOnly: func(name string) bool {
+			metadata, ok := c.registry.ToolMetadata(name)
+			return ok && metadata.ReadOnly
+		},
+		CurrentPermissionMode: func() string { return string(c.PermissionMode()) },
 		StreamObserverFor: func(state agentgraph.State, event model.ModelStreamEvent) {
 			currentTask := taskState
 			if current, ok := c.StateForSession(taskState.SessionID); ok {

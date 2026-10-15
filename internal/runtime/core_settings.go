@@ -194,6 +194,7 @@ func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 		AutoCompact: state.AutoCompact, AutoCompactThreshold: state.AutoCompactThreshold,
 		Execution:          state.Execution,
 		PermissionOverride: state.PermissionOverride,
+		PlanMode:           state.PlanMode,
 		PlanAuthorization:  state.PlanAuthorization, NoInteractiveDecisions: state.NoInteractiveDecisions,
 	}
 }

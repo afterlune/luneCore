@@ -104,7 +104,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			branches := make([]graph.Branch[State], 0, len(assignments))
 			taskOptions := TaskOptions{
 				ExecutionID: state.ExecutionID, MaxToolRounds: state.MaxToolRounds,
-				ReasoningEffort: state.ReasoningEffort, PermissionOverride: state.PermissionOverride,
+				ReasoningEffort: state.ReasoningEffort, PermissionOverride: state.PermissionOverride, PlanMode: state.PlanMode,
 				PersonalInstructions:     state.PersonalInstructions,
 				ProjectInstructionsReady: state.ProjectInstructionsReady,
 				ProjectInstructions:      cloneProjectInstructions(state.ProjectInstructions),
@@ -129,6 +129,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 				branch.MaxToolRounds = state.MaxToolRounds
 				branch.Execution = state.Execution
 				branch.PermissionOverride = state.PermissionOverride
+				branch.PlanMode = state.PlanMode
 				branch.PlanAuthorization = state.PlanAuthorization
 				branch.NoInteractiveDecisions = state.NoInteractiveDecisions
 				branch.ReasoningEffort = state.ReasoningEffort
@@ -140,6 +141,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 					return graph.Transition[State]{}, branchErr
 				}
 				branch.PermissionOverride = state.PermissionOverride
+				branch.PlanMode = state.PlanMode
 				branch.PlanAuthorization = state.PlanAuthorization
 				branch.NoInteractiveDecisions = state.NoInteractiveDecisions
 				branches = append(branches, graph.Branch[State]{Target: teamModelNode, State: branch, EntryTimeout: a.options.Execution.TeamEntryTimeout})
@@ -151,7 +153,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		if permissionMode == "" && a.options.CurrentPermissionMode != nil {
 			permissionMode = a.options.CurrentPermissionMode()
 		}
-		categories := a.visibleCategories(permissionMode)
+		categories := a.visibleCategories(permissionMode, state.PlanMode)
 		category, err := model.ParseCategorySelection(call.Arguments, categories)
 		text := "Category selected. Its tools will be available in the next request."
 		if err != nil {

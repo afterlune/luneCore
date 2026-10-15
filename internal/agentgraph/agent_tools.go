@@ -43,7 +43,7 @@ func askUserDefinition() model.FunctionTool {
 	return model.FunctionTool{
 		Name: askUserToolName,
 		Description: "Ask the user only for a user-owned decision or material unresolved ambiguity that blocks safe or correct progress. " +
-			"First inspect facts available in the workspace and use reasonable defaults for non-blocking details. Ask a concise, targeted question; optionally provide answer choices, and accept free text.",
+			"In Plan mode, ask before presenting a plan when such a consequential decision remains unresolved. First inspect facts available in the workspace and use reasonable defaults for routine details. Ask a concise, targeted question; optionally provide answer choices, and accept free text.",
 		Parameters: parameters,
 		Strict:     &strict,
 	}

@@ -80,6 +80,7 @@ type AgentOptions struct {
 	// ToolVisible filters registered tools for each model request.
 	ToolVisible           func(string) bool
 	ToolVisibleForMode    func(string, string) bool
+	ToolReadOnly          func(string) bool
 	CurrentPermissionMode func() string
 	StreamObserverFor     func(State, model.ModelStreamEvent)
 	OnBranchStarted       func(context.Context, State)
@@ -120,6 +121,7 @@ type State struct {
 	TaskSettingsVersion      int                          `json:"task_settings_version,omitempty"`
 	Execution                ExecutionOptions             `json:"execution,omitempty"`
 	PermissionOverride       string                       `json:"permission_override,omitempty"`
+	PlanMode                 bool                         `json:"plan_mode,omitempty"`
 	PlanAuthorization        publictool.PlanAuthorization `json:"plan_authorization,omitempty"`
 	NoInteractiveDecisions   bool                         `json:"no_interactive_decisions,omitempty"`
 	BlockerID                string                       `json:"blocker_id,omitempty"`
@@ -179,6 +181,7 @@ type TaskOptions struct {
 	AutoCompactThreshold     float64
 	Execution                ExecutionOptions
 	PermissionOverride       string
+	PlanMode                 bool
 	PlanAuthorization        publictool.PlanAuthorization
 	NoInteractiveDecisions   bool
 }

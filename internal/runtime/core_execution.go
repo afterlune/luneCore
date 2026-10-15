@@ -49,7 +49,7 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...Exec
 	return c.waitForTurn(ctx, runtime, submission.ExecutionID, waiter)
 }
 
-func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, permissionOverride string, authorization publictool.PlanAuthorization, noInteractiveDecisions bool, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
+func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, permissionOverride string, planMode bool, authorization publictool.PlanAuthorization, noInteractiveDecisions bool, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
 	if c == nil || ctx == nil {
 		return nil, errors.New("core and context are required")
 	}
@@ -79,7 +79,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 	setup, err := c.prepareTaskRun(ctx, taskRunConfig{
 		sessionID: sessionID, maxRounds: maxRounds, modelOverride: modelOverride,
 		executionOptions: executionOptions, executionOverride: executionOverride,
-		permissionOverride: permissionOverride, authorization: authorization,
+		permissionOverride: permissionOverride, planMode: planMode, authorization: authorization,
 		noInteractiveDecisions: noInteractiveDecisions, resume: resume, executionID: executionID,
 	})
 	if err != nil {

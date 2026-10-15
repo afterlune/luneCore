@@ -92,7 +92,7 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 	if request.Model == "" {
 		request.Model = a.options.Model
 	}
-	request.Instructions = taskInstructions(state.Goal, permissionMode)
+	request.Instructions = taskInstructions(state.Goal, permissionMode, state.PlanMode, state.TeamBranch)
 	if !state.TeamBranch && a.options.MemorySummaryFor != nil {
 		if summary, summaryErr := a.options.MemorySummaryFor(ctx, state); summaryErr != nil {
 			a.options.Logger.WarnContext(ctx, "load workspace memory summary", "error_type", fmt.Sprintf("%T", summaryErr))

@@ -205,6 +205,7 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.AutoCompactThreshold = taskOptions.AutoCompactThreshold
 	state.Execution = taskOptions.Execution
 	state.PermissionOverride = taskOptions.PermissionOverride
+	state.PlanMode = taskOptions.PlanMode
 	state.PlanAuthorization = taskOptions.PlanAuthorization
 	state.NoInteractiveDecisions = taskOptions.NoInteractiveDecisions
 	if input != nil {

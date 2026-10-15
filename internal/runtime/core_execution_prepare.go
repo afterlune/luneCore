@@ -19,6 +19,7 @@ type taskRunConfig struct {
 	executionOptions       ExecutionOptions
 	executionOverride      bool
 	permissionOverride     string
+	planMode               bool
 	authorization          publictool.PlanAuthorization
 	noInteractiveDecisions bool
 	resume                 bool
@@ -99,7 +100,8 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 		}
 		taskOptions = agentgraph.TaskOptions{
 			MaxToolRounds: request.maxRounds, ReasoningEffort: settings.ReasoningEffort,
-			Model: request.modelOverride, PersonalInstructions: c.personalInstructions,
+			PlanMode: request.planMode,
+			Model:    request.modelOverride, PersonalInstructions: c.personalInstructions,
 			Goal: effective.Goal, ContextWindow: effective.ContextWindow,
 			ReserveOutputTokens: effective.ReserveOutputTokens, AutoCompact: effective.AutoCompact,
 			AutoCompactThreshold:   effective.AutoCompactThreshold,

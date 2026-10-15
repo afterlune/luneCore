@@ -23,47 +23,52 @@ func (a *Agent) visibleTools(state State, category, permissionMode string) ([]mo
 		return definitions
 	}
 	if a.categorized == nil {
-		definitions := a.visibleDefinitions(a.tools.Definitions(), permissionMode)
+		definitions := a.visibleDefinitions(a.tools.Definitions(), permissionMode, state.PlanMode)
 		definitions = addRuntimeTools(definitions)
 		return definitions, toolNames(definitions), nil
 	}
-	categories := a.visibleCategories(permissionMode)
+	categories := a.visibleCategories(permissionMode, state.PlanMode)
+	if len(categories) == 0 {
+		definitions := addRuntimeTools(nil)
+		return definitions, toolNames(definitions), nil
+	}
 	selector, err := model.CategorySelectorDefinition(categories)
 	if err != nil {
 		return nil, nil, fmt.Errorf("build category selector: %w", err)
 	}
 	definitions := []model.ResponseTool{selector}
 	if category != "" {
-		definitions = append(definitions, a.visibleDefinitions(a.categorized.DefinitionsForCategory(category), permissionMode)...)
+		definitions = append(definitions, a.visibleDefinitions(a.categorized.DefinitionsForCategory(category), permissionMode, state.PlanMode)...)
 	}
 	definitions = addRuntimeTools(definitions)
 	return definitions, toolNames(definitions), nil
 }
 
-func (a *Agent) visibleCategories(permissionMode string) []model.ToolCategory {
+func (a *Agent) visibleCategories(permissionMode string, planMode bool) []model.ToolCategory {
 	var categories []model.ToolCategory
 	for _, category := range a.categories {
-		if len(a.visibleDefinitions(a.categorized.DefinitionsForCategory(category.Name), permissionMode)) > 0 {
+		if len(a.visibleDefinitions(a.categorized.DefinitionsForCategory(category.Name), permissionMode, planMode)) > 0 {
 			categories = append(categories, category)
 		}
 	}
 	return categories
 }
 
-func (a *Agent) visibleDefinitions(definitions []model.ResponseTool, permissionMode string) []model.ResponseTool {
-	if a.options.ToolVisibleForMode == nil && a.options.ToolVisible == nil {
-		return definitions
-	}
+func (a *Agent) visibleDefinitions(definitions []model.ResponseTool, permissionMode string, planMode bool) []model.ResponseTool {
 	visible := make([]model.ResponseTool, 0, len(definitions))
 	for _, definition := range definitions {
 		function, ok := definition.(model.FunctionTool)
 		isVisible := !ok
-		if ok {
-			if a.options.ToolVisibleForMode != nil {
-				isVisible = a.options.ToolVisibleForMode(function.Name, permissionMode)
-			} else {
-				isVisible = a.options.ToolVisible(function.Name)
-			}
+		if ok && a.options.ToolVisibleForMode == nil && a.options.ToolVisible == nil {
+			isVisible = true
+		}
+		if ok && a.options.ToolVisibleForMode != nil {
+			isVisible = a.options.ToolVisibleForMode(function.Name, permissionMode)
+		} else if ok && a.options.ToolVisible != nil {
+			isVisible = a.options.ToolVisible(function.Name)
+		}
+		if ok && isVisible && planMode {
+			isVisible = a.options.ToolReadOnly != nil && a.options.ToolReadOnly(function.Name)
 		}
 		if isVisible {
 			visible = append(visible, definition)
