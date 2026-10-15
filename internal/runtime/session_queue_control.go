@@ -103,6 +103,15 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 	} else if state, ok := c.activeTasks[sessionID]; ok && state.Status == TaskPaused {
 		discardedExecutionID = state.ExecutionID
 	}
+	if discardedExecutionID == "" {
+		pending, found, err := c.pendingState(ctx, sessionID)
+		if err != nil {
+			return false, err
+		}
+		if found {
+			discardedExecutionID = pending.ExecutionID
+		}
+	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
 	cleanupErr := c.commands.StopSession(cleanupCtx, sessionID)
 	cleanupCancel()

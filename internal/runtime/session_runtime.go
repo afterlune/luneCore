@@ -133,6 +133,11 @@ type turnResult struct {
 	err      error
 }
 
+const (
+	legacyAcceptanceMachineID           = "lune-agent-v3"
+	legacyAcceptanceTaskSettingsVersion = 9
+)
+
 func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (*SessionRuntime, error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return nil, errors.New("core, context, and session id are required")
@@ -159,8 +164,35 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (*Sessi
 			return nil, err
 		}
 	}
+	if err := c.discardObsoletePausedTask(ctx, sessionID); err != nil {
+		c.removeEventHub(sessionID, hub)
+		return nil, err
+	}
 	c.scheduleQueueDrain(sessionID)
 	return &SessionRuntime{core: c, sessionID: sessionID}, nil
+}
+
+func (c *Core) discardObsoletePausedTask(ctx context.Context, sessionID string) error {
+	cp, err := c.runtime.CheckpointForSession(ctx, sessionID)
+	if errors.Is(err, checkpoint.ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if cp.MachineID != legacyAcceptanceMachineID {
+		return nil
+	}
+	state, found, err := c.pendingState(ctx, sessionID)
+	// The immediately preceding Core version used graph v3 and task settings 9
+	// for the removed acceptance workflow. Preserve other old checkpoint paths.
+	if err != nil || !found || state.TaskSettingsVersion != legacyAcceptanceTaskSettingsVersion {
+		return err
+	}
+	if _, err := c.discardPaused(ctx, sessionID); err != nil {
+		return fmt.Errorf("discard obsolete paused task: %w", err)
+	}
+	return nil
 }
 
 func (c *Core) pendingState(ctx context.Context, sessionID string) (agentgraph.State, bool, error) {
