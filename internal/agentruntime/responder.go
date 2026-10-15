@@ -122,7 +122,7 @@ type PendingQuestion struct {
 	CallID       string
 	ExecutionID  string
 	Question     string
-	Options      []string
+	Options      []model.UserQuestionOption
 }
 
 func NewResponder(store graph.Store[agentgraph.State], limiter *graph.Limiter, logger *slog.Logger) *Responder {

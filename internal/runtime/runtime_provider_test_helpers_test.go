@@ -116,15 +116,35 @@ func scriptedCurrentTaskInput(request publicmodel.ModelRequest) string {
 			continue
 		}
 		if message.Content.Text != nil {
-			return strings.TrimSpace(*message.Content.Text)
+			if text, ok := currentAcceptanceTaskText(*message.Content.Text); ok {
+				return text
+			}
+			continue
 		}
 		for _, part := range message.Content.Parts {
 			if text, ok := part.(publicmodel.InputText); ok {
-				return strings.TrimSpace(text.Text)
+				if current, ok := currentAcceptanceTaskText(text.Text); ok {
+					return current
+				}
 			}
 		}
 	}
 	return scriptedCurrentTask(request.Instructions)
+}
+
+func currentAcceptanceTaskText(text string) (string, bool) {
+	const (
+		contextMarker = "Recent conversation context for interpreting the current follow-up only;"
+		currentMarker = "Current user request; this turn authorizes the task below."
+	)
+	if markerIndex := strings.Index(text, currentMarker); markerIndex >= 0 {
+		current := strings.TrimSpace(text[markerIndex+len(currentMarker):])
+		return current, current != ""
+	}
+	if strings.HasPrefix(text, contextMarker) {
+		return "", false
+	}
+	return strings.TrimSpace(text), true
 }
 
 func scriptedAcceptanceResponse(request publicmodel.ModelRequest) *publicmodel.ModelResponse {

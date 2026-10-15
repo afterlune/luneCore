@@ -91,5 +91,5 @@ func (t EditFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if _, err := file.Write(updated); err != nil {
 		return Result{Err: fmt.Errorf("write %q: %w", args.Path, err)}
 	}
-	return Result{Output: fmt.Sprintf("Updated %s", args.Path)}
+	return Result{Output: fmt.Sprintf("Updated %s", args.Path), Details: fileChange(path, string(contents), string(updated))}
 }

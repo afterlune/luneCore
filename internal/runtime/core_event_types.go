@@ -21,6 +21,7 @@ const (
 	EventCommandFinished          EventKind = "command_finished"
 	EventToolStarted              EventKind = "tool_started"
 	EventToolFinished             EventKind = "tool_finished"
+	EventToolDetails              EventKind = "tool_details"
 	EventUsage                    EventKind = "usage"
 	EventApprovalRequired         EventKind = "approval_required"
 	EventApprovalCancelled        EventKind = "approval_cancelled"
@@ -120,6 +121,8 @@ type ContextCompactionDetails struct {
 }
 
 type ModelStreamEvent struct {
+	RequestID     string
+	Purpose       string
 	Type          string
 	ItemID        string
 	OutputIndex   *int
@@ -130,7 +133,9 @@ type ModelStreamEvent struct {
 }
 
 type ToolCall struct {
-	ID string
+	ExecutionID string
+	Details     *publictool.ExecutionDetails `json:"-"`
+	ID          string
 	// InvocationID remains stable across explicit recovery retries.
 	InvocationID string
 	AgentID      string
@@ -177,6 +182,8 @@ type UserInteractionRequest struct {
 }
 
 // UserQuestionRequest identifies a durable wait for a lead-agent clarification.
+type UserQuestionOption = publicmodel.UserQuestionOption
+
 type UserQuestionRequest struct {
 	ID           string
 	AgentID      string
@@ -185,11 +192,12 @@ type UserQuestionRequest struct {
 	CallID       string
 	ExecutionID  string
 	Question     string
-	Options      []string
+	Options      []publicmodel.UserQuestionOption
 }
 
 // UserQuestionAnswer resumes exactly one persisted clarification wait.
 type UserQuestionAnswer struct {
+	ExecutionID  string
 	RunID        string
 	InvocationID string
 	CallID       string

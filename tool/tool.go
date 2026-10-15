@@ -59,6 +59,7 @@ type Registration struct {
 }
 
 type Result struct {
+	Details        *ExecutionDetails
 	Output         string
 	ModelOutput    *model.ToolOutput
 	TranscriptOnly []model.ContentPart

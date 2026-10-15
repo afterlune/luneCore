@@ -1,6 +1,7 @@
 package tool
 
 import (
+	publictool "github.com/afterlune/luneCore/tool"
 	"strings"
 
 	"github.com/afterlune/luneCore/internal/model"
@@ -9,6 +10,7 @@ import (
 // Result contains a tool's output and any execution error. Errors are rendered
 // into the output so the model can inspect them and decide what to do next.
 type Result struct {
+	Details        *publictool.ExecutionDetails
 	Output         string
 	ModelOutput    *model.ToolOutput
 	TranscriptOnly []model.ContentPart

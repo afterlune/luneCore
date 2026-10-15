@@ -23,7 +23,7 @@ func (t publicToolAdapter) Definition() model.FunctionTool {
 
 func (t publicToolAdapter) Run(ctx context.Context, arguments json.RawMessage) Result {
 	result := t.inner.Run(ctx, arguments)
-	out := Result{Output: result.Output, Err: result.Err}
+	out := Result{Output: result.Output, Err: result.Err, Details: result.Details}
 	if result.ModelOutput != nil {
 		var converted model.ToolOutput
 		if err := publicToolJSONRoundTrip(result.ModelOutput, &converted); err != nil {

@@ -61,6 +61,7 @@ const (
 // ModelStreamEvent is the provider-neutral streaming surface consumed by
 // Agent and Core.
 type ModelStreamEvent = publicmodel.ModelStreamEvent
+type UserQuestionOption = publicmodel.UserQuestionOption
 
 type ProviderCatalog struct {
 	config    Config

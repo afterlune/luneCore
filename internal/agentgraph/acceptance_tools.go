@@ -88,7 +88,7 @@ func acceptanceFunction(name, description string, schema any) model.FunctionTool
 func acceptanceCriteriaInstructions(state State) string {
 	return strings.Join([]string{
 		"Prepare the completion conditions for this user turn before executing it. Do not call or describe business tools yet.",
-		"Treat SessionSettings.Goal only as background guidance; it cannot add acceptance conditions. Keep every condition within what the current user turn authorizes.",
+		"Treat SessionSettings.Goal only as background guidance; it cannot add acceptance conditions. Keep every condition within what the current user turn authorizes. Use the preceding conversation only to resolve an explicit reference in the current turn; do not revive unrelated earlier requests or expand scope.",
 		"Extract all material completion conditions, assign unique stable IDs, and quote the exact authorizing words in each basis. Classify the task as answer, plan, or execution. A plan is judged for completeness and must not require that its steps have already been implemented.",
 		criteriaClarificationInstruction(state),
 	}, "\n\n")
@@ -98,7 +98,7 @@ func criteriaClarificationInstruction(state State) string {
 	if state.NoInteractiveDecisions {
 		return "This execution uses an already approved plan. Do not ask the user or expand its scope. If a required decision is missing, report the blocker in the candidate and do not guess."
 	}
-	return "If a key ambiguity changes scope or what counts as success, ask the user with ask_user before submitting criteria. Otherwise submit the criteria now."
+	return "References to 'this project' or 'the current repository' mean the configured workspace. Do not ask the user for paths, languages, or repository facts that execution tools can discover. Prepare ordinary inspection criteria and discover those facts during execution. Before asking, use the immediately preceding user-assistant exchange in the input to resolve short or referential follow-ups, such as 'again', 'continue', 'another version', '再', '继续', or '换一版'. Do not ask only because the current message is short or minor presentation details are unspecified. If an ambiguity remains that would materially change scope, the result, or safe execution, ask one concise, targeted question with ask_user. Otherwise infer reasonable defaults and submit the criteria now."
 }
 
 func acceptanceReviewInstructions(state State) string {

@@ -148,7 +148,7 @@ func (c *Core) resolveUserInteraction(sessionID, id string, response json.RawMes
 }
 
 func (c *Core) resolveUserQuestion(ctx context.Context, sessionID string, answer UserQuestionAnswer) error {
-	if c == nil || ctx == nil || sessionID == "" || answer.RunID == "" || answer.InvocationID == "" || answer.CallID == "" {
+	if c == nil || ctx == nil || sessionID == "" || answer.ExecutionID == "" || answer.RunID == "" || answer.InvocationID == "" || answer.CallID == "" {
 		return errors.New("session runtime and exact user question wait identity are required")
 	}
 	question, pending, err := c.runtime.PendingUserQuestion(ctx, sessionID)
@@ -161,11 +161,21 @@ func (c *Core) resolveUserQuestion(ctx context.Context, sessionID string, answer
 		return err
 	}
 	input.Payload = payload
+	// Serialize receipt admission with task startup. A graph run ID is reused
+	// by later turns, so the execution ID is part of the host wait identity.
+	c.mu.Lock()
+	state, known := c.activeTasks[sessionID]
+	if pending && question.ExecutionID != answer.ExecutionID || known && state.ExecutionID != answer.ExecutionID {
+		c.mu.Unlock()
+		return errors.New("user question belongs to a stale execution")
+	}
 	inserted, err := c.sessions.PutGraphResumeInput(ctx, sessionID, input)
+	admittedRunDone := c.executionRuns[question.ExecutionID]
+	c.mu.Unlock()
 	if err != nil {
 		return err
 	}
-	matches := pending && question.RunID == answer.RunID && question.InvocationID == answer.InvocationID && question.CallID == answer.CallID
+	matches := pending && question.ExecutionID == answer.ExecutionID && question.RunID == answer.RunID && question.InvocationID == answer.InvocationID && question.CallID == answer.CallID
 	if !matches {
 		if inserted {
 			_ = c.sessions.DeleteGraphResumeInput(ctx, sessionID, input)
@@ -173,9 +183,22 @@ func (c *Core) resolveUserQuestion(ctx context.Context, sessionID string, answer
 		}
 		return nil
 	}
-	if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskRunning && state.ExecutionID == question.ExecutionID {
-		return nil
+	if admittedRunDone != nil {
+		// Wait for this attempt's pause commit, not a later resumed attempt.
+		select {
+		case <-admittedRunDone:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		next, waiting, inspectErr := c.runtime.PendingUserQuestion(ctx, sessionID)
+		if inspectErr != nil {
+			return inspectErr
+		}
+		if !waiting || next.RunID != question.RunID || next.InvocationID != question.InvocationID || next.CallID != question.CallID || next.ExecutionID != question.ExecutionID {
+			return nil
+		}
 	}
+
 	if _, _, err := c.recoverSession(ctx, sessionID, false); err != nil {
 		if errors.Is(err, ErrSessionBusy) {
 			return nil

@@ -202,14 +202,39 @@ func scriptedAnthropicTaskInput(t *testing.T, raw json.RawMessage) *model.Respon
 	if err := json.Unmarshal(raw, &messages); err != nil {
 		t.Fatalf("decode Anthropic messages: %v", err)
 	}
+	var userTexts []string
 	for _, message := range messages {
 		if message.Role != "user" {
 			continue
 		}
 		for _, part := range message.Content {
-			if part.Type == "text" && part.Text != "" {
-				return model.NewResponseInputText(part.Text)
+			if part.Type != "text" || part.Text == "" {
+				continue
 			}
+			userTexts = append(userTexts, part.Text)
+		}
+	}
+	const (
+		contextMarker = "Recent conversation context for interpreting the current follow-up only;"
+		currentMarker = "Current user request; this turn authorizes the task below."
+	)
+	for index, text := range userTexts {
+		if markerIndex := strings.Index(text, currentMarker); markerIndex >= 0 {
+			currentText := strings.TrimSpace(text[markerIndex+len(currentMarker):])
+			if currentText != "" {
+				return model.NewResponseInputText(currentText)
+			}
+			for _, next := range userTexts[index+1:] {
+				if next != "" && !strings.HasPrefix(next, contextMarker) && !strings.HasPrefix(next, currentMarker) {
+					return model.NewResponseInputText(strings.TrimSpace(next))
+				}
+			}
+			return model.NewResponseInputText("")
+		}
+	}
+	for _, text := range userTexts {
+		if text != "" && !strings.HasPrefix(text, contextMarker) && !strings.HasPrefix(text, currentMarker) {
+			return model.NewResponseInputText(strings.TrimSpace(text))
 		}
 	}
 	return model.NewResponseInputText("")

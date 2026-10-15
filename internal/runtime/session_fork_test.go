@@ -13,7 +13,7 @@ import (
 
 func TestForkPausedTaskClonesCheckpointAndDurableReceipts(t *testing.T) {
 	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
-		hostToolCallResponse("ask", "ask_user", `{"question":"Continue?","options":["yes","no"]}`),
+		hostToolCallResponse("ask", "ask_user", `{"question":"Continue?","options":[{"label":"yes","description":"Continue"},{"label":"no","description":"Stop"}]}`),
 		hostTextResponse("fork completed"),
 		hostTextResponse("source completed"),
 	}}
@@ -117,7 +117,7 @@ func TestForkPausedTaskClonesCheckpointAndDurableReceipts(t *testing.T) {
 		t.Fatalf("fork result = %#v, error=%v", forkResult, err)
 	}
 	if err := sourceRuntime.ResolveUserQuestion(ctx, UserQuestionAnswer{
-		RunID: sourceQuestion.RunID, InvocationID: sourceQuestion.InvocationID, CallID: sourceQuestion.CallID, Answer: "yes",
+		ExecutionID: sourceQuestion.ExecutionID, RunID: sourceQuestion.RunID, InvocationID: sourceQuestion.InvocationID, CallID: sourceQuestion.CallID, Answer: "yes",
 	}); err != nil {
 		t.Fatalf("resolve source question: %v", err)
 	}

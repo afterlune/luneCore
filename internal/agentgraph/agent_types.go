@@ -162,7 +162,7 @@ type State struct {
 	TeamAssignments           []TeamAssignment             `json:"team_assignments,omitempty"`
 	TeamMinimumSuccesses      int                          `json:"team_minimum_successes,omitempty"`
 	UserQuestion              string                       `json:"user_question,omitempty"`
-	UserQuestionOptions       []string                     `json:"user_question_options,omitempty"`
+	UserQuestionOptions       []model.UserQuestionOption   `json:"user_question_options,omitempty"`
 	UserAnswer                string                       `json:"user_answer,omitempty"`
 	UserAnswerReady           bool                         `json:"user_answer_ready,omitempty"`
 	TaskInput                 json.RawMessage              `json:"task_input,omitempty"`

@@ -9,7 +9,7 @@ import (
 	graph "github.com/afterlune/luneGraph"
 )
 
-func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State) (graph.Transition[State], error) {
+func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
 	ensureTranscript(&state)
 	loadProjectInstructions := !state.ProjectInstructionsReady &&
 		state.AcceptancePhase != "criteria" && state.AcceptancePhase != "acceptance" &&
@@ -228,6 +228,8 @@ func (a *Agent) requestModel(ctx context.Context, _ graph.CallInfo, state State)
 		var emit func(model.ModelStreamEvent) error
 		if a.options.StreamObserverFor != nil || a.options.StreamObserver != nil {
 			emit = func(event model.ModelStreamEvent) error {
+				event.RequestID = call.CallID
+				event.Purpose = string(usagePurpose)
 				if a.options.StreamObserverFor != nil {
 					a.options.StreamObserverFor(state, event)
 				} else {

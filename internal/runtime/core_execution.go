@@ -159,7 +159,12 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 			err = errors.Join(err, reconcileErr)
 		}
 	} else {
-		response, err = taskRuntime.Respond(ctx, input)
+		// A fresh graph starts its wait counter again. Receipts belong to the
+		// previous execution and must not collide with this turn.
+		err = c.sessions.DeleteGraphResumeInputs(ctx, sessionID, taskRuntime.RunID())
+		if err == nil {
+			response, err = taskRuntime.Respond(ctx, input)
+		}
 	}
 	return c.finishTaskRun(ctx, sessionID, queueID, executionID, taskOptions.ExecutionID, response, err, taskRuntime)
 

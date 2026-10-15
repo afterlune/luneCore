@@ -33,6 +33,8 @@ const (
 
 // ModelStreamEvent contains provider-neutral incremental output.
 type ModelStreamEvent struct {
+	RequestID   string               `json:"request_id,omitempty"`
+	Purpose     string               `json:"purpose,omitempty"`
 	Type        ModelStreamEventType `json:"type,omitempty"`
 	ItemID      string               `json:"item_id,omitempty"`
 	OutputIndex *int                 `json:"output_index,omitempty"`
@@ -41,4 +43,10 @@ type ModelStreamEvent struct {
 	Response    *ModelResponse       `json:"response,omitempty"`
 	Error       *ResponseError       `json:"error,omitempty"`
 	Raw         json.RawMessage      `json:"raw,omitempty"`
+}
+
+// UserQuestionOption is one suggested answer and its explanation.
+type UserQuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description"`
 }

@@ -16,8 +16,8 @@ const teamDispatchToolName = "delegate_team"
 const askUserToolName = model.UserQuestionToolName
 
 type userQuestionInput struct {
-	Question string   `json:"question"`
-	Options  []string `json:"options,omitempty"`
+	Question string                     `json:"question"`
+	Options  []model.UserQuestionOption `json:"options,omitempty"`
 }
 
 type teamDispatchRequest struct {
@@ -32,7 +32,7 @@ func askUserDefinition() model.FunctionTool {
 			"question": map[string]any{"type": "string", "description": "A concise clarification question for the user."},
 			"options": map[string]any{
 				"type":        "array",
-				"items":       map[string]any{"type": "string"},
+				"items":       map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "description": map[string]any{"type": "string"}}, "required": []string{"label", "description"}, "additionalProperties": false},
 				"description": "Use an empty array when no choices are needed. The user may also provide a free-text answer.",
 			},
 		},
@@ -49,7 +49,7 @@ func askUserDefinition() model.FunctionTool {
 	}
 }
 
-func parseUserQuestion(arguments string) (string, []string, error) {
+func parseUserQuestion(arguments string) (string, []model.UserQuestionOption, error) {
 	decoder := json.NewDecoder(strings.NewReader(arguments))
 	decoder.DisallowUnknownFields()
 	var input userQuestionInput
@@ -64,8 +64,9 @@ func parseUserQuestion(arguments string) (string, []string, error) {
 		return "", nil, errors.New("question must not be empty")
 	}
 	for index := range input.Options {
-		input.Options[index] = strings.TrimSpace(input.Options[index])
-		if input.Options[index] == "" {
+		input.Options[index].Label = strings.TrimSpace(input.Options[index].Label)
+		input.Options[index].Description = strings.TrimSpace(input.Options[index].Description)
+		if input.Options[index].Label == "" {
 			return "", nil, errors.New("answer options must not be empty")
 		}
 	}

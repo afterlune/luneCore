@@ -81,7 +81,7 @@ func (r *Responder) PendingUserQuestion(ctx context.Context, sessionID string) (
 		return PendingQuestion{
 			ID: wait.CallID, AgentID: state.AgentID, RunID: cp.RunID,
 			InvocationID: wait.InvocationID, CallID: wait.CallID, ExecutionID: state.ExecutionID,
-			Question: state.UserQuestion, Options: append([]string(nil), state.UserQuestionOptions...),
+			Question: state.UserQuestion, Options: append([]model.UserQuestionOption(nil), state.UserQuestionOptions...),
 		}, true, nil
 	}
 	return PendingQuestion{}, false, nil

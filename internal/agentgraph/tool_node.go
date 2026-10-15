@@ -124,7 +124,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		if err != nil {
 			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Question request rejected: " + err.Error())}
 		} else {
-			state.UserQuestion, state.UserQuestionOptions = question, append([]string(nil), options...)
+			state.UserQuestion, state.UserQuestionOptions = question, append([]model.UserQuestionOption(nil), options...)
 			return graph.Wait(state, UserQuestionContinuation, toolNode), nil
 		}
 	case call.Name == askUserToolName && state.NoInteractiveDecisions && !state.TeamBranch:

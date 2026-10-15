@@ -68,7 +68,11 @@ func (t CommandControlTool) Run(ctx context.Context, raw json.RawMessage) Result
 		return Result{Err: err}
 	}
 	data, err := json.Marshal(output)
-	return Result{Output: string(data), Err: err}
+	snapshot, readErr := t.Manager.Read(ctx, identity.SessionID, args.ID, identity.ExecutionID, identity.AgentID, publictool.CommandReadOptions{})
+	if readErr != nil {
+		snapshot = output
+	}
+	return Result{Output: string(data), Err: err, Details: &publictool.ExecutionDetails{Command: &snapshot}}
 }
 
 // Control is a capability over an already-authorized process, never a fresh

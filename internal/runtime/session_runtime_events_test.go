@@ -40,23 +40,26 @@ func TestSessionRuntimeEventLogStoresSafeProjectionAndReplays(t *testing.T) {
 	})
 	client.emit(Event{Kind: EventModelStream, SessionID: saved.ID, Stream: &ModelStreamEvent{Type: "text_delta", Delta: "live-only secret"}})
 	var durable Event
-	select {
-	case durable = <-events:
-	case <-time.After(time.Second):
-		t.Fatal("durable event was not delivered")
+	var live Event
+	deadline := time.After(time.Second)
+	for durable.Kind == "" || live.Kind == "" {
+		select {
+		case event := <-events:
+			if event.Kind == EventToolStarted {
+				durable = event
+			}
+			if event.Kind == EventModelStream {
+				live = event
+			}
+		case <-deadline:
+			t.Fatal("runtime events were not delivered")
+		}
 	}
-	if durable.Kind != EventToolStarted || durable.Cursor == 0 || string(durable.Tool.Arguments) != "null" || durable.Err != "" ||
-		durable.Approval == nil || string(durable.Approval.Arguments) != "null" || durable.Interaction == nil || string(durable.Interaction.Request) != "null" ||
-		durable.ToolRecovery == nil || string(durable.ToolRecovery.Arguments) != "null" || durable.Compaction == nil || durable.Compaction.Err != "" {
+	if durable.Cursor == 0 || string(durable.Tool.Arguments) != "null" || durable.Err != "" || durable.Approval == nil || string(durable.Approval.Arguments) != "null" || durable.Interaction == nil || string(durable.Interaction.Request) != "null" || durable.ToolRecovery == nil || string(durable.ToolRecovery.Arguments) != "null" || durable.Compaction == nil || durable.Compaction.Err != "" {
 		t.Fatalf("durable projection = %#v", durable)
 	}
-	select {
-	case live := <-events:
-		if live.Kind != EventModelStream || live.Cursor != 0 || live.Stream == nil || live.Stream.Delta != "live-only secret" {
-			t.Fatalf("live event = %#v", live)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("live model stream event was not delivered")
+	if live.Cursor != 0 || live.Stream == nil || live.Stream.Delta != "live-only secret" {
+		t.Fatalf("live event = %#v", live)
 	}
 	stored, err := client.sessions.RuntimeEventsAfter(context.Background(), saved.ID, 0, 10)
 	if err != nil || len(stored) != 1 {

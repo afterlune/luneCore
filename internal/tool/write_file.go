@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -49,7 +50,13 @@ func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if err := ctx.Err(); err != nil {
 		return Result{Err: fmt.Errorf("write stopped: %w", err)}
 	}
-	file, err := root.OpenFile(relative, os.O_WRONLY|os.O_CREATE, 0o644)
+	file, err := root.OpenFile(relative, os.O_RDWR|os.O_CREATE, 0o644)
+	readable := err == nil
+	if errors.Is(err, os.ErrPermission) {
+		// A presentation preview must not require read access to perform an
+		// otherwise permitted write.
+		file, err = root.OpenFile(relative, os.O_WRONLY|os.O_CREATE, 0o644)
+	}
 	if err != nil {
 		return Result{Err: fmt.Errorf("write %q: %w", args.Path, err)}
 	}
@@ -61,6 +68,15 @@ func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if !info.Mode().IsRegular() {
 		return Result{Err: fmt.Errorf("path %q does not refer to a regular file", args.Path)}
 	}
+	var before []byte
+	captured := readable && info.Size() <= maxDiffSourceBytes && len(args.Content) <= maxDiffSourceBytes
+	if captured {
+		before, err = io.ReadAll(io.LimitReader(file, maxDiffSourceBytes+1))
+		captured = err == nil && len(before) <= maxDiffSourceBytes
+	}
+	if err := ctx.Err(); err != nil {
+		return Result{Err: fmt.Errorf("write stopped: %w", err)}
+	}
 	if err := file.Truncate(0); err != nil {
 		return Result{Err: fmt.Errorf("truncate %q: %w", args.Path, err)}
 	}
@@ -70,5 +86,9 @@ func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if _, err := io.WriteString(file, args.Content); err != nil {
 		return Result{Err: fmt.Errorf("write %q: %w", args.Path, err)}
 	}
-	return Result{Output: fmt.Sprintf("Wrote %d bytes to %s", len(args.Content), args.Path)}
+	result := Result{Output: fmt.Sprintf("Wrote %d bytes to %s", len(args.Content), args.Path)}
+	if captured {
+		result.Details = fileChange(path, string(before), args.Content)
+	}
+	return result
 }

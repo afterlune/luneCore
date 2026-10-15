@@ -67,6 +67,7 @@ const (
 	EventCommandFinished          = coreruntime.EventCommandFinished
 	EventToolStarted              = coreruntime.EventToolStarted
 	EventToolFinished             = coreruntime.EventToolFinished
+	EventToolDetails              = coreruntime.EventToolDetails
 	EventUsage                    = coreruntime.EventUsage
 	EventApprovalRequired         = coreruntime.EventApprovalRequired
 	EventApprovalCancelled        = coreruntime.EventApprovalCancelled
@@ -227,6 +228,7 @@ type UsageRecord = coreruntime.UsageRecord
 type UsageTotals = coreruntime.UsageTotals
 type UsagePurpose = coreruntime.UsagePurpose
 type UserInteractionRequest = coreruntime.UserInteractionRequest
+type UserQuestionOption = coreruntime.UserQuestionOption
 type UserQuestionAnswer = coreruntime.UserQuestionAnswer
 type UserQuestionRequest = coreruntime.UserQuestionRequest
 

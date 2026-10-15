@@ -18,7 +18,7 @@ func TestAgentCanAskUserDuringTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	requester := &scriptedRequester{responses: []*model.Response{
-		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"ask-1","name":"ask_user","arguments":"{\"question\":\"Which environment?\",\"options\":[\"local\",\"staging\"]}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"ask-1","name":"ask_user","arguments":"{\"question\":\"Which environment?\",\"options\":[{\"label\":\"local\",\"description\":\"Local workspace\"},{\"label\":\"staging\",\"description\":\"Staging environment\"}]}"}]}`),
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will use staging."}]}]}`),
 	}}
 	agent, err := NewWithOptions(requester, registry, AgentOptions{
@@ -54,7 +54,7 @@ func TestAgentCanAskUserDuringTask(t *testing.T) {
 			question = invocation.State
 		}
 	}
-	if question.UserQuestion != "Which environment?" || len(question.UserQuestionOptions) != 2 || question.UserQuestionOptions[1] != "staging" {
+	if question.UserQuestion != "Which environment?" || len(question.UserQuestionOptions) != 2 || question.UserQuestionOptions[1].Label != "staging" {
 		t.Fatalf("persisted user question = %#v", question)
 	}
 	answer, err := json.Marshal("staging")

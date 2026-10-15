@@ -376,7 +376,7 @@ func TestClarificationStopsCommandsWithoutReplay(t *testing.T) {
 		t.Fatalf("requests=%+v error=%v", requests, err)
 	}
 	question := requests[0].UserQuestion
-	if err := runtime.ResolveUserQuestion(context.Background(), UserQuestionAnswer{RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: "yes"}); err != nil {
+	if err := runtime.ResolveUserQuestion(context.Background(), UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: "yes"}); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

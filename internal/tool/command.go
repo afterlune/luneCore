@@ -103,7 +103,7 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 			return Result{Err: err}
 		}
 		data, err := json.Marshal(output)
-		return Result{Output: string(data), Err: err}
+		return Result{Output: string(data), Err: err, Details: &publictool.ExecutionDetails{Command: &output}}
 	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second
@@ -115,17 +115,22 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		executor = SandboxedCommandExecutor{HelperPath: t.SandboxHelperPath}
 	}
 	result, err := executor.Execute(commandCtx, request)
+	status := publictool.CommandSucceeded
+	if err != nil || result.ExitCode != nil && *result.ExitCode != 0 {
+		status = publictool.CommandFailed
+	}
+	details := &publictool.ExecutionDetails{Command: &publictool.CommandOutput{Command: publictool.CommandInfo{Command: args.Command, InvocationID: publictool.InvocationID(ctx), Status: status, ExitCode: result.ExitCode}, Output: result.Output}}
 	if commandCtx.Err() != nil {
-		return Result{Output: result.Output, Err: fmt.Errorf("command stopped: %w", commandCtx.Err())}
+		return Result{Details: details, Output: result.Output, Err: fmt.Errorf("command stopped: %w", commandCtx.Err())}
 	}
 	if err != nil {
 		var blocker *publictool.ExecutionBlockerError
 		if errors.As(err, &blocker) {
 			return Result{Err: blocker}
 		}
-		return Result{Output: result.Output, Err: fmt.Errorf("run sandboxed command: %w", err)}
+		return Result{Details: details, Output: result.Output, Err: fmt.Errorf("run sandboxed command: %w", err)}
 	}
-	return Result{Output: result.Output}
+	return Result{Output: result.Output, Details: details}
 }
 
 func highRiskCommandReason(command string) string {

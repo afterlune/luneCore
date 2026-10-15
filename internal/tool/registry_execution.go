@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/afterlune/luneCore/internal/model"
@@ -112,6 +113,13 @@ func (r *Registry) ExecuteCallRecoverable(ctx context.Context, call model.Output
 		r.observeToolEvent(ToolEvent{CallID: call.CallID, InvocationID: identity.InvocationID, SessionID: identity.SessionID, TaskID: identity.TaskID, RunID: identity.RunID, ExecutionID: identity.ExecutionID, AgentID: identity.AgentID, Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Started: true})
 		result := registeredTool.Run(ctx, arguments)
 		duration := time.Since(started)
+		if result.Details == nil {
+			output := result.Text()
+			if len(output) > 128*1024 {
+				output = strings.ToValidUTF8(output[:128*1024], "") + "\n[Output truncated]"
+			}
+			result.Details = &publictool.ExecutionDetails{Output: output}
+		}
 		attributes := []any{
 			"tool", call.Name, "call_id", call.CallID, "duration", duration,
 			"failed", result.Err != nil,
@@ -124,7 +132,7 @@ func (r *Registry) ExecuteCallRecoverable(ctx context.Context, call model.Output
 		}
 		r.observeToolEvent(ToolEvent{
 			CallID: call.CallID, InvocationID: identity.InvocationID, SessionID: identity.SessionID, TaskID: identity.TaskID, RunID: identity.RunID, ExecutionID: identity.ExecutionID, AgentID: identity.AgentID,
-			Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Duration: duration,
+			Name: call.Name, Arguments: append(json.RawMessage(nil), arguments...), Duration: duration, Details: result.Details,
 			Failed: result.Err != nil, Canceled: errors.Is(result.Err, context.Canceled) || errors.Is(result.Err, context.DeadlineExceeded),
 		})
 		return toolCallOutput(call.CallID, result)

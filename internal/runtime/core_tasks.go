@@ -213,8 +213,8 @@ func (c *Core) onToolEvent(event tool.ToolEvent) {
 		kind = EventToolStarted
 	}
 	c.emit(Event{Kind: kind, SessionID: event.SessionID, TaskID: event.TaskID, ExecutionID: event.ExecutionID, Tool: ToolCall{
-		ID: event.CallID, InvocationID: event.InvocationID, AgentID: event.AgentID, Name: event.Name, Arguments: event.Arguments, Started: event.Started,
-		Duration: event.Duration, Recovered: event.Recovered, Failed: event.Failed, Canceled: event.Canceled,
+		ExecutionID: event.ExecutionID, ID: event.CallID, InvocationID: event.InvocationID, AgentID: event.AgentID, Name: event.Name, Arguments: event.Arguments, Started: event.Started,
+		Details: event.Details, Duration: event.Duration, Recovered: event.Recovered, Failed: event.Failed, Canceled: event.Canceled,
 	}})
 }
 
@@ -224,6 +224,7 @@ func (c *Core) onModelStream(agentID, agentName, profile, provider, modelID stri
 
 func (c *Core) onModelStreamForTask(state TaskState, agentID, agentName, profile, provider, modelID string, event model.ModelStreamEvent) {
 	stream := &ModelStreamEvent{
+		RequestID: event.RequestID, Purpose: event.Purpose,
 		Type: string(event.Type), ItemID: event.ItemID, OutputIndex: event.OutputIndex,
 		Delta: event.Delta,
 	}

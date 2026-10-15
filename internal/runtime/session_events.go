@@ -116,9 +116,14 @@ func (c *Core) emit(event Event) {
 	if event.SessionID == "" {
 		return
 	}
-	if event.Kind == EventModelStream {
+	if event.Kind == EventModelStream || event.Kind == EventToolDetails {
 		c.eventHub(event.SessionID).publishLive(event)
 		return
+	}
+	if event.Kind == EventToolStarted || event.Kind == EventToolFinished {
+		detail := event
+		detail.Kind = EventToolDetails
+		c.eventHub(event.SessionID).publishLive(detail)
 	}
 	encoded, err := json.Marshal(safeEventProjection(event))
 	if err != nil {
@@ -135,6 +140,7 @@ func (c *Core) emit(event Event) {
 func safeEventProjection(event Event) Event {
 	event.Cursor, event.OccurredAt, event.Err = 0, time.Time{}, ""
 	event.Tool.Arguments = nil
+	event.Tool.Details = nil
 	if event.Approval != nil {
 		copy := cloneApproval(*event.Approval)
 		copy.Arguments = nil
@@ -193,6 +199,6 @@ func cloneInteraction(request UserInteractionRequest) UserInteractionRequest {
 }
 
 func cloneUserQuestion(request UserQuestionRequest) UserQuestionRequest {
-	request.Options = append([]string(nil), request.Options...)
+	request.Options = append([]UserQuestionOption(nil), request.Options...)
 	return request
 }

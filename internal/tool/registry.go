@@ -33,6 +33,7 @@ type Registry struct {
 // ToolEvent describes a tool call. Arguments are transient so clients can build
 // a presentation appropriate to their interface; do not log or persist them.
 type ToolEvent struct {
+	Details      *publictool.ExecutionDetails `json:"-"`
 	CallID       string
 	InvocationID string
 	SessionID    string
