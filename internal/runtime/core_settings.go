@@ -54,6 +54,39 @@ func (c *Core) ListModelProfiles() []ModelOption {
 	return options
 }
 
+// DefaultModel returns the default configured model name or profile.
+func (c *Core) DefaultModel() string {
+	if c == nil || c.models == nil {
+		return ""
+	}
+	defaultProfile := c.models.DefaultModel()
+	if profile, ok := c.models.Profile(defaultProfile); ok && profile.Model != "" {
+		return profile.Model
+	}
+	return defaultProfile
+}
+
+// ModelForSession returns the configured model name for the session,
+// or the default model if none is explicitly configured on the session.
+func (c *Core) ModelForSession(ctx context.Context, sessionID string) string {
+	if c == nil || c.models == nil {
+		return ""
+	}
+	profileName := ""
+	if sessionID != "" && ctx != nil {
+		if sess, err := c.GetSession(ctx, sessionID); err == nil && sess.Settings.ModelProfile != "" {
+			profileName = sess.Settings.ModelProfile
+		}
+	}
+	if profileName == "" {
+		profileName = c.models.DefaultModel()
+	}
+	if profile, ok := c.models.Profile(profileName); ok && profile.Model != "" {
+		return profile.Model
+	}
+	return profileName
+}
+
 // SetSessionSettings replaces the per-session overrides used by future tasks.
 // A paused task continues with the settings saved in its checkpoint.
 func (c *Core) SetSessionSettings(ctx context.Context, sessionID string, settings SessionSettings) error {

@@ -212,6 +212,14 @@ func (r *SessionRuntime) SessionID() string {
 	return r.sessionID
 }
 
+// Model returns the configured model for this session.
+func (r *SessionRuntime) Model(ctx context.Context) string {
+	if r == nil || r.core == nil {
+		return ""
+	}
+	return r.core.ModelForSession(ctx, r.sessionID)
+}
+
 func (r *SessionRuntime) SubmitTurn(ctx context.Context, request TurnRequest, mode SubmissionMode) (TurnSubmission, error) {
 	if r == nil || r.core == nil {
 		return TurnSubmission{}, errors.New("session runtime is nil")
