@@ -37,6 +37,16 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 	}
 	if hasQuestion {
 		publicQuestion := publicUserQuestionRequest(question)
+		draft, draftErr := c.sessions.UserQuestionDraft(ctx, r.sessionID, question.RunID, question.InvocationID, question.CallID)
+		if draftErr != nil {
+			return nil, draftErr
+		}
+		if len(draft) > 0 {
+			publicQuestion.Draft = &UserQuestionDraft{}
+			if err := json.Unmarshal(draft, publicQuestion.Draft); err != nil {
+				return nil, err
+			}
+		}
 		requests = append(requests, PendingRequest{Kind: PendingUserQuestion, UserQuestion: &publicQuestion})
 	}
 	modelRecovery, hasModelRecovery, err := c.pendingModelRecovery(ctx, r.sessionID)

@@ -117,5 +117,15 @@ func (s *Store) DeleteGraphResumeInputs(ctx context.Context, sessionID, runID st
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM graph_resume_inputs WHERE session_id = ? AND run_id = ?`, sessionID, runID); err != nil {
 		return fmt.Errorf("delete graph resume inputs: %w", err)
 	}
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM user_question_drafts WHERE session_id = ? AND run_id = ?`, sessionID, runID); err != nil {
+		return err
+	}
 	return nil
+}
+
+// HasGraphResumeInput also sees consumed receipts, preventing late draft writes.
+func (s *Store) HasGraphResumeInput(ctx context.Context, sessionID, runID, invocationID, callID string) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM graph_resume_inputs WHERE session_id=? AND run_id=? AND invocation_id=? AND call_id=?)`, sessionID, runID, invocationID, callID).Scan(&exists)
+	return exists, err
 }

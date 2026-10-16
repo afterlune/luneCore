@@ -172,6 +172,8 @@ type UserInteractionRequest struct {
 
 // UserQuestionRequest identifies a durable wait for a lead-agent clarification.
 type UserQuestionOption = publicmodel.UserQuestionOption
+type UserQuestionItem = publicmodel.UserQuestionItem
+type UserQuestionResponse = publicmodel.UserQuestionResponse
 
 type UserQuestionRequest struct {
 	ID           string
@@ -180,8 +182,8 @@ type UserQuestionRequest struct {
 	InvocationID string
 	CallID       string
 	ExecutionID  string
-	Question     string
-	Options      []publicmodel.UserQuestionOption
+	Questions    []UserQuestionItem
+	Draft        *UserQuestionDraft
 }
 
 // UserQuestionAnswer resumes exactly one persisted clarification wait.
@@ -190,7 +192,7 @@ type UserQuestionAnswer struct {
 	RunID        string
 	InvocationID string
 	CallID       string
-	Answer       string
+	Answers      []UserQuestionResponse
 }
 
 type userInteractionResult struct {

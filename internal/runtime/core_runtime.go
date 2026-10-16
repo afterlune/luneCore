@@ -6,6 +6,6 @@ func publicUserQuestionRequest(question agentruntime.PendingQuestion) UserQuesti
 	return UserQuestionRequest{
 		ID: question.ID, AgentID: question.AgentID, RunID: question.RunID,
 		InvocationID: question.InvocationID, CallID: question.CallID, ExecutionID: question.ExecutionID,
-		Question: question.Question, Options: append([]UserQuestionOption(nil), question.Options...),
+		Questions: question.Questions,
 	}
 }

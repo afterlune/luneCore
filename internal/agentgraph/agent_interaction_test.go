@@ -22,7 +22,7 @@ func TestAgentCanAskUserDuringTask(t *testing.T) {
 		t.Fatal(err)
 	}
 	requester := &scriptedRequester{responses: []*model.Response{
-		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"ask-1","name":"ask_user","arguments":"{\"question\":\"Which environment?\",\"options\":[{\"label\":\"local\",\"description\":\"Local workspace\"},{\"label\":\"staging\",\"description\":\"Staging environment\"}]}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"ask-1","name":"ask_user","arguments":"{\"questions\":[{\"id\":\"q1\",\"question\":\"Which environment?\",\"options\":[{\"label\":\"local\",\"description\":\"Local workspace\"},{\"label\":\"staging\",\"description\":\"Staging environment\"}]}]}"}]}`),
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I will use staging."}]}]}`),
 	}}
 	agent, err := NewWithOptions(requester, registry, AgentOptions{
@@ -58,10 +58,10 @@ func TestAgentCanAskUserDuringTask(t *testing.T) {
 			question = invocation.State
 		}
 	}
-	if question.UserQuestion != "Which environment?" || len(question.UserQuestionOptions) != 2 || question.UserQuestionOptions[1].Label != "staging" {
+	if question.UserQuestions[0].Question != "Which environment?" || len(question.UserQuestions[0].Options) != 2 || question.UserQuestions[0].Options[1].Label != "staging" {
 		t.Fatalf("persisted user question = %#v", question)
 	}
-	answer, err := json.Marshal("staging")
+	answer, err := json.Marshal([]model.UserQuestionResponse{{QuestionID: "q1", Answer: "staging"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -87,7 +87,7 @@ func TestAgentCanAskUserDuringTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(encodedInput, []byte("User's answer: staging")) {
+	if !bytes.Contains(encodedInput, []byte("staging")) {
 		t.Fatalf("user answer was not returned to the model: %s", encodedInput)
 	}
 }
@@ -136,7 +136,7 @@ func TestGreetingDoesNotAskForUserDecision(t *testing.T) {
 	if !containsAsk(requester.requests[0]) {
 		t.Fatal("read-only task did not expose ask_user")
 	}
-	if result.Final == nil || result.Final.UserQuestion != "" || len(result.Final.UserQuestionOptions) != 0 {
+	if result.Final == nil || len(result.Final.UserQuestions) != 0 {
 		t.Fatalf("hidden ask_user call left a user question in completed state: %#v", result.Final)
 	}
 }

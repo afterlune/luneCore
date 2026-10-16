@@ -187,6 +187,10 @@ type UsageTotals = coreruntime.UsageTotals
 type UsagePurpose = coreruntime.UsagePurpose
 type UserInteractionRequest = coreruntime.UserInteractionRequest
 type UserQuestionOption = coreruntime.UserQuestionOption
+type UserQuestionItem = coreruntime.UserQuestionItem
+type UserQuestionResponse = coreruntime.UserQuestionResponse
+type UserQuestionDraft = coreruntime.UserQuestionDraft
+type UserQuestionDraftResponse = coreruntime.UserQuestionDraftResponse
 type UserQuestionAnswer = coreruntime.UserQuestionAnswer
 type UserQuestionRequest = coreruntime.UserQuestionRequest
 

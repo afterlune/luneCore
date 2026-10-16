@@ -2,6 +2,7 @@ package agentgraph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
@@ -22,9 +23,13 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 	ensureTranscript(&state)
 	if state.UserAnswerReady {
 		call := state.PendingCalls[state.PendingIndex]
-		output := model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("User's answer: " + state.UserAnswer)}
-		state.UserQuestion, state.UserQuestionOptions = "", nil
-		state.UserAnswer, state.UserAnswerReady = "", false
+		encoded, err := json.Marshal(state.UserAnswers)
+		if err != nil {
+			return graph.Transition[State]{}, err
+		}
+		output := model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(string(encoded))}
+		state.UserQuestions = nil
+		state.UserAnswers, state.UserAnswerReady = nil, false
 		state = appendToolOutput(state, output)
 		return a.nextToolTransition(state), nil
 	}
@@ -78,11 +83,11 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			Output: model.NewToolOutputText(unavailableToolMessage(call.Name, expectedCategory, a.categorized != nil)),
 		}
 	case call.Name == askUserToolName && a.options.AskUser && !state.NoInteractiveDecisions && !state.TeamBranch:
-		question, options, err := parseUserQuestion(call.Arguments)
+		questions, err := parseUserQuestion(call.Arguments)
 		if err != nil {
 			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Question request rejected: " + err.Error())}
 		} else {
-			state.UserQuestion, state.UserQuestionOptions = question, append([]model.UserQuestionOption(nil), options...)
+			state.UserQuestions = questions
 			return graph.Wait(state, UserQuestionContinuation, toolNode), nil
 		}
 	case call.Name == teamDispatchToolName && a.options.Team != nil:

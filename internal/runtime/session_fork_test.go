@@ -13,7 +13,7 @@ import (
 
 func TestForkPausedTaskClonesCheckpointAndDurableReceipts(t *testing.T) {
 	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
-		hostToolCallResponse("ask", "ask_user", `{"question":"Continue?","options":[{"label":"yes","description":"Continue"},{"label":"no","description":"Stop"}]}`),
+		hostToolCallResponse("ask", "ask_user", `{"questions":[{"id":"q1","question":"Continue?","options":[{"label":"yes","description":"Continue"},{"label":"no","description":"Stop"}]}]}`),
 		hostTextResponse("fork completed"),
 		hostTextResponse("source completed"),
 	}}
@@ -44,7 +44,7 @@ func TestForkPausedTaskClonesCheckpointAndDurableReceipts(t *testing.T) {
 	if sourceQuestion.InvocationID == "" || sourceQuestion.CallID == "" {
 		t.Fatalf("source question = %#v", sourceQuestion)
 	}
-	answer, _ := json.Marshal("yes")
+	answer, _ := json.Marshal([]UserQuestionResponse{{QuestionID: "q1", Answer: "yes"}})
 	inserted, err := client.sessions.PutGraphResumeInput(ctx, source.ID, session.GraphResumeInput{
 		RunID: sourceQuestion.RunID, InvocationID: sourceQuestion.InvocationID, CallID: sourceQuestion.CallID, Payload: answer,
 	})
@@ -116,9 +116,7 @@ func TestForkPausedTaskClonesCheckpointAndDurableReceipts(t *testing.T) {
 	if err != nil || forkResult.Status != TaskCompleted {
 		t.Fatalf("fork result = %#v, error=%v", forkResult, err)
 	}
-	if err := sourceRuntime.ResolveUserQuestion(ctx, UserQuestionAnswer{
-		ExecutionID: sourceQuestion.ExecutionID, RunID: sourceQuestion.RunID, InvocationID: sourceQuestion.InvocationID, CallID: sourceQuestion.CallID, Answer: "yes",
-	}); err != nil {
+	if err := sourceRuntime.ResolveUserQuestion(ctx, UserQuestionAnswer{ExecutionID: sourceQuestion.ExecutionID, RunID: sourceQuestion.RunID, InvocationID: sourceQuestion.InvocationID, CallID: sourceQuestion.CallID, Answers: []UserQuestionResponse{{QuestionID: "q1", Answer: "yes"}}}); err != nil {
 		t.Fatalf("resolve source question: %v", err)
 	}
 	sourceResult, err := sourceRuntime.WaitTurn(ctx, sourceQuestion.ExecutionID)

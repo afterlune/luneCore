@@ -62,6 +62,8 @@ const (
 // Agent and Core.
 type ModelStreamEvent = publicmodel.ModelStreamEvent
 type UserQuestionOption = publicmodel.UserQuestionOption
+type UserQuestionItem = publicmodel.UserQuestionItem
+type UserQuestionResponse = publicmodel.UserQuestionResponse
 
 type ProviderCatalog struct {
 	config    Config

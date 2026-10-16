@@ -30,7 +30,7 @@ func TestSessionRuntimeResumesDurableUserQuestion(t *testing.T) {
 	}
 	question := waitPendingUserQuestion(t, runtime, submission.ExecutionID)
 	if question.AgentID != "lead" || question.RunID == "" || question.InvocationID == "" || question.CallID == "" ||
-		question.Question != "QUESTION-SECRET-7381" || len(question.Options) != 2 || question.Options[0].Label != "OPTION-LOCAL-7381" || question.Options[1].Label != "OPTION-STAGING-7381" {
+		question.Questions[0].Question != "QUESTION-SECRET-7381" || len(question.Questions[0].Options) != 2 || question.Questions[0].Options[0].Label != "OPTION-LOCAL-7381" || question.Questions[0].Options[1].Label != "OPTION-STAGING-7381" {
 		t.Fatalf("pending question = %#v", question)
 	}
 	streamCtx, cancelStream := context.WithCancel(context.Background())
@@ -56,14 +56,12 @@ func TestSessionRuntimeResumesDurableUserQuestion(t *testing.T) {
 			t.Fatal("user question event was not replayed")
 		}
 	}
-	if requestEvent.UserQuestion == nil || requestEvent.UserQuestion.ID != question.ID || requestEvent.UserQuestion.Question != "" || len(requestEvent.UserQuestion.Options) != 0 {
+	if requestEvent.UserQuestion == nil || requestEvent.UserQuestion.ID != question.ID || len(requestEvent.UserQuestion.Questions) != 0 || requestEvent.UserQuestion.Draft != nil {
 		t.Fatalf("durable user question event leaked its payload or lost its ID: %#v", requestEvent)
 	}
 
 	answer := "ANSWER-PRIVATE-7381"
-	if err := runtime.ResolveUserQuestion(context.Background(), UserQuestionAnswer{
-		ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: answer,
-	}); err != nil {
+	if err := runtime.ResolveUserQuestion(context.Background(), UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answers: []UserQuestionResponse{{QuestionID: "q1", Answer: answer}}}); err != nil {
 		t.Fatal(err)
 	}
 	completed := waitTurnResult(t, waitTurnAsync(runtime, submission.ExecutionID))
@@ -73,15 +71,15 @@ func TestSessionRuntimeResumesDurableUserQuestion(t *testing.T) {
 	if completed.err != nil || completed.result.Status != TaskCompleted || len(completed.result.Response) == 0 {
 		t.Fatalf("WaitTurn after answer = %#v, error=%v", completed.result, completed.err)
 	}
-	answerInput := UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: answer}
+	answerInput := UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answers: []UserQuestionResponse{{QuestionID: "q1", Answer: answer}}}
 	if err := runtime.ResolveUserQuestion(context.Background(), answerInput); err != nil {
 		t.Fatalf("identical answer retry: %v", err)
 	}
-	answerInput.Answer = "different answer"
+	answerInput.Answers[0].Answer = "different answer"
 	if err := runtime.ResolveUserQuestion(context.Background(), answerInput); err == nil {
 		t.Fatal("conflicting answer retry was accepted")
 	}
-	answerInput = UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: "stale-invocation", CallID: question.CallID, Answer: answer}
+	answerInput = UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: "stale-invocation", CallID: question.CallID, Answers: []UserQuestionResponse{{QuestionID: "q1", Answer: answer}}}
 	if err := runtime.ResolveUserQuestion(context.Background(), answerInput); err == nil {
 		t.Fatal("stale wait identity was accepted")
 	}
@@ -103,7 +101,7 @@ func TestSessionRuntimeResumesDurableUserQuestion(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, event := range storedEvents {
-		for _, private := range []string{question.Question, question.Options[0].Label, question.Options[1].Label, answer} {
+		for _, private := range []string{question.Questions[0].Question, question.Questions[0].Options[0].Label, question.Questions[0].Options[1].Label, answer} {
 			if strings.Contains(string(event.Payload), private) {
 				t.Fatalf("user question content was persisted in event log: %s", event.Payload)
 			}
@@ -169,12 +167,10 @@ func TestUserQuestionAnswerResumesAfterCoreRestart(t *testing.T) {
 	secondQuestion := waitPendingUserQuestion(t, runtime, submission.ExecutionID)
 	if secondQuestion.ID != firstQuestion.ID || secondQuestion.RunID != firstQuestion.RunID ||
 		secondQuestion.InvocationID != firstQuestion.InvocationID || secondQuestion.CallID != firstQuestion.CallID ||
-		secondQuestion.Question != firstQuestion.Question || !slices.Equal(secondQuestion.Options, firstQuestion.Options) {
+		secondQuestion.Questions[0].Question != firstQuestion.Questions[0].Question || !slices.Equal(secondQuestion.Questions[0].Options, firstQuestion.Questions[0].Options) {
 		t.Fatalf("question after restart = %#v, before restart = %#v", secondQuestion, firstQuestion)
 	}
-	if err := runtime.ResolveUserQuestion(context.Background(), UserQuestionAnswer{
-		ExecutionID: secondQuestion.ExecutionID, RunID: secondQuestion.RunID, InvocationID: secondQuestion.InvocationID, CallID: secondQuestion.CallID, Answer: "staging",
-	}); err != nil {
+	if err := runtime.ResolveUserQuestion(context.Background(), UserQuestionAnswer{ExecutionID: secondQuestion.ExecutionID, RunID: secondQuestion.RunID, InvocationID: secondQuestion.InvocationID, CallID: secondQuestion.CallID, Answers: []UserQuestionResponse{{QuestionID: "q1", Answer: "staging"}}}); err != nil {
 		t.Fatal(err)
 	}
 	completed := waitTurnResult(t, waitTurnAsync(runtime, submission.ExecutionID))
@@ -257,10 +253,7 @@ func askUserToolCallResponse(question string, options []string) *publicmodel.Mod
 	for i, label := range options {
 		choices[i] = publicmodel.UserQuestionOption{Label: label}
 	}
-	arguments, _ := json.Marshal(struct {
-		Question string                           `json:"question"`
-		Options  []publicmodel.UserQuestionOption `json:"options,omitempty"`
-	}{Question: question, Options: choices})
+	arguments, _ := json.Marshal(map[string]any{"questions": []publicmodel.UserQuestionItem{{ID: "q1", Question: question, Options: choices}}})
 	return hostToolCallResponse("ask-call", "ask_user", string(arguments))
 }
 
@@ -286,7 +279,7 @@ func TestSuccessiveQuestionsInOneSessionDoNotReuseAnswerReceipts(t *testing.T) {
 				t.Fatal("old execution answered a new question")
 			}
 		}
-		input := UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answer: answer}
+		input := UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answers: []UserQuestionResponse{{QuestionID: "q1", Answer: answer}}}
 		if err := runtime.ResolveUserQuestion(context.Background(), input); err != nil {
 			t.Fatalf("question %d: %v", i+1, err)
 		}

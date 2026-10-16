@@ -100,8 +100,8 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamBranchJoinNode, From: teamToolNode, Merge: agent.mergeTeam, OnError: graph.FailInvocation, Timeout: options.Execution.JoinTimeout, CanMerge: agent.teamQuorumReached}); err != nil {
 		return nil, fmt.Errorf("add team branch join: %w", err)
 	}
-	if err := graph.RegisterJSONContinuation[State, string](workflow, UserQuestionContinuation, func(_ context.Context, _ graph.CallInfo, state State, answer string) (State, error) {
-		state.UserAnswer, state.UserAnswerReady = answer, true
+	if err := graph.RegisterJSONContinuation[State, []model.UserQuestionResponse](workflow, UserQuestionContinuation, func(_ context.Context, _ graph.CallInfo, state State, answer []model.UserQuestionResponse) (State, error) {
+		state.UserAnswers, state.UserAnswerReady = answer, true
 		return state, nil
 	}); err != nil {
 		return nil, fmt.Errorf("register user question continuation: %w", err)

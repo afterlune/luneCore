@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 12
+const currentSchemaVersion = 13
 
 func Open(path string) (*Store, error) {
 	absolute, err := filepath.Abs(path)
@@ -171,6 +171,14 @@ func Open(path string) (*Store, error) {
 			_ = db.Close()
 			return nil, fmt.Errorf("migrate model failure: %w", err)
 		}
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS user_question_drafts (
+ session_id TEXT NOT NULL, run_id TEXT NOT NULL, invocation_id TEXT NOT NULL, call_id TEXT NOT NULL,
+ payload BLOB NOT NULL, PRIMARY KEY(session_id,run_id,invocation_id,call_id)
+ )`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize question drafts: %w", err)
 	}
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS graph_resume_inputs (
 		session_id TEXT NOT NULL,

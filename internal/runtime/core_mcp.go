@@ -156,7 +156,12 @@ func (c *Core) resolveUserQuestion(ctx context.Context, sessionID string, answer
 		return fmt.Errorf("inspect pending user question: %w", err)
 	}
 	input := session.GraphResumeInput{RunID: answer.RunID, InvocationID: answer.InvocationID, CallID: answer.CallID}
-	payload, err := json.Marshal(answer.Answer)
+	if pending && question.ExecutionID == answer.ExecutionID && question.RunID == answer.RunID && question.InvocationID == answer.InvocationID && question.CallID == answer.CallID {
+		if err := validateQuestionAnswers(question.Questions, answer.Answers); err != nil {
+			return err
+		}
+	}
+	payload, err := json.Marshal(answer.Answers)
 	if err != nil {
 		return err
 	}
@@ -176,6 +181,11 @@ func (c *Core) resolveUserQuestion(ctx context.Context, sessionID string, answer
 		return err
 	}
 	matches := pending && question.ExecutionID == answer.ExecutionID && question.RunID == answer.RunID && question.InvocationID == answer.InvocationID && question.CallID == answer.CallID
+	if matches {
+		if err := c.sessions.DeleteUserQuestionDraft(ctx, sessionID, answer.RunID, answer.InvocationID, answer.CallID); err != nil {
+			return err
+		}
+	}
 	if !matches {
 		if inserted {
 			_ = c.sessions.DeleteGraphResumeInput(ctx, sessionID, input)

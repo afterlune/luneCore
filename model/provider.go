@@ -50,3 +50,16 @@ type UserQuestionOption struct {
 	Label       string `json:"label"`
 	Description string `json:"description"`
 }
+
+// UserQuestionItem is one decision within a clarification batch.
+type UserQuestionItem struct {
+	ID       string               `json:"id"`
+	Question string               `json:"question"`
+	Options  []UserQuestionOption `json:"options"`
+}
+
+// UserQuestionResponse is a complete answer addressed to one question.
+type UserQuestionResponse struct {
+	QuestionID string `json:"question_id"`
+	Answer     string `json:"answer"`
+}

@@ -153,8 +153,7 @@ func safeEventProjection(event Event) Event {
 	}
 	if event.UserQuestion != nil {
 		copy := cloneUserQuestion(*event.UserQuestion)
-		copy.Question = ""
-		copy.Options = nil
+		copy.Questions, copy.Draft = nil, nil
 		event.UserQuestion = &copy
 	}
 	if event.Compaction != nil {
@@ -199,6 +198,9 @@ func cloneInteraction(request UserInteractionRequest) UserInteractionRequest {
 }
 
 func cloneUserQuestion(request UserQuestionRequest) UserQuestionRequest {
-	request.Options = append([]UserQuestionOption(nil), request.Options...)
+	request.Questions = append([]UserQuestionItem(nil), request.Questions...)
+	for i := range request.Questions {
+		request.Questions[i].Options = append([]UserQuestionOption(nil), request.Questions[i].Options...)
+	}
 	return request
 }

@@ -75,13 +75,16 @@ func (r *Responder) PendingUserQuestion(ctx context.Context, sessionID string) (
 				break
 			}
 		}
-		if state == nil || state.UserQuestion == "" {
+		if state == nil {
 			continue
+		}
+		if len(state.UserQuestions) == 0 {
+			return PendingQuestion{}, false, errors.New("legacy single-question checkpoint cannot be resumed; discard and restart this turn")
 		}
 		return PendingQuestion{
 			ID: wait.CallID, AgentID: state.AgentID, RunID: cp.RunID,
 			InvocationID: wait.InvocationID, CallID: wait.CallID, ExecutionID: state.ExecutionID,
-			Question: state.UserQuestion, Options: append([]model.UserQuestionOption(nil), state.UserQuestionOptions...),
+			Questions: state.UserQuestions,
 		}, true, nil
 	}
 	return PendingQuestion{}, false, nil

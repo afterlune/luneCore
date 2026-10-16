@@ -16,8 +16,7 @@ const teamDispatchToolName = "delegate_team"
 const askUserToolName = model.UserQuestionToolName
 
 type userQuestionInput struct {
-	Question string                     `json:"question"`
-	Options  []model.UserQuestionOption `json:"options,omitempty"`
+	Questions []model.UserQuestionItem `json:"questions"`
 }
 
 type teamDispatchRequest struct {
@@ -27,50 +26,57 @@ type teamDispatchRequest struct {
 
 func askUserDefinition() model.FunctionTool {
 	parameters, _ := json.Marshal(map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"question": map[string]any{"type": "string", "description": "A concise clarification question for the user."},
-			"options": map[string]any{
-				"type":        "array",
-				"items":       map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "description": map[string]any{"type": "string"}}, "required": []string{"label", "description"}, "additionalProperties": false},
-				"description": "Use an empty array when no choices are needed. The user may also provide a free-text answer.",
-			},
-		},
-		"required":             []string{"question", "options"},
-		"additionalProperties": false,
+		"type": "object", "properties": map[string]any{
+			"questions": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{
+				"type": "object", "properties": map[string]any{
+					"id":       map[string]any{"type": "string", "description": "Unique stable ID within this batch."},
+					"question": map[string]any{"type": "string", "description": "One concise user-owned decision."},
+					"options":  map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "description": map[string]any{"type": "string"}}, "required": []string{"label", "description"}, "additionalProperties": false}},
+				}, "required": []string{"id", "question", "options"}, "additionalProperties": false}},
+		}, "required": []string{"questions"}, "additionalProperties": false,
 	})
 	strict := true
 	return model.FunctionTool{
 		Name: askUserToolName,
 		Description: "Ask the user only for a user-owned decision or material unresolved ambiguity that blocks safe or correct progress. " +
-			"In Plan mode, ask before presenting a plan when such a consequential decision remains unresolved. First inspect facts available in the workspace and use reasonable defaults for routine details. Ask a concise, targeted question; optionally provide answer choices, and accept free text.",
+			"In Plan mode, ask before presenting a plan when such a consequential decision remains unresolved. First inspect facts available in the workspace and use reasonable defaults for routine details. Group related consequential decisions into one questions batch. Use unique IDs and concise questions; optionally provide answer choices, and accept free text.",
 		Parameters: parameters,
 		Strict:     &strict,
 	}
 }
 
-func parseUserQuestion(arguments string) (string, []model.UserQuestionOption, error) {
+func parseUserQuestion(arguments string) ([]model.UserQuestionItem, error) {
 	decoder := json.NewDecoder(strings.NewReader(arguments))
 	decoder.DisallowUnknownFields()
 	var input userQuestionInput
 	if err := decoder.Decode(&input); err != nil {
-		return "", nil, err
+		return nil, err
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		return "", nil, errors.New("expected one JSON object")
+		return nil, errors.New("expected one JSON object")
 	}
-	input.Question = strings.TrimSpace(input.Question)
-	if input.Question == "" {
-		return "", nil, errors.New("question must not be empty")
+	if len(input.Questions) == 0 {
+		return nil, errors.New("questions must not be empty")
 	}
-	for index := range input.Options {
-		input.Options[index].Label = strings.TrimSpace(input.Options[index].Label)
-		input.Options[index].Description = strings.TrimSpace(input.Options[index].Description)
-		if input.Options[index].Label == "" {
-			return "", nil, errors.New("answer options must not be empty")
+	seen := map[string]bool{}
+	for i := range input.Questions {
+		q := &input.Questions[i]
+		q.ID = strings.TrimSpace(q.ID)
+		q.Question = strings.TrimSpace(q.Question)
+		if q.ID == "" || q.Question == "" || seen[q.ID] {
+			return nil, errors.New("questions require unique IDs and nonempty text")
+		}
+		seen[q.ID] = true
+		for j := range q.Options {
+			o := &q.Options[j]
+			o.Label = strings.TrimSpace(o.Label)
+			o.Description = strings.TrimSpace(o.Description)
+			if o.Label == "" {
+				return nil, errors.New("answer options must not be empty")
+			}
 		}
 	}
-	return input.Question, input.Options, nil
+	return input.Questions, nil
 }
 
 func teamDispatchDefinition(team TeamExecutor) model.FunctionTool {

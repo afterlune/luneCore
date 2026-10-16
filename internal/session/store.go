@@ -167,6 +167,9 @@ func (s *Store) Delete(ctx context.Context, id, workspace string) (bool, error) 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM turn_results WHERE session_id = ?`, id); err != nil {
 		return false, fmt.Errorf("delete turn results for session %q: %w", id, err)
 	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM user_question_drafts WHERE session_id=?`, id); err != nil {
+		return false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit session deletion: %w", err)
 	}

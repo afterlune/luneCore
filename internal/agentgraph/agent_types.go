@@ -157,9 +157,8 @@ type State struct {
 	TeamDispatchID           string                       `json:"team_dispatch_id,omitempty"`
 	TeamAssignments          []TeamAssignment             `json:"team_assignments,omitempty"`
 	TeamMinimumSuccesses     int                          `json:"team_minimum_successes,omitempty"`
-	UserQuestion             string                       `json:"user_question,omitempty"`
-	UserQuestionOptions      []model.UserQuestionOption   `json:"user_question_options,omitempty"`
-	UserAnswer               string                       `json:"user_answer,omitempty"`
+	UserQuestions            []model.UserQuestionItem     `json:"user_questions,omitempty"`
+	UserAnswers              []model.UserQuestionResponse `json:"user_answers,omitempty"`
 	UserAnswerReady          bool                         `json:"user_answer_ready,omitempty"`
 	TaskInput                json.RawMessage              `json:"task_input,omitempty"`
 }
