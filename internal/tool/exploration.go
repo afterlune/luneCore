@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io/fs"
 	"os"
+	"strings"
 
 	"github.com/afterlune/luneCore/internal/model"
 )
@@ -52,7 +53,7 @@ func walkWorkspaceFrom(ctx context.Context, filesystem fs.FS, start string, visi
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if filePath != start && entry.IsDir() && entry.Name() == ".git" {
+		if filePath != start && entry.IsDir() && isIgnoredDir(entry.Name()) {
 			return fs.SkipDir
 		}
 		if visited == maxWalkEntries {
@@ -62,4 +63,13 @@ func walkWorkspaceFrom(ctx context.Context, filesystem fs.FS, start string, visi
 		return visit(filePath, entry)
 	})
 	return err
+}
+
+func isIgnoredDir(name string) bool {
+	switch strings.ToLower(name) {
+	case ".git", "node_modules", ".luneagent", ".cache", "dist", "build", ".vite", ".next", ".turbo", ".nuxt", ".output", "coverage":
+		return true
+	default:
+		return false
+	}
 }

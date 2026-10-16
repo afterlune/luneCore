@@ -139,6 +139,7 @@ type State struct {
 	Transcript               model.ResponseInput          `json:"transcript,omitempty"`
 	CompactionWarningEmitted bool                         `json:"compaction_warning_emitted,omitempty"`
 	SelectedCategory         string                       `json:"selected_category,omitempty"`
+	SelectedCategories       []string                     `json:"selected_categories,omitempty"`
 	PendingCalls             []model.OutputFunctionCall   `json:"pending_calls,omitempty"`
 	PendingIndex             int                          `json:"pending_index,omitempty"`
 	VisibleTools             []string                     `json:"visible_tools,omitempty"`

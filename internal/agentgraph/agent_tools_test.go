@@ -364,3 +364,103 @@ func mustMarshal(t *testing.T, value any) []byte {
 	}
 	return encoded
 }
+
+func TestAgentGraphSupportsMultipleCategorySelectionsInOneTurn(t *testing.T) {
+	readFile := &namedRecordingTool{name: "read_file"}
+	webSearch := &namedRecordingTool{name: "web_search"}
+	registry, err := tool.NewRegistry(
+		toolRegistration(readFile, model.ToolCategory{Name: "files", Description: "Workspace files."}, model.ToolPermissionWorkspaceRead, true),
+		toolRegistration(webSearch, model.ToolCategory{Name: "web", Description: "Web search."}, model.ToolPermissionNetwork, true),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(tool.PermissionModeFullAccess); err != nil {
+		t.Fatal(err)
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"select_files","name":"select_tool_category","arguments":"{\"category\":\"files\"}"},{"type":"function_call","call_id":"select_web","name":"select_tool_category","arguments":"{\"category\":\"web\"}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"read_1","name":"read_file","arguments":"{}"},{"type":"function_call","call_id":"web_1","name":"web_search","arguments":"{}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
+	}}
+	agent, err := New(requester, registry)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	input, err := model.NewResponseInput("explore files and web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "multi-cat-test", nil, input, TaskOptions{}, store, graph.Options{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Status != graph.StatusCompleted {
+		t.Fatalf("result status = %v, want completed", result.Status)
+	}
+	if readFile.calls != 1 || webSearch.calls != 1 {
+		t.Fatalf("calls: read_file=%d web_search=%d, want 1 each", readFile.calls, webSearch.calls)
+	}
+	if len(requester.requests) != 3 {
+		t.Fatalf("model requests = %d, want 3", len(requester.requests))
+	}
+	req2Tools := toolNames(requester.requests[1].Tools)
+	if !contains(req2Tools, "read_file") || !contains(req2Tools, "web_search") {
+		t.Fatalf("request 2 visible tools = %v, want both read_file and web_search", req2Tools)
+	}
+}
+
+func TestAgentGraphPlanModeExcludesInactiveCommandCategory(t *testing.T) {
+	readFile := &namedRecordingTool{name: "read_file"}
+	cmdTool := &namedRecordingTool{name: "command"}
+	registry, err := tool.NewRegistry(
+		toolRegistration(readFile, model.ToolCategory{Name: "files", Description: "Workspace files."}, model.ToolPermissionWorkspaceRead, true),
+		toolRegistration(cmdTool, model.ToolCategory{Name: "command", Description: "Run command."}, model.ToolPermissionCommand, false),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"ok"}]}]}`),
+	}}
+	agent, err := NewWithOptions(requester, registry, AgentOptions{
+		ToolReadOnly: func(name string) bool {
+			metadata, ok := registry.ToolMetadata(name)
+			return ok && metadata.ReadOnly
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewWithOptions: %v", err)
+	}
+	input := model.NewResponseInputText("start plan")
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "plan-mode-test", nil, input, TaskOptions{PlanMode: true}, store, graph.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Status != graph.StatusCompleted {
+		t.Fatalf("status = %v, want completed", result.Status)
+	}
+	// Verify that the category selector in request 0 does NOT contain "command"
+	req0Tools := requester.requests[0].Tools
+	if len(req0Tools) != 1 {
+		t.Fatalf("expected only category selector in request 0, got %d tools", len(req0Tools))
+	}
+	selectorFn, ok := req0Tools[0].(model.FunctionTool)
+	if !ok {
+		t.Fatalf("expected FunctionTool, got %T", req0Tools[0])
+	}
+	if strings.Contains(selectorFn.Description, "command") {
+		t.Fatalf("plan mode category selector should not advertise command: %s", selectorFn.Description)
+	}
+	if !strings.Contains(selectorFn.Description, "files") {
+		t.Fatalf("plan mode category selector should advertise files: %s", selectorFn.Description)
+	}
+}

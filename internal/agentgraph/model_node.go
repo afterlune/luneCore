@@ -29,9 +29,9 @@ func taskInstructions(goal, permissionMode string, planMode, teamBranch bool) st
 		instructions = append(instructions, "Prefer reasonable assumptions and continue instead of asking routine questions. Inspect the workspace and use available tools to resolve discoverable facts first. Use ask_user only when a user-owned decision or material ambiguity cannot be resolved from available context and blocks a safe or correct result. If the user has not requested a concrete task, reply naturally instead of opening a blocking question.")
 	}
 	if planMode {
-		permission := "The active permission mode is " + permissionMode + "; it determines approval for visible read-only tools, including web access. Plan mode independently limits the visible tools to read-only operations."
+		permission := "The active permission mode is " + permissionMode + "; it determines approval for visible read-only tools, including web access. Plan mode limits visible tools to read-only operations. Shell command execution and file modifications are disabled; inspect the workspace using read-only file tools."
 		if permissionMode == "" {
-			permission = "Plan mode limits the visible tools to read-only operations. The active permission mode still determines approval for visible tools."
+			permission = "Plan mode limits visible tools to read-only operations. Shell command execution and file modifications are disabled; inspect the workspace using read-only file tools. The active permission mode still determines approval for visible tools."
 		}
 		instructions = append(instructions, permission)
 	} else {

@@ -86,6 +86,9 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		if !info.Mode().IsRegular() {
 			return nil
 		}
+		if strings.HasSuffix(strings.ToLower(relative), ".map") {
+			return nil
+		}
 		file, err := workspaceRoot.Open(relative)
 		if err != nil {
 			return err

@@ -22,6 +22,7 @@ func makeExplorationWorkspace(t *testing.T) string {
 		"src/nested/worker.go":   "package nested\n// target invocation\n",
 		".git/secret.txt":        "target must not be searched\n",
 		"node_modules/noise.txt": "noise\n",
+		"bundle.js.map":          "target in sourcemap must not be searched\n",
 	}
 	for name, contents := range files {
 		file := filepath.Join(root, filepath.FromSlash(name))
@@ -106,8 +107,13 @@ func TestGrepToolSearchesTextLinesAndSkipsGitAndBinary(t *testing.T) {
 			t.Errorf("grep output %q does not contain %q", result.Output, want)
 		}
 	}
-	if strings.Contains(result.Output, ".git") || strings.Contains(result.Output, "binary.bin") {
+	if strings.Contains(result.Output, ".git") || strings.Contains(result.Output, "binary.bin") || strings.Contains(result.Output, "bundle.js.map") {
 		t.Errorf("grep included excluded file: %q", result.Output)
+	}
+
+	noiseGrep := (GrepTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"noise","path":"."}`))
+	if noiseGrep.Err != nil || !strings.Contains(noiseGrep.Output, "No matches.") {
+		t.Errorf("grep should skip node_modules by default, got: %#v", noiseGrep)
 	}
 
 	caseSensitive := (GrepTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"pattern":"TARGET","path":"src"}`))

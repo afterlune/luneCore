@@ -27,7 +27,7 @@ func (a *Agent) visibleTools(state State, category, permissionMode string) ([]mo
 		definitions = addRuntimeTools(definitions)
 		return definitions, toolNames(definitions), nil
 	}
-	categories := a.visibleCategories(permissionMode, state.PlanMode)
+	categories := a.visibleCategories(state, permissionMode, state.PlanMode)
 	if len(categories) == 0 {
 		definitions := addRuntimeTools(nil)
 		return definitions, toolNames(definitions), nil
@@ -37,19 +37,37 @@ func (a *Agent) visibleTools(state State, category, permissionMode string) ([]mo
 		return nil, nil, fmt.Errorf("build category selector: %w", err)
 	}
 	definitions := []model.ResponseTool{selector}
-	if category != "" {
-		definitions = append(definitions, a.visibleDefinitions(a.categorized.DefinitionsForCategory(category), permissionMode, state.PlanMode)...)
+	selectedCategories := state.SelectedCategories
+	if len(selectedCategories) == 0 && category != "" {
+		selectedCategories = []string{category}
+	}
+	for _, cat := range selectedCategories {
+		definitions = append(definitions, a.visibleDefinitions(a.categorized.DefinitionsForCategory(cat), permissionMode, state.PlanMode)...)
 	}
 	definitions = addRuntimeTools(definitions)
 	return definitions, toolNames(definitions), nil
 }
 
-func (a *Agent) visibleCategories(permissionMode string, planMode bool) []model.ToolCategory {
+func (a *Agent) visibleCategories(state State, permissionMode string, planMode bool) []model.ToolCategory {
 	var categories []model.ToolCategory
 	for _, category := range a.categories {
-		if len(a.visibleDefinitions(a.categorized.DefinitionsForCategory(category.Name), permissionMode, planMode)) > 0 {
-			categories = append(categories, category)
+		defs := a.visibleDefinitions(a.categorized.DefinitionsForCategory(category.Name), permissionMode, planMode)
+		if len(defs) == 0 {
+			continue
 		}
+		if planMode && category.Name == "command" {
+			hasCommandTool := false
+			for _, def := range defs {
+				if fn, ok := def.(model.FunctionTool); ok && fn.Name == "command" {
+					hasCommandTool = true
+					break
+				}
+			}
+			if !hasCommandTool && (a.options.ActiveCommands == nil || !a.options.ActiveCommands(state)) {
+				continue
+			}
+		}
+		categories = append(categories, category)
 	}
 	return categories
 }
@@ -105,9 +123,13 @@ func unavailableToolMessage(name, category string, categorized bool) string {
 
 func toolNames(definitions []model.ResponseTool) []string {
 	names := make([]string, 0, len(definitions))
+	seen := make(map[string]struct{}, len(definitions))
 	for _, definition := range definitions {
 		if function, ok := definition.(model.FunctionTool); ok {
-			names = append(names, function.Name)
+			if _, exists := seen[function.Name]; !exists {
+				seen[function.Name] = struct{}{}
+				names = append(names, function.Name)
+			}
 		}
 	}
 	return names

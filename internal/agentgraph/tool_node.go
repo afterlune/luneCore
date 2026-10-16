@@ -43,6 +43,18 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 	if state.PendingIndex < 0 || state.PendingIndex >= len(state.PendingCalls) {
 		return graph.Transition[State]{}, errors.New("pending tool-call index is out of range")
 	}
+	if state.PendingIndex == 0 && len(state.PendingCalls) > 0 {
+		hasCategorySelector := false
+		for _, pending := range state.PendingCalls {
+			if a.categorized != nil && pending.Name == model.CategorySelectorName {
+				hasCategorySelector = true
+				break
+			}
+		}
+		if hasCategorySelector {
+			state.SelectedCategories = nil
+		}
+	}
 	if a.options.ProjectInstructionsForTool != nil {
 		working := state
 		newInstructions := false
@@ -158,7 +170,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		if permissionMode == "" && a.options.CurrentPermissionMode != nil {
 			permissionMode = a.options.CurrentPermissionMode()
 		}
-		categories := a.visibleCategories(permissionMode, state.PlanMode)
+		categories := a.visibleCategories(state, permissionMode, state.PlanMode)
 		category, err := model.ParseCategorySelection(call.Arguments, categories)
 		text := "Category selected. Its tools will be available in the next request."
 		if err != nil {
@@ -169,6 +181,9 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			text = "Category was not changed: " + err.Error()
 		} else {
 			state.SelectedCategory = category
+			if !contains(state.SelectedCategories, category) {
+				state.SelectedCategories = append(state.SelectedCategories, category)
+			}
 			a.options.Logger.InfoContext(ctx, "tool category selected", "selected_category", category)
 		}
 		output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(text)}
