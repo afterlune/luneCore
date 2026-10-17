@@ -336,6 +336,15 @@ func (r *SessionRuntime) ReplaceQueuedTurnInput(ctx context.Context, executionID
 
 	c := r.core
 	c.queueMutationMu.Lock()
+	state, err := r.State(ctx)
+	if err != nil {
+		c.queueMutationMu.Unlock()
+		return TurnSubmission{}, nil, err
+	}
+	if state.Task.Status == TaskPaused {
+		c.queueMutationMu.Unlock()
+		return TurnSubmission{}, nil, ErrTaskPaused
+	}
 	queued, found, err := c.sessions.QueuedTurnByExecutionID(ctx, r.sessionID, executionID)
 	if err != nil {
 		c.queueMutationMu.Unlock()
