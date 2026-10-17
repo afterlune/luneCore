@@ -75,7 +75,9 @@ func (c *Core) drainQueue(sessionID string) {
 				return
 			}
 		}
+		c.queueMutationMu.Lock()
 		queued, claimed, err := c.sessions.ClaimNextQueuedTurn(ctx, sessionID)
+		c.queueMutationMu.Unlock()
 		if err != nil {
 			c.logger.Warn("claim queued turn", "error", err)
 			return

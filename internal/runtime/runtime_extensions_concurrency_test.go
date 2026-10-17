@@ -75,10 +75,7 @@ type barrierHostProvider struct {
 func (p *barrierHostProvider) Name() string { return "host" }
 
 func (p *barrierHostProvider) CreateResponse(ctx context.Context, request publicmodel.ModelRequest, _ publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
-	text := ""
-	if request.Input != nil && request.Input.Text != nil {
-		text = *request.Input.Text
-	}
+	text := latestUserInputText(request.Input)
 	select {
 	case p.entered <- text:
 	case <-ctx.Done():
@@ -90,6 +87,32 @@ func (p *barrierHostProvider) CreateResponse(ctx context.Context, request public
 		return nil, ctx.Err()
 	}
 	return hostTextResponse("done"), nil
+}
+
+func latestUserInputText(input *publicmodel.ResponseInput) string {
+	if input == nil {
+		return ""
+	}
+	if input.Text != nil {
+		return *input.Text
+	}
+	for index := len(input.Items) - 1; index >= 0; index-- {
+		message, ok := input.Items[index].(publicmodel.InputMessage)
+		if !ok || message.Role != publicmodel.RoleUser {
+			continue
+		}
+		if message.Content.Text != nil {
+			return *message.Content.Text
+		}
+		var text string
+		for _, part := range message.Content.Parts {
+			if inputText, ok := part.(publicmodel.InputText); ok {
+				text += inputText.Text
+			}
+		}
+		return text
+	}
+	return ""
 }
 
 func (p *barrierHostProvider) StreamResponse(ctx context.Context, request publicmodel.ModelRequest, profile publicmodel.ModelProfile, emit func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {

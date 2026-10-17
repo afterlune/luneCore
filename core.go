@@ -119,6 +119,7 @@ var (
 	ErrSessionBusy               = coreruntime.ErrSessionBusy
 	ErrTaskPaused                = coreruntime.ErrTaskPaused
 	ErrTurnNotFound              = coreruntime.ErrTurnNotFound
+	ErrQueuedTurnStarted         = coreruntime.ErrQueuedTurnStarted
 	ErrMCPServerLifecycleChanged = coreruntime.ErrMCPServerLifecycleChanged
 	ErrModelRetryNotReady        = coreruntime.ErrModelRetryNotReady
 	ErrStateDirInUse             = coreruntime.ErrStateDirInUse

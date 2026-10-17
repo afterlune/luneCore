@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
 )
 
@@ -75,6 +76,162 @@ func TestSessionRuntimeQueueInputIsFIFOAndSubmissionContextOnlyControlsAdmission
 		if started[i] != want[i] {
 			t.Fatalf("started execution order = %v, want %v", started, want)
 		}
+	}
+}
+
+func TestSessionRuntimeReplacesQueuedTurnAndCancelsLaterTurns(t *testing.T) {
+	provider := &barrierHostProvider{entered: make(chan string, 3), release: make(chan struct{}, 3)}
+	client := newProgrammaticCore(t, provider)
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "first")}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = receiveProviderInput(t, provider.entered)
+	second, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "second original")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "third discarded")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	replacement, cancelled, err := runtime.ReplaceQueuedTurnInput(context.Background(), second.ExecutionID, mustSettingsTaskInput(t, "second revised"))
+	if err != nil {
+		t.Fatalf("ReplaceQueuedTurnInput: %v", err)
+	}
+	if replacement.ExecutionID != second.ExecutionID || replacement.QueueID != second.QueueID || replacement.Position != second.Position || replacement.Status != SubmissionQueued {
+		t.Fatalf("replacement = %#v, want original queue identity and position %#v", replacement, second)
+	}
+	if len(cancelled) != 1 || cancelled[0] != third.ExecutionID {
+		t.Fatalf("cancelled execution IDs = %v, want only later turn %q", cancelled, third.ExecutionID)
+	}
+	stored, found, err := client.sessions.QueuedTurnByExecutionID(context.Background(), saved.ID, second.ExecutionID)
+	if err != nil || !found {
+		t.Fatalf("load replaced queued turn: found=%v error=%v", found, err)
+	}
+	var request storedTurnRequest
+	if err := json.Unmarshal(stored.Request, &request); err != nil {
+		t.Fatal(err)
+	}
+	if input, err := model.NewResponseInput(request.Input); err != nil || input.Text == nil || *input.Text != "second revised" {
+		t.Fatalf("stored replacement input = %#v, error=%v", input, err)
+	}
+	if result, err := runtime.WaitTurn(context.Background(), third.ExecutionID); err != nil || result.Status != TaskCancelled {
+		t.Fatalf("later turn result = %#v, error=%v; want cancelled", result, err)
+	}
+
+	provider.release <- struct{}{}
+	if got := receiveProviderInput(t, provider.entered); got != "second revised" {
+		t.Fatalf("next provider input = %q, want edited queued message", got)
+	}
+	provider.release <- struct{}{}
+	waitQueueLength(t, runtime, 0)
+	if result, err := runtime.WaitTurn(context.Background(), first.ExecutionID); err != nil || result.Status != TaskCompleted {
+		t.Fatalf("first turn result = %#v, error=%v", result, err)
+	}
+	if result, err := runtime.WaitTurn(context.Background(), second.ExecutionID); err != nil || result.Status != TaskCompleted {
+		t.Fatalf("replacement result = %#v, error=%v", result, err)
+	}
+}
+
+func TestSessionRuntimeReplaceQueuedTurnDetectsClaimRace(t *testing.T) {
+	provider := &barrierHostProvider{entered: make(chan string, 3), release: make(chan struct{}, 3)}
+	client := newProgrammaticCore(t, provider)
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "first")}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = receiveProviderInput(t, provider.entered)
+	target, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "target")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	later, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "later")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider.release <- struct{}{}
+	if got := receiveProviderInput(t, provider.entered); got != "target" {
+		t.Fatalf("next provider input = %q, want target", got)
+	}
+	if _, _, err := runtime.ReplaceQueuedTurnInput(context.Background(), target.ExecutionID, mustSettingsTaskInput(t, "edited")); !errors.Is(err, ErrQueuedTurnStarted) {
+		t.Fatalf("ReplaceQueuedTurnInput on active target = %v, want ErrQueuedTurnStarted", err)
+	}
+	state, err := runtime.State(context.Background())
+	if err != nil || state.Task.ExecutionID != target.ExecutionID || len(state.Queue) != 2 || state.Queue[0].ExecutionID != target.ExecutionID || state.Queue[1].ExecutionID != later.ExecutionID {
+		t.Fatalf("queue changed after rejected replacement: state=%#v error=%v", state, err)
+	}
+	if _, err := runtime.CancelPendingTurns(context.Background()); err != nil {
+		t.Fatalf("CancelPendingTurns cleanup: %v", err)
+	}
+	if state, err := runtime.State(context.Background()); err != nil || len(state.Queue) != 0 {
+		t.Fatalf("state after cleanup = %#v, error=%v", state, err)
+	}
+	if result, err := runtime.WaitTurn(context.Background(), first.ExecutionID); err != nil || result.Status != TaskCompleted {
+		t.Fatalf("first turn result = %#v, error=%v", result, err)
+	}
+}
+
+func TestSessionRuntimeCancelPendingTurnsInterruptsActiveAndDropsQueue(t *testing.T) {
+	provider := &barrierHostProvider{entered: make(chan string, 3), release: make(chan struct{}, 3)}
+	client := newProgrammaticCore(t, provider)
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "active")}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = receiveProviderInput(t, provider.entered)
+	second, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "queued one")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	third, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "queued two")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	affected, err := runtime.CancelPendingTurns(context.Background())
+	if err != nil {
+		t.Fatalf("CancelPendingTurns: %v", err)
+	}
+	if len(affected) != 3 {
+		t.Fatalf("affected executions = %v, want active and both queued turns", affected)
+	}
+	if state, err := runtime.State(context.Background()); err != nil || len(state.Queue) != 0 || state.Task.Status == TaskRunning || state.Task.Status == TaskQueued {
+		t.Fatalf("state after cancellation = %#v, error=%v", state, err)
+	}
+	for _, id := range []string{first.ExecutionID, second.ExecutionID, third.ExecutionID} {
+		if _, err := runtime.WaitTurn(context.Background(), id); err != nil {
+			t.Fatalf("WaitTurn(%q): %v", id, err)
+		}
+	}
+	select {
+	case next := <-provider.entered:
+		t.Fatalf("a queued task started after cancellation: %q", next)
+	default:
 	}
 }
 

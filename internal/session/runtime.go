@@ -439,3 +439,184 @@ func (s *Store) CancelQueuedTurn(ctx context.Context, sessionID, queueID, execut
 	}
 	return true, cursor, nil
 }
+
+// CancelQueuedTurns atomically cancels every turn that is still waiting in the
+// session queue. Active turns are left for the runtime to interrupt and finish.
+func (s *Store) CancelQueuedTurns(ctx context.Context, sessionID, status string, event func(QueuedTurn) json.RawMessage) ([]QueuedTurn, error) {
+	if s == nil || s.db == nil || sessionID == "" || status == "" || event == nil {
+		return nil, errors.New("session store, session id, status, and event factory are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("begin queued turn batch cancellation: %w", err)
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.QueryContext(ctx, `SELECT session_id, queue_id, position, execution_id, request, status, created_at, updated_at
+		FROM queued_turn_inputs WHERE session_id = ? AND status = ? ORDER BY position`, sessionID, QueuedTurnQueued)
+	if err != nil {
+		return nil, fmt.Errorf("list queued turns to cancel: %w", err)
+	}
+	var queued []QueuedTurn
+	for rows.Next() {
+		var item QueuedTurn
+		var request []byte
+		var createdAt, updatedAt int64
+		if err := rows.Scan(&item.SessionID, &item.QueueID, &item.Position, &item.ExecutionID, &request, &item.Status, &createdAt, &updatedAt); err != nil {
+			_ = rows.Close()
+			return nil, fmt.Errorf("read queued turn to cancel: %w", err)
+		}
+		item.Request = append(json.RawMessage(nil), request...)
+		item.CreatedAt = time.Unix(0, createdAt)
+		item.UpdatedAt = time.Unix(0, updatedAt)
+		queued = append(queued, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, fmt.Errorf("read queued turns to cancel: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close queued turns to cancel: %w", err)
+	}
+
+	now := time.Now()
+	cancelled := make([]QueuedTurn, 0, len(queued))
+	for _, item := range queued {
+		result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs
+			WHERE session_id = ? AND queue_id = ? AND execution_id = ? AND status = ?`, sessionID, item.QueueID, item.ExecutionID, QueuedTurnQueued)
+		if err != nil {
+			return nil, fmt.Errorf("cancel queued turn %q: %w", item.ExecutionID, err)
+		}
+		deleted, err := result.RowsAffected()
+		if err != nil {
+			return nil, fmt.Errorf("check queued turn cancellation %q: %w", item.ExecutionID, err)
+		}
+		if deleted == 0 {
+			continue
+		}
+		cancelled = append(cancelled, item)
+		if err := upsertTurnResultTx(ctx, tx, sessionID, item.ExecutionID, status, nil, now); err != nil {
+			return nil, err
+		}
+		payload := event(item)
+		if !json.Valid(payload) {
+			return nil, fmt.Errorf("queued turn cancellation event for %q is invalid JSON", item.ExecutionID)
+		}
+		if _, err := appendRuntimeEventTx(ctx, tx, sessionID, payload, now); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit queued turn batch cancellation: %w", err)
+	}
+	return cancelled, nil
+}
+
+// ReplaceQueuedTurnAndCancelAfter updates a still-queued turn in place and
+// cancels later queued turns in one transaction. If the target has started,
+// the method leaves the queue unchanged and reports replaced=false.
+func (s *Store) ReplaceQueuedTurnAndCancelAfter(ctx context.Context, sessionID, queueID, executionID string, request, updatedEvent json.RawMessage, cancelledStatus string, cancelledEvent func(QueuedTurn) json.RawMessage) (QueuedTurn, []QueuedTurn, bool, error) {
+	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || !json.Valid(request) || !json.Valid(updatedEvent) || cancelledStatus == "" || cancelledEvent == nil {
+		return QueuedTurn{}, nil, false, errors.New("session store, turn identity, request, events, and cancelled status are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return QueuedTurn{}, nil, false, fmt.Errorf("begin queued turn replacement: %w", err)
+	}
+	defer tx.Rollback()
+
+	var target QueuedTurn
+	var oldRequest []byte
+	var createdAt, updatedAt int64
+	err = tx.QueryRowContext(ctx, `SELECT session_id, queue_id, position, execution_id, request, status, created_at, updated_at
+		FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ? AND execution_id = ?`, sessionID, queueID, executionID).
+		Scan(&target.SessionID, &target.QueueID, &target.Position, &target.ExecutionID, &oldRequest, &target.Status, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return QueuedTurn{}, nil, false, nil
+	}
+	if err != nil {
+		return QueuedTurn{}, nil, false, fmt.Errorf("load queued turn to replace: %w", err)
+	}
+	target.Request = append(json.RawMessage(nil), oldRequest...)
+	target.CreatedAt = time.Unix(0, createdAt)
+	target.UpdatedAt = time.Unix(0, updatedAt)
+	if target.Status != QueuedTurnQueued {
+		return target, nil, false, nil
+	}
+
+	rows, err := tx.QueryContext(ctx, `SELECT session_id, queue_id, position, execution_id, request, status, created_at, updated_at
+		FROM queued_turn_inputs WHERE session_id = ? AND status = ? AND position > ? ORDER BY position`, sessionID, QueuedTurnQueued, target.Position)
+	if err != nil {
+		return QueuedTurn{}, nil, false, fmt.Errorf("list queued turns after replacement target: %w", err)
+	}
+	var later []QueuedTurn
+	for rows.Next() {
+		var item QueuedTurn
+		var queuedRequest []byte
+		var queuedCreatedAt, queuedUpdatedAt int64
+		if err := rows.Scan(&item.SessionID, &item.QueueID, &item.Position, &item.ExecutionID, &queuedRequest, &item.Status, &queuedCreatedAt, &queuedUpdatedAt); err != nil {
+			_ = rows.Close()
+			return QueuedTurn{}, nil, false, fmt.Errorf("read queued turn after replacement target: %w", err)
+		}
+		item.Request = append(json.RawMessage(nil), queuedRequest...)
+		item.CreatedAt = time.Unix(0, queuedCreatedAt)
+		item.UpdatedAt = time.Unix(0, queuedUpdatedAt)
+		later = append(later, item)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return QueuedTurn{}, nil, false, fmt.Errorf("read queued turns after replacement target: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return QueuedTurn{}, nil, false, fmt.Errorf("close queued turns after replacement target: %w", err)
+	}
+
+	now := time.Now()
+	result, err := tx.ExecContext(ctx, `UPDATE queued_turn_inputs SET request = ?, updated_at = ?
+		WHERE session_id = ? AND queue_id = ? AND execution_id = ? AND status = ?`, []byte(request), now.UnixNano(), sessionID, queueID, executionID, QueuedTurnQueued)
+	if err != nil {
+		return QueuedTurn{}, nil, false, fmt.Errorf("replace queued turn request: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return QueuedTurn{}, nil, false, fmt.Errorf("check queued turn replacement: %w", err)
+	}
+	if updated == 0 {
+		return target, nil, false, nil
+	}
+	if _, err := appendRuntimeEventTx(ctx, tx, sessionID, updatedEvent, now); err != nil {
+		return QueuedTurn{}, nil, false, err
+	}
+	cancelled := make([]QueuedTurn, 0, len(later))
+	for _, item := range later {
+		result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs
+			WHERE session_id = ? AND queue_id = ? AND execution_id = ? AND status = ?`, sessionID, item.QueueID, item.ExecutionID, QueuedTurnQueued)
+		if err != nil {
+			return QueuedTurn{}, nil, false, fmt.Errorf("cancel queued turn %q after replacement: %w", item.ExecutionID, err)
+		}
+		deleted, err := result.RowsAffected()
+		if err != nil {
+			return QueuedTurn{}, nil, false, fmt.Errorf("check queued turn cancellation %q: %w", item.ExecutionID, err)
+		}
+		if deleted == 0 {
+			continue
+		}
+		if err := upsertTurnResultTx(ctx, tx, sessionID, item.ExecutionID, cancelledStatus, nil, now); err != nil {
+			return QueuedTurn{}, nil, false, err
+		}
+		payload := cancelledEvent(item)
+		if !json.Valid(payload) {
+			return QueuedTurn{}, nil, false, fmt.Errorf("queued turn cancellation event for %q is invalid JSON", item.ExecutionID)
+		}
+		if _, err := appendRuntimeEventTx(ctx, tx, sessionID, payload, now); err != nil {
+			return QueuedTurn{}, nil, false, err
+		}
+		cancelled = append(cancelled, item)
+	}
+	if err := tx.Commit(); err != nil {
+		return QueuedTurn{}, nil, false, fmt.Errorf("commit queued turn replacement: %w", err)
+	}
+	target.Request = append(json.RawMessage(nil), request...)
+	target.UpdatedAt = now
+	return target, cancelled, true, nil
+}

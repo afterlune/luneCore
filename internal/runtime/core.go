@@ -97,6 +97,7 @@ type Core struct {
 	interactiveSessions map[string]bool
 	eventHubs           map[string]*sessionEventHub
 	queueDraining       map[string]bool
+	queueMutationMu     sync.Mutex
 	turnWaiters         map[string]chan turnResult
 	executionRuns       map[string]chan struct{}
 	interruptRequests   map[string]bool

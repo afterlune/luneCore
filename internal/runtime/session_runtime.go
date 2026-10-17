@@ -9,14 +9,17 @@ import (
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
+	"github.com/afterlune/luneCore/internal/model"
+	"github.com/afterlune/luneCore/internal/session"
 	publictool "github.com/afterlune/luneCore/tool"
 	"github.com/afterlune/luneGraph/checkpoint"
 )
 
 var (
-	ErrSessionBusy  = errors.New("session already has active or queued work")
-	ErrTaskPaused   = agentruntime.ErrTaskPaused
-	ErrTurnNotFound = errors.New("execution id does not exist in this session")
+	ErrSessionBusy       = errors.New("session already has active or queued work")
+	ErrTaskPaused        = agentruntime.ErrTaskPaused
+	ErrTurnNotFound      = errors.New("execution id does not exist in this session")
+	ErrQueuedTurnStarted = errors.New("queued turn has already started")
 )
 
 // TaskPausedError identifies a resumable task pause and its optional budget cause.
@@ -226,6 +229,170 @@ func (r *SessionRuntime) SubmitTurn(ctx context.Context, request TurnRequest, mo
 	}
 	submission, _, err := r.core.submitTurn(ctx, r.sessionID, request, mode, false)
 	return submission, err
+}
+
+// CancelPendingTurns interrupts the active turn and atomically cancels every
+// turn still waiting in this session's queue. It waits for active cleanup
+// before returning so callers can safely rewind and submit a replacement.
+func (r *SessionRuntime) CancelPendingTurns(ctx context.Context) ([]string, error) {
+	if r == nil || r.core == nil || ctx == nil {
+		return nil, errors.New("session runtime, core, and context are required")
+	}
+	c := r.core
+	c.queueMutationMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			c.queueMutationMu.Unlock()
+		}
+	}()
+
+	state, err := r.State(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if state.Task.Status == TaskPaused {
+		return nil, ErrTaskPaused
+	}
+	queued, err := c.sessions.QueuedTurns(ctx, r.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	for _, item := range queued {
+		if item.Status == session.QueuedTurnPaused {
+			return nil, ErrTaskPaused
+		}
+	}
+	activeExecutionID := ""
+	if state.Task.Status == TaskRunning {
+		activeExecutionID = state.Task.ExecutionID
+	}
+	for _, item := range queued {
+		if item.Status == session.QueuedTurnActive {
+			activeExecutionID = item.ExecutionID
+			break
+		}
+	}
+	if state.Task.Status == TaskRunning && activeExecutionID == "" {
+		return nil, errors.New("running task has no execution id")
+	}
+
+	cancelled, err := c.sessions.CancelQueuedTurns(ctx, r.sessionID, string(TaskCancelled), func(item session.QueuedTurn) json.RawMessage {
+		return mustMarshalEvent(Event{
+			Kind: EventTaskFinished, SessionID: r.sessionID, QueueID: item.QueueID,
+			ExecutionID: item.ExecutionID, Status: TaskCancelled, Err: "cancelled because the conversation was edited",
+		})
+	})
+	if err != nil {
+		return nil, err
+	}
+	if activeExecutionID != "" {
+		c.interruptExecution(r.sessionID, activeExecutionID)
+	}
+	c.queueMutationMu.Unlock()
+	locked = false
+
+	affected := make([]string, 0, len(cancelled)+1)
+	for _, item := range cancelled {
+		affected = append(affected, item.ExecutionID)
+		c.resolveTurnWaiter(item.ExecutionID, turnResult{err: context.Canceled})
+	}
+	if len(cancelled) > 0 {
+		c.eventHub(r.sessionID).notifyDurable()
+	}
+	if activeExecutionID != "" {
+		affected = append(affected, activeExecutionID)
+		result, err := r.WaitTurn(ctx, activeExecutionID)
+		if err != nil {
+			return affected, fmt.Errorf("wait for interrupted turn cleanup: %w", err)
+		}
+		if result.Status == TaskPaused {
+			discarded, err := r.DiscardPaused(ctx)
+			if err != nil {
+				return affected, fmt.Errorf("discard interrupted task checkpoint: %w", err)
+			}
+			if !discarded {
+				return affected, errors.New("interrupted task checkpoint could not be discarded")
+			}
+		}
+	}
+	return affected, nil
+}
+
+// ReplaceQueuedTurnInput replaces a turn that has not started, keeping its
+// queue position and cancelling later queued turns atomically. If the target
+// has already been claimed, callers should use the active-turn edit path.
+func (r *SessionRuntime) ReplaceQueuedTurnInput(ctx context.Context, executionID string, input TaskInput) (TurnSubmission, []string, error) {
+	if r == nil || r.core == nil || ctx == nil || executionID == "" {
+		return TurnSubmission{}, nil, errors.New("session runtime, core, context, and execution id are required")
+	}
+	responseInput, err := model.NewResponseInput(input.Raw)
+	if err != nil {
+		return TurnSubmission{}, nil, err
+	}
+	if err := validateTaskInputAttachments(responseInput, r.core.attachmentLimits); err != nil {
+		return TurnSubmission{}, nil, err
+	}
+
+	c := r.core
+	c.queueMutationMu.Lock()
+	queued, found, err := c.sessions.QueuedTurnByExecutionID(ctx, r.sessionID, executionID)
+	if err != nil {
+		c.queueMutationMu.Unlock()
+		return TurnSubmission{}, nil, err
+	}
+	if !found {
+		c.queueMutationMu.Unlock()
+		return TurnSubmission{}, nil, ErrTurnNotFound
+	}
+	if queued.Status != session.QueuedTurnQueued {
+		c.queueMutationMu.Unlock()
+		return TurnSubmission{}, nil, ErrQueuedTurnStarted
+	}
+	var stored storedTurnRequest
+	if err := json.Unmarshal(queued.Request, &stored); err != nil {
+		c.queueMutationMu.Unlock()
+		return TurnSubmission{}, nil, fmt.Errorf("decode queued turn request: %w", err)
+	}
+	stored.Input = append(json.RawMessage(nil), input.Raw...)
+	encoded, err := json.Marshal(stored)
+	if err != nil {
+		c.queueMutationMu.Unlock()
+		return TurnSubmission{}, nil, fmt.Errorf("encode replacement queued turn: %w", err)
+	}
+	updatedEvent := mustMarshalEvent(Event{
+		Kind: EventTaskQueued, SessionID: r.sessionID, QueueID: queued.QueueID,
+		ExecutionID: executionID, Status: TaskQueued,
+	})
+	updated, cancelled, replaced, err := c.sessions.ReplaceQueuedTurnAndCancelAfter(
+		ctx, r.sessionID, queued.QueueID, executionID, encoded, updatedEvent, string(TaskCancelled),
+		func(item session.QueuedTurn) json.RawMessage {
+			return mustMarshalEvent(Event{
+				Kind: EventTaskFinished, SessionID: r.sessionID, QueueID: item.QueueID,
+				ExecutionID: item.ExecutionID, Status: TaskCancelled, Err: "cancelled because an earlier queued message was edited",
+			})
+		},
+	)
+	c.queueMutationMu.Unlock()
+	if err != nil {
+		return TurnSubmission{}, nil, err
+	}
+	if !replaced {
+		if updated.Status == session.QueuedTurnActive {
+			return TurnSubmission{}, nil, ErrQueuedTurnStarted
+		}
+		return TurnSubmission{}, nil, ErrTurnNotFound
+	}
+	for _, item := range cancelled {
+		c.resolveTurnWaiter(item.ExecutionID, turnResult{err: context.Canceled})
+	}
+	c.eventHub(r.sessionID).notifyDurable()
+	c.scheduleQueueDrain(r.sessionID)
+	cancelledIDs := make([]string, 0, len(cancelled))
+	for _, item := range cancelled {
+		cancelledIDs = append(cancelledIDs, item.ExecutionID)
+	}
+	return TurnSubmission{Status: SubmissionQueued, QueueID: updated.QueueID, ExecutionID: updated.ExecutionID, Position: updated.Position}, cancelledIDs, nil
 }
 
 // WaitTurn returns the durable outcome for an accepted execution. Canceling
