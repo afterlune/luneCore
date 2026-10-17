@@ -49,6 +49,13 @@ type AttachmentLimits struct {
 
 // Load reads and validates one project config file.
 func Load(path string) (Config, error) {
+	return load(path, true)
+}
+
+// load decodes and validates the project configuration. Hosts that provide
+// model settings or providers defer model-catalog validation until those
+// settings have been merged, while still validating project runtime settings.
+func load(path string, validateModelCatalog bool) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, fmt.Errorf("read %s: %w", path, err)
@@ -75,8 +82,14 @@ func Load(path string) (Config, error) {
 		config.DefaultModel = model.DeepSeekFlashModel
 	}
 	config.applyDefaults()
-	if err := config.Validate(); err != nil {
-		return Config{}, fmt.Errorf("validate %s: %w", path, err)
+	var validationErr error
+	if validateModelCatalog {
+		validationErr = config.Validate()
+	} else {
+		validationErr = config.validateRuntimeSettings()
+	}
+	if validationErr != nil {
+		return Config{}, fmt.Errorf("validate %s: %w", path, validationErr)
 	}
 	return config, nil
 }
@@ -132,6 +145,10 @@ func (c Config) Validate() error {
 	if err := c.ModelConfig().Validate(); err != nil {
 		return err
 	}
+	return c.validateRuntimeSettings()
+}
+
+func (c Config) validateRuntimeSettings() error {
 	if err := validateMCPServers(c.MCPServers); err != nil {
 		return err
 	}

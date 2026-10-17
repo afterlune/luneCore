@@ -16,7 +16,8 @@ const hostProviderPlaceholder = "host-provider"
 // LoadForRuntime combines workspace config with explicit host configuration and
 // providers, then validates the effective runtime settings.
 func LoadForRuntime(workspace string, supplied *publicmodel.Config, hostProviders map[string]publicmodel.Provider) (Config, error) {
-	loaded, err := Load(filepath.Join(workspace, FileName))
+	validateProjectModelCatalog := supplied == nil && len(hostProviders) == 0
+	loaded, err := load(filepath.Join(workspace, FileName), validateProjectModelCatalog)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) || supplied == nil {
 			return Config{}, err
