@@ -39,7 +39,9 @@ func (c *Core) interruptExecution(sessionID, executionID string) bool {
 	c.interruptRequests[executionID] = true
 	c.mu.Unlock()
 	event := Event{Kind: EventTaskFinished, SessionID: sessionID, QueueID: queued.QueueID, ExecutionID: executionID, Status: TaskCancelled, Err: "interrupted before the turn started"}
-	deleted, _, err := c.sessions.CancelQueuedTurn(context.Background(), sessionID, queued.QueueID, executionID, string(TaskCancelled), mustMarshalEvent(event))
+	_, deleted, err := c.sessions.CancelQueuedTurn(context.Background(), sessionID, executionID, string(TaskCancelled), func(session.QueuedTurn) json.RawMessage {
+		return mustMarshalEvent(event)
+	})
 	if err == nil && deleted {
 		c.mu.Lock()
 		delete(c.interruptRequests, executionID)

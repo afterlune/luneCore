@@ -235,6 +235,77 @@ func TestSessionRuntimeCancelPendingTurnsInterruptsActiveAndDropsQueue(t *testin
 	}
 }
 
+func TestSessionRuntimeCancelsOneQueuedTurnWithoutInterruptingActiveOrReordering(t *testing.T) {
+	provider := &barrierHostProvider{entered: make(chan string, 4), release: make(chan struct{}, 4)}
+	client := newProgrammaticCore(t, provider)
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "active")}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = receiveProviderInput(t, provider.entered)
+	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "keep first")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	removed, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "remove this")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "keep last")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CancelQueuedTurn(context.Background(), active.ExecutionID); !errors.Is(err, ErrQueuedTurnStarted) {
+		t.Fatalf("CancelQueuedTurn(active) = %v, want ErrQueuedTurnStarted", err)
+	}
+	if err := runtime.CancelQueuedTurn(context.Background(), removed.ExecutionID); err != nil {
+		t.Fatalf("CancelQueuedTurn(queued) = %v", err)
+	}
+	state, err := runtime.State(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.Task.Status != TaskRunning || state.Task.ExecutionID != active.ExecutionID {
+		t.Fatalf("active task after queue cancellation = %#v, want %q to keep running", state.Task, active.ExecutionID)
+	}
+	if len(state.Queue) != 3 || state.Queue[1].ExecutionID != first.ExecutionID || state.Queue[2].ExecutionID != last.ExecutionID {
+		t.Fatalf("queue after removing middle item = %#v, want active, first, last", state.Queue)
+	}
+	result, err := runtime.WaitTurn(context.Background(), removed.ExecutionID)
+	if err != nil || result.Status != TaskCancelled {
+		t.Fatalf("removed turn result = %#v, error=%v; want cancelled", result, err)
+	}
+	select {
+	case input := <-provider.entered:
+		t.Fatalf("queued work started before active release: %q", input)
+	default:
+	}
+
+	provider.release <- struct{}{}
+	if got := receiveProviderInput(t, provider.entered); got != "keep first" {
+		t.Fatalf("next input = %q, want first remaining queue item", got)
+	}
+	provider.release <- struct{}{}
+	if got := receiveProviderInput(t, provider.entered); got != "keep last" {
+		t.Fatalf("final input = %q, want last remaining queue item", got)
+	}
+	provider.release <- struct{}{}
+	waitQueueLength(t, runtime, 0)
+	for _, executionID := range []string{active.ExecutionID, first.ExecutionID, last.ExecutionID} {
+		if _, err := runtime.WaitTurn(context.Background(), executionID); err != nil {
+			t.Fatalf("WaitTurn(%q): %v", executionID, err)
+		}
+	}
+}
+
 func TestSessionRuntimeDrainsFIFOWithoutEventSubscribers(t *testing.T) {
 	provider := &barrierHostProvider{entered: make(chan string, 2), release: make(chan struct{}, 2)}
 	client := newProgrammaticCore(t, provider)

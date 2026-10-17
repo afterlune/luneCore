@@ -319,6 +319,52 @@ func (r *SessionRuntime) CancelPendingTurns(ctx context.Context) ([]string, erro
 	return affected, nil
 }
 
+// CancelQueuedTurn removes one turn that has not started without interrupting
+// the active turn or changing the order of the remaining queue.
+func (r *SessionRuntime) CancelQueuedTurn(ctx context.Context, executionID string) error {
+	if r == nil || r.core == nil || ctx == nil || executionID == "" {
+		return errors.New("session runtime, core, context, and execution id are required")
+	}
+	c := r.core
+	c.queueMutationMu.Lock()
+	locked := true
+	defer func() {
+		if locked {
+			c.queueMutationMu.Unlock()
+		}
+	}()
+
+	item, found, err := c.sessions.QueuedTurnByExecutionID(ctx, r.sessionID, executionID)
+	if err != nil {
+		return err
+	}
+	if !found {
+		return ErrTurnNotFound
+	}
+	if item.Status != session.QueuedTurnQueued {
+		return ErrQueuedTurnStarted
+	}
+
+	_, cancelled, err := c.sessions.CancelQueuedTurn(ctx, r.sessionID, executionID, string(TaskCancelled), func(item session.QueuedTurn) json.RawMessage {
+		return mustMarshalEvent(Event{
+			Kind: EventTaskFinished, SessionID: r.sessionID, QueueID: item.QueueID,
+			ExecutionID: item.ExecutionID, Status: TaskCancelled, Err: "cancelled by user",
+		})
+	})
+	if err != nil {
+		return err
+	}
+	if !cancelled {
+		return ErrQueuedTurnStarted
+	}
+	c.queueMutationMu.Unlock()
+	locked = false
+	c.resolveTurnWaiter(executionID, turnResult{err: context.Canceled})
+	c.eventHub(r.sessionID).notifyDurable()
+	c.scheduleQueueDrain(r.sessionID)
+	return nil
+}
+
 // ReplaceQueuedTurnInput replaces a turn that has not started, keeping its
 // queue position and cancelling later queued turns atomically. If the target
 // has already been claimed, callers should use the active-turn edit path.

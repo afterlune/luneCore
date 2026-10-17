@@ -407,39 +407,6 @@ func (s *Store) SetQueuedTurnStatusWithEvent(ctx context.Context, sessionID, que
 	return cursor, nil
 }
 
-func (s *Store) CancelQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, event json.RawMessage) (bool, int64, error) {
-	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
-		return false, 0, errors.New("session store, turn identity, status, and valid event JSON are required")
-	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, 0, fmt.Errorf("begin queued turn cancellation: %w", err)
-	}
-	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ? AND queue_id = ? AND execution_id = ? AND status = ?`, sessionID, queueID, executionID, QueuedTurnQueued)
-	if err != nil {
-		return false, 0, fmt.Errorf("cancel queued turn: %w", err)
-	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return false, 0, fmt.Errorf("check queued turn cancellation: %w", err)
-	}
-	if deleted == 0 {
-		return false, 0, nil
-	}
-	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, nil, time.Now()); err != nil {
-		return false, 0, err
-	}
-	cursor, err := appendRuntimeEventTx(ctx, tx, sessionID, event, time.Now())
-	if err != nil {
-		return false, 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return false, 0, fmt.Errorf("commit queued turn cancellation: %w", err)
-	}
-	return true, cursor, nil
-}
-
 // CancelQueuedTurns atomically cancels every turn that is still waiting in the
 // session queue. Active turns are left for the runtime to interrupt and finish.
 func (s *Store) CancelQueuedTurns(ctx context.Context, sessionID, status string, event func(QueuedTurn) json.RawMessage) ([]QueuedTurn, error) {
@@ -510,6 +477,66 @@ func (s *Store) CancelQueuedTurns(ctx context.Context, sessionID, status string,
 		return nil, fmt.Errorf("commit queued turn batch cancellation: %w", err)
 	}
 	return cancelled, nil
+}
+
+// CancelQueuedTurn removes one turn that has not started and records its
+// terminal result and event in the same transaction.
+func (s *Store) CancelQueuedTurn(ctx context.Context, sessionID, executionID, status string, event func(QueuedTurn) json.RawMessage) (QueuedTurn, bool, error) {
+	if s == nil || s.db == nil || sessionID == "" || executionID == "" || status == "" || event == nil {
+		return QueuedTurn{}, false, errors.New("session store, session id, execution id, status, and event factory are required")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return QueuedTurn{}, false, fmt.Errorf("begin queued turn cancellation: %w", err)
+	}
+	defer tx.Rollback()
+
+	var item QueuedTurn
+	var request []byte
+	var createdAt, updatedAt int64
+	err = tx.QueryRowContext(ctx, `SELECT session_id, queue_id, position, execution_id, request, status, created_at, updated_at
+		FROM queued_turn_inputs WHERE session_id = ? AND execution_id = ?`, sessionID, executionID).
+		Scan(&item.SessionID, &item.QueueID, &item.Position, &item.ExecutionID, &request, &item.Status, &createdAt, &updatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return QueuedTurn{}, false, nil
+	}
+	if err != nil {
+		return QueuedTurn{}, false, fmt.Errorf("load queued turn to cancel: %w", err)
+	}
+	item.Request = append(json.RawMessage(nil), request...)
+	item.CreatedAt = time.Unix(0, createdAt)
+	item.UpdatedAt = time.Unix(0, updatedAt)
+	if item.Status != QueuedTurnQueued {
+		return item, false, nil
+	}
+
+	result, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs
+		WHERE session_id = ? AND queue_id = ? AND execution_id = ? AND status = ?`, sessionID, item.QueueID, executionID, QueuedTurnQueued)
+	if err != nil {
+		return QueuedTurn{}, false, fmt.Errorf("cancel queued turn: %w", err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return QueuedTurn{}, false, fmt.Errorf("check queued turn cancellation: %w", err)
+	}
+	if deleted == 0 {
+		return item, false, nil
+	}
+	now := time.Now()
+	if err := upsertTurnResultTx(ctx, tx, sessionID, executionID, status, nil, now); err != nil {
+		return QueuedTurn{}, false, err
+	}
+	payload := event(item)
+	if !json.Valid(payload) {
+		return QueuedTurn{}, false, fmt.Errorf("queued turn cancellation event for %q is invalid JSON", executionID)
+	}
+	if _, err := appendRuntimeEventTx(ctx, tx, sessionID, payload, now); err != nil {
+		return QueuedTurn{}, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return QueuedTurn{}, false, fmt.Errorf("commit queued turn cancellation: %w", err)
+	}
+	return item, true, nil
 }
 
 // ReplaceQueuedTurnAndCancelAfter updates a still-queued turn in place and
