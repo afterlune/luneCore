@@ -39,7 +39,7 @@ func TestLoadForRuntimeMergesHostModelsBeforeValidation(t *testing.T) {
 		DefaultModel: "main", MaxParallelAgents: 2,
 	}
 
-	loaded, err := LoadForRuntime(filepath.Dir(path), supplied, nil)
+	loaded, err := LoadForRuntime(filepath.Dir(path), supplied, nil, nil)
 	if err != nil {
 		t.Fatalf("LoadForRuntime: %v", err)
 	}
@@ -72,7 +72,7 @@ func TestLoadForRuntimeHostSettingsOverrideMatchingProjectProfiles(t *testing.T)
 		DefaultModel: "main",
 	}
 
-	loaded, err := LoadForRuntime(filepath.Dir(path), supplied, nil)
+	loaded, err := LoadForRuntime(filepath.Dir(path), supplied, nil, nil)
 	if err != nil {
 		t.Fatalf("LoadForRuntime: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestLoadForRuntimeHostProviderCanCompleteProjectCatalog(t *testing.T) {
 	}`)
 	provider := configTestHostProvider{name: "host"}
 
-	loaded, err := LoadForRuntime(filepath.Dir(path), nil, map[string]publicmodel.Provider{"host": provider})
+	loaded, err := LoadForRuntime(filepath.Dir(path), nil, map[string]publicmodel.Provider{"host": provider}, nil)
 	if err != nil {
 		t.Fatalf("LoadForRuntime: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestLoadForRuntimeHostProviderCanCompleteProjectCatalog(t *testing.T) {
 
 func TestLoadForRuntimeStillRequiresProjectModelsWithoutHostSettings(t *testing.T) {
 	path := writeConfig(t, `{"contextWindow":64000}`)
-	_, err := LoadForRuntime(filepath.Dir(path), nil, nil)
+	_, err := LoadForRuntime(filepath.Dir(path), nil, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "at least one provider") {
 		t.Fatalf("LoadForRuntime error = %v, want missing model catalog", err)
 	}
@@ -132,10 +132,55 @@ func TestLoadForRuntimeStillValidatesProjectRuntimeSchema(t *testing.T) {
 				Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "vendor", Model: "host-model"}},
 				DefaultModel: "main",
 			}
-			_, err := LoadForRuntime(filepath.Dir(path), supplied, nil)
+			_, err := LoadForRuntime(filepath.Dir(path), supplied, nil, nil)
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("LoadForRuntime error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestLoadForRuntimeUsesHostProjectConfigWithoutReadingFile(t *testing.T) {
+	path := writeConfig(t, `this is deliberately not JSON`)
+	project := DefaultProjectConfig()
+	project.ModelConfig = publicmodel.Config{
+		Providers: map[string]publicmodel.ProviderConfig{
+			"vendor": {Protocol: publicmodel.ProtocolResponses, BaseURL: "https://host.example.test/v1", APIKey: "host-key"},
+		},
+		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "vendor", Model: "host-model"}},
+		DefaultModel: "main",
+	}
+	project.ContextWindow = 64000
+	project.ReserveOutputTokens = 4096
+	project.Attachments = AttachmentLimits{MaxFiles: 3}
+	project.MCPServers = map[string]MCPServerConfig{
+		"docs": {Transport: MCPTransportStdio, Command: "docs-mcp"},
+	}
+
+	loaded, err := LoadForRuntime(filepath.Dir(path), nil, nil, &project)
+	if err != nil {
+		t.Fatalf("LoadForRuntime with host project config: %v", err)
+	}
+	if loaded.ModelConfig().DefaultModel != "main" || loaded.ContextWindow != 64000 || loaded.ReserveOutputTokens != 4096 {
+		t.Fatalf("host project config was not applied: %#v", loaded)
+	}
+	if loaded.Attachments.MaxFiles != 3 || loaded.MCPServers["docs"].Command != "docs-mcp" {
+		t.Fatalf("host runtime settings were not applied: %#v", loaded)
+	}
+}
+
+func TestLoadForRuntimeValidatesHostProjectConfig(t *testing.T) {
+	path := writeConfig(t, `{}`)
+	project := DefaultProjectConfig()
+	project.ModelConfig = publicmodel.Config{
+		Providers: map[string]publicmodel.ProviderConfig{
+			"vendor": {Protocol: publicmodel.ProtocolResponses, BaseURL: "https://host.example.test/v1", APIKey: "host-key"},
+		},
+		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "vendor", Model: "host-model"}},
+		DefaultModel: "main",
+	}
+	project.ContextWindow = -1
+	if _, err := LoadForRuntime(filepath.Dir(path), nil, nil, &project); err == nil || !strings.Contains(err.Error(), "contextWindow must not be negative") {
+		t.Fatalf("LoadForRuntime error = %v, want project runtime validation", err)
 	}
 }

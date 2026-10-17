@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -367,4 +369,38 @@ func runDefaultLoggerTestTask(client *core.Core) error {
 		return fmt.Errorf("task status = %q, want completed", result.Status)
 	}
 	return nil
+}
+
+func TestHostProjectConfigSkipsWorkspaceConfigFile(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "config.json"), []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	project := core.DefaultProjectConfig()
+	project.ModelConfig = model.Config{
+		Providers: map[string]model.ProviderConfig{
+			"host": {Protocol: model.ProtocolResponses, BaseURL: "https://example.test/v1", APIKey: "test-key"},
+		},
+		Models:       map[string]model.ModelProfile{"main": {Provider: "host", Model: "test-model"}},
+		DefaultModel: "main",
+	}
+	project.ContextWindow = 32000
+	project.Attachments = core.ProjectAttachmentLimits{MaxFiles: 3}
+	project.MCPServers = map[string]core.MCPServerConfig{
+		"docs": {Transport: core.MCPTransportStdio, Command: "docs-mcp"},
+	}
+	client, err := core.New(core.Config{
+		Workspace: workspace, StateDir: t.TempDir(), ProjectConfig: &project,
+		Memory: core.MemoryConfig{Disabled: true},
+	})
+	if err != nil {
+		t.Fatalf("Core.New with host project config: %v", err)
+	}
+	defer client.Close()
+	if servers := client.MCPServers(); len(servers) != 1 || servers[0].Name != "docs" {
+		t.Fatalf("MCP servers = %#v, want docs", servers)
+	}
+	if limits := client.ProjectAttachmentLimits(); limits.MaxFiles != 3 {
+		t.Fatalf("attachment limits = %#v, want max files 3", limits)
+	}
 }

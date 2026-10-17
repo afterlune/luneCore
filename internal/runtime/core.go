@@ -27,15 +27,17 @@ import (
 	"github.com/afterlune/luneGraph/checkpoint/sqlite"
 )
 
-// Config constructs an embedded runtime. ModelConfig values override matching
-// entries from config.json; omitted model settings are loaded from that file.
-// ModelProviders replace protocol adapters with host implementations.
+// Config constructs an embedded runtime. ProjectConfig, when supplied, is the
+// complete project configuration and prevents config.json from being read.
+// Without it, project settings are loaded from config.json and ModelConfig
+// overlays matching model entries. ModelProviders replace protocol adapters.
 type Config struct {
 	Workspace string
 	StateDir  string
 	// Logger receives structured logs from this Core and its internal components.
 	// When nil, New captures slog.Default() for the Core's lifetime.
 	Logger          *slog.Logger
+	ProjectConfig   *projectconfig.ProjectConfig
 	ModelConfig     *publicmodel.Config
 	ModelProviders  map[string]publicmodel.Provider
 	Tools           []publictool.Registration
@@ -169,7 +171,7 @@ func New(config Config) (_ *Core, err error) {
 			}
 		}
 	}()
-	projectConfig, err := projectconfig.LoadForRuntime(workspace, config.ModelConfig, config.ModelProviders)
+	projectConfig, err := projectconfig.LoadForRuntime(workspace, config.ModelConfig, config.ModelProviders, config.ProjectConfig)
 	if err != nil {
 		return nil, err
 	}

@@ -11,6 +11,7 @@ import (
 	"os"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 const (
@@ -36,6 +37,58 @@ type Config struct {
 	Attachments          AttachmentLimits                `json:"attachments,omitempty"`
 	MCPServers           map[string]MCPServerConfig      `json:"mcpServers,omitempty"`
 	legacyAPIKey         string
+}
+
+// ProjectConfig is the complete project configuration supplied by a host.
+// Hosts may use this instead of loading config.json themselves.
+type ProjectConfig struct {
+	ModelConfig          publicmodel.Config         `json:"modelConfig"`
+	ContextWindow        int64                      `json:"contextWindow,omitempty"`
+	AutoCompact          bool                       `json:"autoCompact"`
+	AutoCompactThreshold float64                    `json:"autoCompactThreshold,omitempty"`
+	ReserveOutputTokens  int64                      `json:"reserveOutputTokens,omitempty"`
+	Attachments          AttachmentLimits           `json:"attachments,omitempty"`
+	MCPServers           map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+}
+
+// DefaultProjectConfig returns the same runtime defaults used by config.json.
+func DefaultProjectConfig() ProjectConfig {
+	return ProjectConfig{
+		ModelConfig: publicmodel.Config{
+			Providers: map[string]publicmodel.ProviderConfig{},
+			Models:    map[string]publicmodel.ModelProfile{},
+		},
+		AutoCompact: true, AutoCompactThreshold: DefaultAutoCompactThreshold,
+		MCPServers: map[string]MCPServerConfig{},
+	}
+}
+
+func (c ProjectConfig) toConfig() Config {
+	providers := make(map[string]model.ProviderConfig, len(c.ModelConfig.Providers))
+	for name, provider := range c.ModelConfig.Providers {
+		providers[name] = model.ProviderConfig{
+			Protocol: provider.Protocol, BaseURL: provider.BaseURL, APIKey: provider.APIKey,
+			ServerCompaction: provider.ServerCompaction,
+		}
+	}
+	profiles := make(map[string]model.ModelProfile, len(c.ModelConfig.Models))
+	for name, profile := range c.ModelConfig.Models {
+		profiles[name] = profile
+	}
+	return Config{
+		Providers: providers, Models: profiles, DefaultModel: c.ModelConfig.DefaultModel,
+		MaxParallelAgents: c.ModelConfig.MaxParallelAgents,
+		ContextWindow:     c.ContextWindow, AutoCompact: c.AutoCompact,
+		AutoCompactThreshold: c.AutoCompactThreshold, ReserveOutputTokens: c.ReserveOutputTokens,
+		Attachments: c.Attachments, MCPServers: c.MCPServers,
+	}
+}
+
+// Validate checks the complete host-supplied project configuration.
+func (c ProjectConfig) Validate() error {
+	config := c.toConfig()
+	config.applyDefaults()
+	return config.Validate()
 }
 
 // AttachmentLimits configures image attachments accepted by Core task input.

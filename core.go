@@ -1,7 +1,10 @@
 // Package core exposes the agent runtime without terminal presentation details.
 package core
 
-import coreruntime "github.com/afterlune/luneCore/internal/runtime"
+import (
+	projectconfig "github.com/afterlune/luneCore/internal/config"
+	coreruntime "github.com/afterlune/luneCore/internal/runtime"
+)
 
 const (
 	CommandRunning     = coreruntime.CommandRunning
@@ -148,6 +151,14 @@ type MCPPromptResult = coreruntime.MCPPromptResult
 type MCPResource = coreruntime.MCPResource
 type MCPResourceTemplate = coreruntime.MCPResourceTemplate
 type MCPServerStatus = coreruntime.MCPServerStatus
+type MCPServerConfig = projectconfig.MCPServerConfig
+type MCPTransport = projectconfig.MCPTransport
+
+const (
+	MCPTransportStdio          MCPTransport = "stdio"
+	MCPTransportStreamableHTTP MCPTransport = "streamable-http"
+)
+
 type MemoryConfig = coreruntime.MemoryConfig
 type ModelFailure = coreruntime.ModelFailure
 type ModelOption = coreruntime.ModelOption
@@ -156,6 +167,8 @@ type PendingModelRecovery = coreruntime.PendingModelRecovery
 type PendingRequest = coreruntime.PendingRequest
 type PendingRequestKind = coreruntime.PendingRequestKind
 type PermissionMode = coreruntime.PermissionMode
+type ProjectConfig = projectconfig.ProjectConfig
+type ProjectAttachmentLimits = projectconfig.AttachmentLimits
 type PlanAuthorization = coreruntime.PlanAuthorization
 type PlanImplementation = coreruntime.PlanImplementation
 type PlanImplementationMode = coreruntime.PlanImplementationMode
@@ -197,6 +210,10 @@ type UserQuestionRequest = coreruntime.UserQuestionRequest
 
 // New constructs an embedded runtime.
 func New(config Config) (*Core, error) { return coreruntime.New(config) }
+
+// DefaultProjectConfig returns default project settings for a host-owned
+// configuration source.
+func DefaultProjectConfig() ProjectConfig { return projectconfig.DefaultProjectConfig() }
 
 // NewTaskInput creates a task input from any JSON-serializable value.
 func NewTaskInput[T any](value T) (TaskInput, error) { return coreruntime.NewTaskInput(value) }
