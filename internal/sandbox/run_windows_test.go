@@ -4,9 +4,11 @@ package sandbox
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -175,6 +177,70 @@ func TestAppContainerRestoresPathACLsAfterChildOutcomes(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestGrantedGoToolchainRunsOfflineStandardLibraryTests(t *testing.T) {
+	goExecutable, err := exec.LookPath("go")
+	if err != nil {
+		t.Skip("Go is not available on the host PATH")
+	}
+	goExecutable, err = filepath.EvalSymlinks(goExecutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolchainRoot := filepath.Dir(goExecutable)
+	if strings.EqualFold(filepath.Base(toolchainRoot), "bin") {
+		toolchainRoot = filepath.Dir(toolchainRoot)
+	}
+	workspace, tempDir := t.TempDir(), t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module sandbox-toolchain-test\n\ngo 1.20\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "standard_test.go"), []byte(`package sandbox_toolchain_test
+
+import (
+	"strings"
+	"testing"
+)
+
+func TestStandardLibrary(t *testing.T) {
+	if got := strings.ToUpper("sandbox"); got != "SANDBOX" {
+		t.Fatalf("strings.ToUpper() = %q", got)
+	}
+}
+`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outputPath := filepath.Join(workspace, "go-test-output.txt")
+	request := publictool.CommandRequest{
+		Command: "go test ./... *> go-test-output.txt; exit $LASTEXITCODE", Workspace: workspace,
+		Sandbox: publictool.SandboxPolicy{
+			PermissionMode: "workspace", Workspace: workspace, TempDir: tempDir,
+			Grants:                []publictool.PathGrant{{Path: toolchainRoot, Access: publictool.PathRead}},
+			CommandToolchainPaths: []string{toolchainRoot},
+		},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	if err := RunContext(ctx, request, io.Discard); err != nil {
+		output, _ := os.ReadFile(outputPath)
+		t.Fatalf("sandboxed go test failed: %v\n%s", err, output)
+	}
+	output, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("read sandboxed go test output: %v", err)
+	}
+	outputText := string(output)
+	if len(output) >= 2 && output[0] == 0xff && output[1] == 0xfe {
+		units := make([]uint16, (len(output)-2)/2)
+		for index := range units {
+			units[index] = binary.LittleEndian.Uint16(output[2+index*2:])
+		}
+		outputText = string(utf16.Decode(units))
+	}
+	if !strings.Contains(outputText, "sandbox-toolchain-test") || strings.Contains(outputText, "FAIL") {
+		t.Fatalf("go test output = %q, want a successful standard-library test", output)
 	}
 }
 
