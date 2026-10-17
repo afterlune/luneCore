@@ -179,8 +179,16 @@ func TestDefaultRegistryFailsClosedWhenSandboxHelperIsUnavailable(t *testing.T) 
 		t.Fatalf("NewDefaultRegistry: %v", err)
 	}
 	defer registry.Close()
+	approvals := 0
+	registry.SetPermissionApprovalHandler(func(context.Context, PermissionRequest) bool {
+		approvals++
+		return true
+	})
 
 	result := registry.Run(context.Background(), "command", json.RawMessage(`{"command":"exit 0"}`))
+	if approvals != 1 {
+		t.Fatalf("command approvals = %d, want one approval before sandbox execution", approvals)
+	}
 	if result.Err == nil || !strings.Contains(result.Err.Error(), "kernel sandbox helper") {
 		t.Fatalf("command result error = %v, want fail-closed sandbox helper error", result.Err)
 	}

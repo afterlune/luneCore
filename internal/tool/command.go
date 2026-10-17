@@ -24,12 +24,13 @@ const (
 
 // CommandTool delegates local execution to a kernel-sandboxed executor.
 type CommandTool struct {
-	Manager           *commandruntime.Manager
-	Workspace         string
-	Timeout           time.Duration
-	Executor          publictool.CommandExecutor
-	SandboxHelperPath string
-	AllowLocalCommand bool
+	Manager               *commandruntime.Manager
+	Workspace             string
+	Timeout               time.Duration
+	Executor              publictool.CommandExecutor
+	SandboxHelperPath     string
+	CommandToolchainPaths []string
+	AllowLocalCommand     bool
 }
 
 var highRiskCommandPatterns = []*regexp.Regexp{
@@ -92,7 +93,21 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if mode == "" {
 		mode = PermissionModeWorkspace
 	}
-	sandbox := publictool.SandboxPolicy{PermissionMode: string(mode), Workspace: workspace, Grants: append([]publictool.PathGrant(nil), authorization.Paths...), Network: mode == PermissionModeFullAccess || authorization.AllowNetwork}
+	sandboxMode := mode
+	if sandboxMode == PermissionModeAsk {
+		// Ask approval is resolved by the Core permission controller. Once
+		// approved, execute with the regular workspace sandbox boundaries.
+		sandboxMode = PermissionModeWorkspace
+	}
+	grants := append([]publictool.PathGrant(nil), authorization.Paths...)
+	for _, path := range t.CommandToolchainPaths {
+		grants = append(grants, publictool.PathGrant{Path: path, Access: publictool.PathRead})
+	}
+	sandbox := publictool.SandboxPolicy{
+		PermissionMode: string(sandboxMode), Workspace: workspace, Grants: grants,
+		CommandToolchainPaths: append([]string(nil), t.CommandToolchainPaths...),
+		Network:               mode == PermissionModeFullAccess || authorization.AllowNetwork,
+	}
 	if mode == PermissionModeFullAccess {
 		sandbox.HomeDir, _ = os.UserHomeDir()
 	}

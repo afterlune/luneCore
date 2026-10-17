@@ -155,8 +155,11 @@ type SandboxPolicy struct {
 	Workspace      string      `json:"workspace"`
 	HomeDir        string      `json:"home_dir,omitempty"`
 	Grants         []PathGrant `json:"grants,omitempty"`
-	Network        bool        `json:"network,omitempty"`
-	TempDir        string      `json:"temp_dir,omitempty"`
+	// CommandToolchainPaths are host-authorized directories added to the child
+	// command search path. They remain read and execute only under the sandbox.
+	CommandToolchainPaths []string `json:"command_toolchain_paths,omitempty"`
+	Network               bool     `json:"network,omitempty"`
+	TempDir               string   `json:"temp_dir,omitempty"`
 }
 
 type planAuthorizationContextKey struct{}

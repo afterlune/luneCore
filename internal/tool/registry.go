@@ -70,11 +70,12 @@ type ToolRegistration struct {
 // RegistryOptions supplies host extensions and command execution policy to the
 // default workspace registry.
 type RegistryOptions struct {
-	Tools              []ToolRegistration
-	CommandExecutor    publictool.CommandExecutor
-	SandboxHelperPath  string
-	AllowLocalCommands bool
-	Logger             *slog.Logger
+	Tools                 []ToolRegistration
+	CommandExecutor       publictool.CommandExecutor
+	SandboxHelperPath     string
+	CommandToolchainPaths []string
+	AllowLocalCommands    bool
+	Logger                *slog.Logger
 }
 
 func NewRegistry(registrations ...ToolRegistration) (*Registry, error) {

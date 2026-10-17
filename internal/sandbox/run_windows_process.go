@@ -6,6 +6,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -145,15 +148,11 @@ func runWindowsChild(ctx context.Context, args []string, directory string, token
 	return nil
 }
 
-func runAppContainerProcess(ctx context.Context, sid *windows.SID, args []string, directory, tempDir string, network bool) error {
-	if err := os.Setenv("TEMP", tempDir); err != nil {
-		return fmt.Errorf("set sandbox TEMP: %w", err)
-	}
-	if err := os.Setenv("TMP", tempDir); err != nil {
-		return fmt.Errorf("set sandbox TMP: %w", err)
-	}
-	if err := os.Setenv("HOME", tempDir); err != nil {
-		return fmt.Errorf("set sandbox HOME: %w", err)
+func runAppContainerProcess(ctx context.Context, sid *windows.SID, args []string, directory, tempDir string, network bool, toolchainRoots []string) error {
+	for _, name := range []string{"go-cache", "go-tmp", "go-mod-cache", "go-path", "cache"} {
+		if err := os.MkdirAll(filepath.Join(tempDir, name), 0700); err != nil {
+			return fmt.Errorf("create sandbox cache directory: %w", err)
+		}
 	}
 	capabilities, cleanupCapabilities, err := appContainerCapabilities(network)
 	if err != nil {
@@ -232,7 +231,18 @@ func runAppContainerProcess(ctx context.Context, sid *windows.SID, args []string
 	}
 	processInfo := windows.ProcessInformation{}
 	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW)
-	if err := windows.CreateProcess(application, commandLine, nil, nil, true, flags, nil, directory16, &startup.StartupInfo, &processInfo); err != nil {
+	environment, err := windowsEnvironmentBlock(map[string]string{
+		"TEMP": tempDir, "TMP": tempDir, "HOME": tempDir,
+		"PATH":    appendSearchPaths(os.Getenv("PATH"), commandToolchainSearchPaths(toolchainRoots), ";"),
+		"GOCACHE": filepath.Join(tempDir, "go-cache"), "GOTMPDIR": filepath.Join(tempDir, "go-tmp"),
+		"GOMODCACHE": filepath.Join(tempDir, "go-mod-cache"), "GOPATH": filepath.Join(tempDir, "go-path"),
+		"GOENV": "off", "GOTOOLCHAIN": "local", "XDG_CACHE_HOME": filepath.Join(tempDir, "cache"),
+	})
+	if err != nil {
+		return err
+	}
+	flags |= windows.CREATE_UNICODE_ENVIRONMENT
+	if err := windows.CreateProcess(application, commandLine, nil, nil, true, flags, &environment[0], directory16, &startup.StartupInfo, &processInfo); err != nil {
 		return fmt.Errorf("create AppContainer command: %w", err)
 	}
 	defer windows.CloseHandle(processInfo.Process)
@@ -271,4 +281,44 @@ func runAppContainerProcess(ctx context.Context, sid *windows.SID, args []string
 		return &ExitError{Code: int(exitCode)}
 	}
 	return nil
+}
+
+func windowsEnvironmentBlock(overrides map[string]string) ([]uint16, error) {
+	values := make(map[string]string)
+	for _, entry := range os.Environ() {
+		separator := strings.IndexByte(entry, '=')
+		if strings.HasPrefix(entry, "=") {
+			separator = strings.IndexByte(entry[1:], '=') + 1
+		}
+		if separator <= 0 || separator >= len(entry) {
+			continue
+		}
+		name := entry[:separator]
+		values[strings.ToUpper(name)] = entry
+	}
+	for name, value := range overrides {
+		if strings.ContainsAny(name+value, "\x00") {
+			return nil, fmt.Errorf("sandbox environment variable %q contains a null byte", name)
+		}
+		values[strings.ToUpper(name)] = name + "=" + value
+	}
+	entries := make([]string, 0, len(values))
+	for _, entry := range values {
+		entries = append(entries, entry)
+	}
+	sort.Slice(entries, func(i, j int) bool { return strings.ToUpper(entries[i]) < strings.ToUpper(entries[j]) })
+	block := make([]uint16, 0, len(entries)*64+1)
+	for _, entry := range entries {
+		encoded, err := windows.UTF16FromString(entry)
+		if err != nil {
+			return nil, fmt.Errorf("encode sandbox environment: %w", err)
+		}
+		block = append(block, encoded[:len(encoded)-1]...)
+		block = append(block, 0)
+	}
+	block = append(block, 0)
+	if len(entries) == 0 {
+		block = append(block, 0)
+	}
+	return block, nil
 }

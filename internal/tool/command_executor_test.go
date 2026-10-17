@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/sandbox"
 	publictool "github.com/afterlune/luneCore/tool"
 )
@@ -159,9 +160,25 @@ func TestCommandToolFailsClosedWithoutSandboxHelper(t *testing.T) {
 	}
 }
 
+func TestCommandToolHasNoHostToolchainGrantByDefault(t *testing.T) {
+	var received publictool.CommandRequest
+	executor := commandExecutorFunc(func(_ context.Context, request publictool.CommandRequest) (publictool.CommandResult, error) {
+		received = request
+		return publictool.CommandResult{Output: "ok"}, nil
+	})
+	result := (CommandTool{Workspace: t.TempDir(), Executor: executor}).Run(context.Background(), json.RawMessage(`{"command":"echo ok"}`))
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if len(received.Sandbox.Grants) != 0 || len(received.Sandbox.CommandToolchainPaths) != 0 {
+		t.Fatalf("default command grants = %#v, toolchain paths = %#v", received.Sandbox.Grants, received.Sandbox.CommandToolchainPaths)
+	}
+}
+
 func TestCommandToolPassesPlanGrantsToSandboxExecutor(t *testing.T) {
 	workspace := t.TempDir()
 	extraPath := t.TempDir()
+	toolchainPath := t.TempDir()
 	var received publictool.CommandRequest
 	executor := commandExecutorFunc(func(_ context.Context, request publictool.CommandRequest) (publictool.CommandResult, error) {
 		received = request
@@ -172,23 +189,69 @@ func TestCommandToolPassesPlanGrantsToSandboxExecutor(t *testing.T) {
 		AllowNetwork: true,
 	}
 	ctx := publictool.WithPlanAuthorization(context.Background(), authorization)
-	result := (CommandTool{Workspace: workspace, Executor: executor}).Run(ctx, json.RawMessage(`{"command":"echo ok"}`))
+	commandTool := CommandTool{Workspace: workspace, Executor: executor, CommandToolchainPaths: []string{toolchainPath}}
+	result := commandTool.Run(ctx, json.RawMessage(`{"command":"echo ok"}`))
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
 	if received.Sandbox.PermissionMode != string(PermissionModeWorkspace) || received.Sandbox.Workspace != workspace || !received.Sandbox.Network {
 		t.Fatalf("sandbox policy = %#v", received.Sandbox)
 	}
-	if len(received.Sandbox.Grants) != 1 || received.Sandbox.Grants[0] != authorization.Paths[0] {
+	if len(received.Sandbox.Grants) != 2 || received.Sandbox.Grants[0] != authorization.Paths[0] || received.Sandbox.Grants[1] != (publictool.PathGrant{Path: toolchainPath, Access: publictool.PathRead}) {
 		t.Fatalf("sandbox grants = %#v", received.Sandbox.Grants)
 	}
+	if len(received.Sandbox.CommandToolchainPaths) != 1 || received.Sandbox.CommandToolchainPaths[0] != toolchainPath {
+		t.Fatalf("sandbox toolchain paths = %#v", received.Sandbox.CommandToolchainPaths)
+	}
+	ask := WithPermissionMode(context.Background(), string(PermissionModeAsk))
+	result = commandTool.Run(ask, json.RawMessage(`{"command":"echo ok"}`))
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if received.Sandbox.PermissionMode != string(PermissionModeWorkspace) {
+		t.Fatalf("ask mode sandbox = %q, want workspace after approval", received.Sandbox.PermissionMode)
+	}
 	fullAccess := WithPermissionMode(context.Background(), string(PermissionModeFullAccess))
-	result = (CommandTool{Workspace: workspace, Executor: executor}).Run(fullAccess, json.RawMessage(`{"command":"echo ok"}`))
+	result = commandTool.Run(fullAccess, json.RawMessage(`{"command":"echo ok"}`))
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
 	if received.Sandbox.PermissionMode != string(PermissionModeFullAccess) || received.Sandbox.HomeDir == "" || !received.Sandbox.Network {
 		t.Fatalf("full-access sandbox policy = %#v", received.Sandbox)
+	}
+}
+
+func TestApprovedAskModeCommandUsesWorkspaceSandbox(t *testing.T) {
+	var received publictool.CommandRequest
+	executor := commandExecutorFunc(func(_ context.Context, request publictool.CommandRequest) (publictool.CommandResult, error) {
+		received = request
+		return publictool.CommandResult{Output: "ok"}, nil
+	})
+	registered := CommandTool{Workspace: t.TempDir(), Executor: executor}
+	registry, err := NewRegistry(ToolRegistration{
+		Tool:     registered,
+		Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionCommand},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(PermissionModeAsk); err != nil {
+		t.Fatal(err)
+	}
+	approvals := 0
+	registry.SetPermissionApprovalHandler(func(context.Context, PermissionRequest) bool {
+		approvals++
+		return true
+	})
+	result := registry.Run(context.Background(), "command", json.RawMessage(`{"command":"echo ok"}`))
+	if result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if approvals != 1 {
+		t.Fatalf("ask-mode command approvals = %d, want one", approvals)
+	}
+	if received.Sandbox.PermissionMode != string(PermissionModeWorkspace) {
+		t.Fatalf("approved ask-mode sandbox = %q, want workspace", received.Sandbox.PermissionMode)
 	}
 }
 

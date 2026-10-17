@@ -38,9 +38,9 @@ func PermissionModeDescription(mode PermissionMode) string {
 	case PermissionModeReadOnly:
 		return "Read workspace files; ask before network; block writes and commands"
 	case PermissionModeWorkspace:
-		return "Workspace file operations and sandboxed commands; network and external paths need plan approval"
+		return "Workspace file operations; approve each command and network access"
 	case PermissionModeAsk:
-		return "Read workspace files; approve other tool operations in the plan"
+		return "Read workspace files; approve every other tool operation"
 	case PermissionModeFullAccess:
 		return "Allow current-user files and network inside the OS sandbox; remove elevation and require plan approval for high-risk commands"
 	default:
@@ -211,9 +211,9 @@ func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) perm
 		}
 	case PermissionModeWorkspace:
 		switch class {
-		case model.ToolPermissionWorkspaceRead, model.ToolPermissionWorkspaceWrite, model.ToolPermissionCommand:
+		case model.ToolPermissionWorkspaceRead, model.ToolPermissionWorkspaceWrite:
 			return permissionAllowed
-		case model.ToolPermissionNetwork:
+		case model.ToolPermissionCommand, model.ToolPermissionNetwork:
 			return permissionNeedsApproval
 		default:
 			return permissionDenied

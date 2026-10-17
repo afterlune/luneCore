@@ -43,6 +43,10 @@ type Config struct {
 	Tools           []publictool.Registration
 	CommandExecutor publictool.CommandExecutor
 	Commands        CommandOptions
+	// CommandToolchainPaths grants command sandboxes read and execute access to
+	// host-owned toolchain directories. It is intentionally empty by default and
+	// is not loaded from the shared ProjectConfig.
+	CommandToolchainPaths []string
 	// SandboxHelperPath optionally selects the lune-sandbox companion binary.
 	// When empty, Core searches beside the host executable and then PATH.
 	SandboxHelperPath string
@@ -148,6 +152,10 @@ func New(config Config) (_ *Core, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve workspace: %w", err)
 	}
+	config.CommandToolchainPaths, err = normalizeCommandToolchainPaths(config.CommandToolchainPaths)
+	if err != nil {
+		return nil, err
+	}
 	stateDir := config.StateDir
 	if stateDir == "" {
 		stateDir = filepath.Join(workspace, ".luneagent")
@@ -181,7 +189,7 @@ func New(config Config) (_ *Core, err error) {
 	}
 	registry, err := tool.NewDefaultRegistry(workspace, tool.RegistryOptions{
 		Tools: hostTools, CommandExecutor: config.CommandExecutor, AllowLocalCommands: config.AllowLocalCommand,
-		SandboxHelperPath: config.SandboxHelperPath, Logger: logger,
+		SandboxHelperPath: config.SandboxHelperPath, CommandToolchainPaths: config.CommandToolchainPaths, Logger: logger,
 	})
 	if err != nil {
 		return nil, err

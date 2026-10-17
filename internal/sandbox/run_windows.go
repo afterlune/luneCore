@@ -110,7 +110,7 @@ func runPlatform(ctx context.Context, request publictool.CommandRequest, _ io.Wr
 	// ancestors merely to resolve a location. Native programs use the real cwd.
 	escapedWorkspace := strings.ReplaceAll(workspace, "'", "''")
 	args[len(args)-1] = "try { New-PSDrive -Name LuneWorkspace -PSProvider FileSystem -Root '" + escapedWorkspace + "' -ErrorAction Stop | Out-Null; Set-Location -LiteralPath 'LuneWorkspace:\\' -ErrorAction Stop; [System.Environment]::CurrentDirectory = '" + escapedWorkspace + "' } catch { Write-Error $_; exit 1 }; " + request.Command
-	return runAppContainerProcess(ctx, containerSID, args, workspace, tempDir, request.Sandbox.Network)
+	return runAppContainerProcess(ctx, containerSID, args, workspace, tempDir, request.Sandbox.Network, request.Sandbox.CommandToolchainPaths)
 }
 
 func runChild(publictool.CommandRequest) error {

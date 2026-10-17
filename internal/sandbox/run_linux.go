@@ -97,7 +97,7 @@ func runChild(request publictool.CommandRequest) error {
 	if err := installSeccomp(request.Sandbox.Network); err != nil {
 		return fmt.Errorf("install seccomp policy: %w", err)
 	}
-	if err := unix.Exec("/bin/sh", []string{"/bin/sh", "-c", request.Command}, sandboxEnvironment(tempDir, homeDir)); err != nil {
+	if err := unix.Exec("/bin/sh", []string{"/bin/sh", "-c", request.Command}, sandboxEnvironment(tempDir, homeDir, request.Sandbox.CommandToolchainPaths)); err != nil {
 		return fmt.Errorf("execute sandbox command: %w", err)
 	}
 	return nil
@@ -235,11 +235,11 @@ func linuxRuntimeReadPaths() []string {
 	}
 }
 
-func sandboxEnvironment(tempDir, homeDir string) []string {
-	path := "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+func sandboxEnvironment(tempDir, homeDir string, toolchainRoots []string) []string {
+	path := appendSearchPaths("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", commandToolchainSearchPaths(toolchainRoots), ":")
 	return []string{
 		"PATH=" + path, "HOME=" + homeDir, "TMPDIR=" + tempDir, "TEMP=" + tempDir,
-		"GOCACHE=" + filepath.Join(tempDir, "go-cache"), "GOMODCACHE=" + filepath.Join(tempDir, "go-mod-cache"),
+		"GOCACHE=" + filepath.Join(tempDir, "go-cache"), "GOTMPDIR=" + filepath.Join(tempDir, "go-tmp"), "GOMODCACHE=" + filepath.Join(tempDir, "go-mod-cache"),
 		"XDG_CACHE_HOME=" + filepath.Join(tempDir, "cache"), "LANG=C.UTF-8",
 	}
 }

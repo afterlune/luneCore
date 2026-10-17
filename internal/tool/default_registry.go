@@ -31,7 +31,7 @@ func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry
 		ToolRegistration{Tool: ReadFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
 		ToolRegistration{Tool: WriteFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
 		ToolRegistration{Tool: EditFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
-		ToolRegistration{Tool: CommandTool{Workspace: workspacePath, Executor: registryOptions.CommandExecutor, SandboxHelperPath: registryOptions.SandboxHelperPath, AllowLocalCommand: registryOptions.AllowLocalCommands}, Metadata: command},
+		ToolRegistration{Tool: CommandTool{Workspace: workspacePath, Executor: registryOptions.CommandExecutor, SandboxHelperPath: registryOptions.SandboxHelperPath, CommandToolchainPaths: append([]string(nil), registryOptions.CommandToolchainPaths...), AllowLocalCommand: registryOptions.AllowLocalCommands}, Metadata: command},
 		ToolRegistration{Tool: WebSearchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 		ToolRegistration{Tool: WebFetchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 	)

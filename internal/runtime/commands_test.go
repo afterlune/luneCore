@@ -148,6 +148,9 @@ func TestLongCommandRuntimeOutputAndTermination(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	if err := client.SetPermissionMode(PermissionFullAccess); err != nil {
+		t.Fatal(err)
+	}
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -270,6 +273,9 @@ func TestRunningCommandsBlockCompletionAndSurviveRestartAsRecords(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer func() { _ = client.Close() }()
+	if err := client.SetPermissionMode(PermissionFullAccess); err != nil {
+		t.Fatal(err)
+	}
 	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -347,6 +353,9 @@ func TestClarificationStopsCommandsWithoutReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
+	if err := client.SetPermissionMode(PermissionFullAccess); err != nil {
+		t.Fatal(err)
+	}
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
