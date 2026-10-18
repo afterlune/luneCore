@@ -81,6 +81,36 @@ func TestOpenMigratesUnversionedSessionMetadata(t *testing.T) {
 	}
 }
 
+func TestListPageReturnsNewestNonArchivedSessions(t *testing.T) {
+	store, _ := openTestStore(t)
+	ctx := context.Background()
+	records := []Snapshot{
+		{ID: "old", Workspace: "workspace", UpdatedAt: time.Unix(1, 0), Data: json.RawMessage(`{"title":"old","archived":false}`)},
+		{ID: "middle", Workspace: "workspace", UpdatedAt: time.Unix(2, 0), Data: json.RawMessage(`{"title":"middle","archived":false}`)},
+		{ID: "archived", Workspace: "workspace", UpdatedAt: time.Unix(3, 0), Data: json.RawMessage(`{"title":"archived","archived":true}`)},
+		{ID: "new", Workspace: "workspace", UpdatedAt: time.Unix(4, 0), Data: json.RawMessage(`{"title":"new","archived":false}`)},
+	}
+	for _, record := range records {
+		if err := store.Save(ctx, record); err != nil {
+			t.Fatalf("Save(%s): %v", record.ID, err)
+		}
+	}
+
+	first, err := store.ListPage(ctx, "workspace", 0, 2, false)
+	if err != nil {
+		t.Fatalf("ListPage first page: %v", err)
+	}
+	second, err := store.ListPage(ctx, "workspace", 2, 2, false)
+	if err != nil {
+		t.Fatalf("ListPage second page: %v", err)
+	}
+	got := []string{first[0].ID, first[1].ID, second[0].ID}
+	want := []string{"new", "middle", "old"}
+	if len(first) != 2 || len(second) != 1 || strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("ListPage results = %v + %v, want %v", first, second, want)
+	}
+}
+
 func TestOpenMigratesVersionThreeDatabaseToRuntimeTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.db")
 	db, err := sql.Open("sqlite", path)

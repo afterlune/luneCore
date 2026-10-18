@@ -11,10 +11,7 @@ import (
 )
 
 func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool) (TurnSubmission, <-chan turnResult, error) {
-	return c.submitTurnWithPermission(ctx, sessionID, request, mode, wait, "")
-}
 
-func (c *Core) submitTurnWithPermission(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, permissionOverride string) (TurnSubmission, <-chan turnResult, error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return TurnSubmission{}, nil, errors.New("core, context, and session id are required")
 	}
@@ -37,8 +34,12 @@ func (c *Core) submitTurnWithPermission(ctx context.Context, sessionID string, r
 	if err := validateExecutionOptions(request.Execution); err != nil {
 		return TurnSubmission{}, nil, err
 	}
+	permissionOverride := string(request.PermissionMode)
 	if err := validatePermissionOverride(permissionOverride); err != nil {
 		return TurnSubmission{}, nil, err
+	}
+	if request.PlanMode {
+		permissionOverride = string(PermissionReadOnly)
 	}
 	if _, err := c.GetSession(ctx, sessionID); err != nil {
 		return TurnSubmission{}, nil, err

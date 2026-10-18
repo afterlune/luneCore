@@ -92,7 +92,7 @@ func TestPlanModeHandoffImplementsInSameContextWithScopedPermission(t *testing.T
 		t.Fatal("Plan mode hid the user-question tool")
 	}
 
-	implementation, err := runtime.ImplementPlan(context.Background(), planned.ExecutionID, PlanImplementSameContext)
+	implementation, err := runtime.ImplementPlan(context.Background(), planned.ExecutionID, PlanImplementationOptions{Mode: PlanImplementSameContext})
 	if err != nil {
 		t.Fatalf("ImplementPlan: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestPlanModeHandoffStartsPlanOnlySession(t *testing.T) {
 	if result, err := runtime.WaitTurn(context.Background(), planned.ExecutionID); err != nil || result.ProposedPlan == nil {
 		t.Fatalf("plan result = %#v, error=%v", result, err)
 	}
-	implementation, err := runtime.ImplementPlan(context.Background(), planned.ExecutionID, PlanImplementNewContext)
+	implementation, err := runtime.ImplementPlan(context.Background(), planned.ExecutionID, PlanImplementationOptions{Mode: PlanImplementNewContext})
 	if err != nil {
 		t.Fatalf("ImplementPlan in new context: %v", err)
 	}
@@ -242,7 +242,7 @@ func TestPlanHandoffRejectsOutdatedPlan(t *testing.T) {
 	if result, err := runtime.WaitTurn(context.Background(), second.ExecutionID); err != nil || result.Status != TaskCompleted {
 		t.Fatalf("newer result = %#v, error=%v", result, err)
 	}
-	if _, err := runtime.ImplementPlan(context.Background(), first.ExecutionID, PlanImplementSameContext); !errors.Is(err, ErrPlanOutdated) {
+	if _, err := runtime.ImplementPlan(context.Background(), first.ExecutionID, PlanImplementationOptions{Mode: PlanImplementSameContext}); !errors.Is(err, ErrPlanOutdated) {
 		t.Fatalf("ImplementPlan for stale source = %v, want ErrPlanOutdated", err)
 	}
 }

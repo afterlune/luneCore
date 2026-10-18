@@ -172,6 +172,7 @@ type ProjectAttachmentLimits = projectconfig.AttachmentLimits
 type PlanAuthorization = coreruntime.PlanAuthorization
 type PlanImplementation = coreruntime.PlanImplementation
 type PlanImplementationMode = coreruntime.PlanImplementationMode
+type PlanImplementationOptions = coreruntime.PlanImplementationOptions
 type ProposedPlan = coreruntime.ProposedPlan
 type QueuedTurnState = coreruntime.QueuedTurnState
 type RuntimeState = coreruntime.RuntimeState

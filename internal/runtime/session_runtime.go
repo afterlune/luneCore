@@ -48,6 +48,8 @@ const (
 )
 
 type TurnRequest struct {
+	// PermissionMode pins this turn to a host-selected mode. Empty uses Core defaults.
+	PermissionMode         PermissionMode
 	Input                  TaskInput
 	Model                  string
 	MaxToolRounds          int
@@ -503,6 +505,13 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 			return TurnResult{}, err
 		}
 		if !queued {
+			// Completion removes the queue row and creates the result in one
+			// transaction, which may commit between the two reads above.
+			if _, completed, err := r.core.sessions.TurnResult(ctx, r.sessionID, executionID); err != nil {
+				return TurnResult{}, err
+			} else if completed {
+				continue
+			}
 			if _, err := r.core.GetSession(ctx, r.sessionID); err != nil {
 				return TurnResult{}, err
 			}

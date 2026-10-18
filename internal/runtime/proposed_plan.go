@@ -39,6 +39,13 @@ const (
 	PlanImplementNewContext PlanImplementationMode = "new_context"
 )
 
+// PlanImplementationOptions contains the host's context and execution authorization.
+type PlanImplementationOptions struct {
+	Mode           PlanImplementationMode
+	PermissionMode PermissionMode
+	Authorization  PlanAuthorization
+}
+
 // PlanImplementation identifies the session and queued turn that will execute
 // an approved plan. A host can render “stay read-only” by dismissing the plan
 // without calling ImplementPlan.
@@ -92,13 +99,11 @@ func extractProposedPlan(raw json.RawMessage) *ProposedPlan {
 
 // ImplementPlan starts one approved plan with workspace permission scoped to
 // that turn. The Core's global permission mode is left unchanged.
-func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID string, mode PlanImplementationMode, approvals ...PlanAuthorization) (PlanImplementation, error) {
+func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID string, options PlanImplementationOptions) (PlanImplementation, error) {
 	if r == nil || r.core == nil || ctx == nil || sourceExecutionID == "" {
 		return PlanImplementation{}, errors.New("session runtime, context, and source execution id are required")
 	}
-	if len(approvals) > 1 {
-		return PlanImplementation{}, errors.New("at most one plan authorization may be supplied")
-	}
+	mode := options.Mode
 	if mode != PlanImplementSameContext && mode != PlanImplementNewContext {
 		return PlanImplementation{}, fmt.Errorf("unsupported plan implementation mode %q", mode)
 	}
@@ -106,12 +111,19 @@ func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID st
 	if err != nil {
 		return PlanImplementation{}, err
 	}
-	var authorization PlanAuthorization
-	if len(approvals) == 1 {
-		authorization, err = validatePlanAuthorization(approvals[0])
-		if err != nil {
-			return PlanImplementation{}, err
-		}
+	authorization, err := validatePlanAuthorization(options.Authorization)
+	if err != nil {
+		return PlanImplementation{}, err
+	}
+	executionPermission := options.PermissionMode
+	if executionPermission == "" {
+		executionPermission = r.core.PermissionMode()
+	}
+	if executionPermission == PermissionReadOnly {
+		executionPermission = PermissionWorkspace
+	}
+	if err := validatePermissionOverride(string(executionPermission)); err != nil {
+		return PlanImplementation{}, err
 	}
 
 	targetSessionID := r.sessionID
@@ -130,13 +142,9 @@ func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID st
 		}
 		targetSessionID = target.ID
 	}
-	executionPermission := r.core.PermissionMode()
-	if executionPermission == PermissionReadOnly {
-		executionPermission = PermissionWorkspace
-	}
-	submission, _, err := r.core.submitTurnWithPermission(ctx, targetSessionID, TurnRequest{
-		Input: input, PlanAuthorization: authorization, NoInteractiveDecisions: true,
-	}, StartIfIdle, false, string(executionPermission))
+	submission, _, err := r.core.submitTurn(ctx, targetSessionID, TurnRequest{
+		Input: input, PermissionMode: executionPermission, PlanAuthorization: authorization, NoInteractiveDecisions: true,
+	}, StartIfIdle, false)
 	if err != nil {
 		if targetSessionID != r.sessionID {
 			if _, deleteErr := r.core.sessions.Delete(context.Background(), targetSessionID, r.core.workspace); deleteErr != nil {

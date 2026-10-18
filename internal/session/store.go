@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -255,6 +256,29 @@ func (s *Store) List(ctx context.Context, workspace string, limit int, includeAr
 		WHERE workspace = ? AND (? OR coalesce(json_extract(CAST(data AS TEXT), '$.archived'), 0) = 0)
 		ORDER BY updated_at DESC LIMIT ?
 	`, workspace, includeArchived, limit)
+}
+
+// ListPage returns a stable page of sessions ordered from newest to oldest.
+func (s *Store) ListPage(ctx context.Context, workspace string, offset, limit int, includeArchived bool) ([]Snapshot, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("session store is not open")
+	}
+	if strings.TrimSpace(workspace) == "" {
+		return nil, errors.New("workspace is required")
+	}
+	if offset < 0 {
+		return nil, errors.New("session page offset cannot be negative")
+	}
+	if limit <= 0 {
+		limit = 30
+	} else if limit > 100 {
+		limit = 100
+	}
+	return s.query(ctx, `
+		SELECT id, workspace, updated_at, data FROM sessions
+		WHERE workspace = ? AND (? OR coalesce(json_extract(CAST(data AS TEXT), '$.archived'), 0) = 0)
+		ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?
+	`, workspace, includeArchived, limit, offset)
 }
 
 func (s *Store) query(ctx context.Context, statement string, args ...any) ([]Snapshot, error) {

@@ -74,6 +74,26 @@ func (c *Core) ListSessions(ctx context.Context, limit int, includeArchived bool
 	return sessions, nil
 }
 
+// ListSessionPage returns a page of sessions ordered from newest to oldest.
+func (c *Core) ListSessionPage(ctx context.Context, offset, limit int, includeArchived bool) ([]Session, error) {
+	if c == nil || ctx == nil {
+		return nil, errors.New("core and context are required")
+	}
+	snapshots, err := c.sessions.ListPage(ctx, c.workspace, offset, limit, includeArchived)
+	if err != nil {
+		return nil, err
+	}
+	sessions := make([]Session, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		saved, err := c.decodeSession(ctx, snapshot)
+		if err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, saved)
+	}
+	return sessions, nil
+}
+
 func (c *Core) SetSessionTitle(ctx context.Context, sessionID, title string) error {
 	if c == nil || ctx == nil || sessionID == "" {
 		return errors.New("core, context, and session id are required")
@@ -105,7 +125,15 @@ func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 		return errors.New("cannot delete a session while its task is running")
 	}
 	if c.queueDraining[sessionID] {
-		return errors.New("cannot delete a session while queued work is starting")
+		queued, err := c.sessions.QueuedTurns(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		// Opening an idle runtime also schedules a drain. Only actual queued
+		// work can race with deletion; an empty drain owns no session work.
+		if len(queued) > 0 {
+			return errors.New("cannot delete a session while queued work is starting")
+		}
 	}
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
 	cleanupErr := c.commands.StopSession(cleanupCtx, sessionID)
