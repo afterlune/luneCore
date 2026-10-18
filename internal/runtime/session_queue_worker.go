@@ -36,7 +36,18 @@ func (c *Core) drainQueue(sessionID string) {
 			return
 		}
 		for _, item := range queued {
-			if item.Status == session.QueuedTurnPaused || item.Status == session.QueuedTurnActive {
+			if item.Status == session.QueuedTurnPaused {
+				return
+			}
+			if item.Status == session.QueuedTurnActive {
+				if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskRunning {
+					return
+				}
+				// The drain exited while this turn was still marked active but
+				// no run owns it (for example a paused checkpoint could not be
+				// persisted). A fresh drain reconciles active rows before
+				// claiming work, so reschedule instead of leaving it orphaned.
+				c.scheduleQueueDrain(sessionID)
 				return
 			}
 			if item.Status == session.QueuedTurnQueued {
