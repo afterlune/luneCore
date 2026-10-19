@@ -26,7 +26,7 @@ type WebSearchTool struct {
 }
 
 func (WebSearchTool) Definition() model.FunctionTool {
-	return functionDefinition("web_search", "Search the web with DuckDuckGo and return result titles, URLs, and snippets.", webSearchSchema)
+	return functionDefinition("web_search", "Search the web and return result titles, URLs, and snippets.", webSearchSchema)
 }
 
 func (t WebSearchTool) Run(ctx context.Context, raw json.RawMessage) Result {

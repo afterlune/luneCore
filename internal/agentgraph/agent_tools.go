@@ -39,8 +39,8 @@ func askUserDefinition() model.FunctionTool {
 	strict := true
 	return model.FunctionTool{
 		Name: askUserToolName,
-		Description: "Ask the user only for a user-owned decision or material unresolved ambiguity that blocks safe or correct progress. " +
-			"In Plan mode, ask before presenting a plan when such a consequential decision remains unresolved. First inspect facts available in the workspace and use reasonable defaults for routine details. Group related consequential decisions into one questions batch. Use unique IDs and concise questions; optionally provide answer choices, and accept free text.",
+		Description: "Ask only about a user-owned decision or material ambiguity that blocks safe, correct progress. " +
+			"In Plan mode, ask before presenting the plan; inspect available facts first and use defaults for routine details. Group related decisions, use concise questions with unique IDs, and offer answer choices when helpful; free text is accepted.",
 		Parameters: parameters,
 		Strict:     &strict,
 	}
@@ -123,8 +123,8 @@ func teamDispatchDefinition(team TeamExecutor, maxChildren int) model.FunctionTo
 	strict := true
 	return model.FunctionTool{
 		Name: teamDispatchToolName,
-		Description: "Delegate independent work to multiple team members at once. Choose each member's model profile from the listed catalog. " +
-			"Use this proactively when a task has at least two worthwhile, bounded subtasks that can make progress in parallel; dispatch independent work together and give each member a distinct deliverable. Skip trivial or dependent work and stay within the task limit shown by this tool. Use task for isolated context, or fork when members need the parent's conversation and completed tool results before their own task. Fork context is passed to every member; cache reuse is possible only where the provider and model can reuse the same prefix. Members share the workspace and current permissions, and return results for you to synthesize. Set minimum_successes to null to use the host default or zero to wait for every member.",
+		Description: "Delegate two or more worthwhile independent tasks in parallel, with distinct deliverables and listed model profiles; skip trivial or dependent work and obey the task limit. " +
+			"task uses isolated context; fork also includes parent history and completed tool results (cache reuse needs a matching provider/model prefix). Members share the workspace and permissions; synthesize their results. minimum_successes null uses the host default; zero waits for all.",
 		Parameters: parameters,
 		Strict:     &strict,
 	}

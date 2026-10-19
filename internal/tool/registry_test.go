@@ -138,15 +138,15 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 		t.Fatalf("default registry mode = %q, want workspace", mode)
 	}
 	want := map[string]model.ToolMetadata{
-		"command":    {Category: model.ToolCategory{Name: "command", Description: "Run a command in the workspace."}, PermissionClass: model.ToolPermissionCommand},
-		"read_file":  {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
-		"write_file": {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite},
-		"edit_file":  {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite},
-		"web_search": {Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
-		"web_fetch":  {Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
-		"list_dir":   {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
-		"glob":       {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
-		"grep":       {Category: model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
+		"command":    {Category: model.ToolCategory{Name: "command", Description: "Run workspace commands."}, PermissionClass: model.ToolPermissionCommand},
+		"read_file":  {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
+		"write_file": {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite},
+		"edit_file":  {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite},
+		"web_search": {Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch pages."}, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
+		"web_fetch":  {Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch pages."}, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
+		"list_dir":   {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
+		"glob":       {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
+		"grep":       {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
 	}
 	for _, definition := range registry.Definitions() {
 		function, ok := definition.(model.FunctionTool)
@@ -248,6 +248,53 @@ func TestCategorizedRegistryPreservesCategoryAndToolOrder(t *testing.T) {
 	}
 }
 
+func TestRegistrySnapshotsToolDefinitionsOnRegistration(t *testing.T) {
+	strict := false
+	definitionTool := &snapshotDefinitionTool{definition: model.FunctionTool{
+		Name:       "snapshot_tool",
+		Parameters: json.RawMessage(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`),
+		Strict:     &strict,
+	}}
+	registry, err := NewRegistry(ToolRegistration{
+		Tool: definitionTool,
+		Metadata: model.ToolMetadata{Category: model.ToolCategory{
+			Name: "snapshot", Description: "Snapshot tools.",
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if definitionTool.calls != 1 {
+		t.Fatalf("Definition calls after registration = %d, want 1", definitionTool.calls)
+	}
+
+	definitionTool.definition.Parameters[0] = '!'
+	*definitionTool.definition.Strict = true
+	first := registry.Definitions()[0].(model.FunctionTool)
+	first.Parameters[0] = '!'
+	*first.Strict = true
+	second := registry.Definitions()[0].(model.FunctionTool)
+	if string(second.Parameters) != `{"type":"object","properties":{},"required":[],"additionalProperties":false}` {
+		t.Errorf("definition parameters changed after registration or return: %s", second.Parameters)
+	}
+	if second.Strict == nil || *second.Strict {
+		t.Errorf("definition strict flag = %v, want false", second.Strict)
+	}
+	_ = registry.DefinitionsForCategory("snapshot")
+	if definitionTool.calls != 1 {
+		t.Errorf("Definition calls after reads = %d, want 1", definitionTool.calls)
+	}
+	if !registry.Unregister("snapshot_tool") {
+		t.Fatal("Unregister returned false for registered tool")
+	}
+	if got := registry.Definitions(); len(got) != 0 {
+		t.Errorf("definitions after unregister = %#v, want empty", got)
+	}
+	if got := registry.DefinitionsForCategory("snapshot"); len(got) != 0 {
+		t.Errorf("category definitions after unregister = %#v, want empty", got)
+	}
+}
+
 func TestCategorizedRegistryRejectsInconsistentCategoryMetadata(t *testing.T) {
 	_, err := NewRegistry(
 		ToolRegistration{Tool: loggingTestTool{}, Metadata: model.ToolMetadata{Category: model.ToolCategory{Name: "files", Description: "Workspace files."}}},
@@ -325,5 +372,19 @@ func (t privateNamedTool) Definition() model.FunctionTool {
 }
 
 func (privateNamedTool) Run(context.Context, json.RawMessage) Result {
+	return Result{Output: "ok"}
+}
+
+type snapshotDefinitionTool struct {
+	definition model.FunctionTool
+	calls      int
+}
+
+func (tool *snapshotDefinitionTool) Definition() model.FunctionTool {
+	tool.calls++
+	return tool.definition
+}
+
+func (*snapshotDefinitionTool) Run(context.Context, json.RawMessage) Result {
 	return Result{Output: "ok"}
 }

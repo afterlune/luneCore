@@ -108,9 +108,8 @@ type ContextCompactionEvent struct {
 	Error        error
 }
 
-// State is the resumable state for one agent task. History uses ResponseInput's
-// custom JSON decoder so typed and unknown multimodal input items survive clone
-// and checkpoint round trips.
+// State is the resumable state for one agent task. Its clone and checkpoint
+// codecs preserve typed and unknown multimodal input items.
 type State struct {
 	CommandFinalizeAttempts int                  `json:"command_finalize_attempts,omitempty"`
 	ModelFailure            *publicmodel.Failure `json:"model_failure,omitempty"`

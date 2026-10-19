@@ -20,7 +20,7 @@ type WebFetchTool struct {
 }
 
 func (WebFetchTool) Definition() model.FunctionTool {
-	return functionDefinition("web_fetch", "Fetch a web page and return its title and readable text.", webFetchSchema)
+	return functionDefinition("web_fetch", "Fetch an HTTP(S) page and return its title and readable text.", webFetchSchema)
 }
 
 func (t WebFetchTool) Run(ctx context.Context, raw json.RawMessage) Result {

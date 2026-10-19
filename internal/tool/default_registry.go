@@ -17,9 +17,9 @@ func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry
 	}
 	workspacePath := rootHandle.Name()
 	workspaceID := &workspaceIdentity{root: rootHandle}
-	filesCategory := model.ToolCategory{Name: "files", Description: "Explore, read, write, and edit workspace files."}
-	commandCategory := model.ToolCategory{Name: "command", Description: "Run a command in the workspace."}
-	webCategory := model.ToolCategory{Name: "web", Description: "Search the web and fetch web pages."}
+	filesCategory := model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}
+	commandCategory := model.ToolCategory{Name: "command", Description: "Run workspace commands."}
+	webCategory := model.ToolCategory{Name: "web", Description: "Search the web and fetch pages."}
 	workspaceRead := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true}
 	workspaceWrite := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceWrite}
 	command := model.ToolMetadata{Category: commandCategory, PermissionClass: model.ToolPermissionCommand}
@@ -31,7 +31,7 @@ func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry
 		ToolRegistration{Tool: ReadFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
 		ToolRegistration{Tool: WriteFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
 		ToolRegistration{Tool: EditFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
-		ToolRegistration{Tool: CommandTool{Workspace: workspacePath, Executor: registryOptions.CommandExecutor, SandboxHelperPath: registryOptions.SandboxHelperPath, CommandToolchainPaths: append([]string(nil), registryOptions.CommandToolchainPaths...), AllowLocalCommand: registryOptions.AllowLocalCommands}, Metadata: command},
+		ToolRegistration{Tool: CommandTool{Workspace: workspacePath, workspace: workspaceID, Executor: registryOptions.CommandExecutor, SandboxHelperPath: registryOptions.SandboxHelperPath, CommandToolchainPaths: append([]string(nil), registryOptions.CommandToolchainPaths...), AllowLocalCommand: registryOptions.AllowLocalCommands}, Metadata: command},
 		ToolRegistration{Tool: WebSearchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 		ToolRegistration{Tool: WebFetchTool{httpClient: defaultWebHTTPClient}, Metadata: network},
 	)

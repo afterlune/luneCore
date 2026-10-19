@@ -21,7 +21,7 @@ type ReadFileTool struct {
 }
 
 func (ReadFileTool) Definition() model.FunctionTool {
-	return functionDefinition("read_file", "Read a workspace file by line range. Output includes line numbers and the next line to request when more content remains.", readFileSchema)
+	return functionDefinition("read_file", "Read a workspace file by line range; output includes line numbers and the next start_line when more content remains.", readFileSchema)
 }
 
 func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -55,7 +55,7 @@ func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: err}
 	}
 	defer closeRoot()
-	path, err := resolveWorkspacePath(t.Workspace, args.Path, true)
+	path, err := resolveWorkspacePathAtRoot(root.Name(), args.Path, true)
 	if err != nil {
 		return Result{Err: err}
 	}

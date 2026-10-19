@@ -44,10 +44,11 @@ func (m Metadata) Valid() bool {
 // Definition describes a tool to a model provider.
 type Definition = model.FunctionTool
 
-// Tool runs one model-requested operation. The invocation ID is available via
-// InvocationID(ctx) and stays stable when the host explicitly retries recovery.
-// The same registered instance may run concurrently for different sessions.
-// Implementations should return promptly when ctx is canceled.
+// Tool runs one model-requested operation. Its Definition is snapshotted when
+// registered and must remain stable; build a new Registry to change it. The
+// invocation ID is available via InvocationID(ctx) and stays stable when the
+// host explicitly retries recovery. The same instance may run concurrently
+// across sessions and should return promptly when ctx is canceled.
 type Tool interface {
 	Definition() Definition
 	Run(context.Context, json.RawMessage) Result

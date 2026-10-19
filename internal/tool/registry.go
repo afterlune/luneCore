@@ -16,18 +16,20 @@ import (
 
 // Registry stores tools by their function name.
 type Registry struct {
-	mu             sync.RWMutex
-	logger         *slog.Logger
-	tools          map[string]Tool
-	toolMetadata   map[string]model.ToolMetadata
-	toolOrder      []string
-	categories     map[string]model.ToolCategory
-	categoryOrder  []string
-	uncategorized  int
-	eventObserver  ToolEventObserver
-	callController ToolCallController
-	permissions    *permissionSettings
-	workspaceRoot  *workspaceIdentity
+	mu              sync.RWMutex
+	logger          *slog.Logger
+	tools           map[string]Tool
+	toolMetadata    map[string]model.ToolMetadata
+	definitions     map[string]model.FunctionTool
+	definitionOrder []string
+	categoryTools   map[string][]string
+	categories      map[string]model.ToolCategory
+	categoryOrder   []string
+	uncategorized   int
+	eventObserver   ToolEventObserver
+	callController  ToolCallController
+	permissions     *permissionSettings
+	workspaceRoot   *workspaceIdentity
 }
 
 // ToolEvent describes a tool call. Arguments are transient so clients can build
@@ -87,10 +89,12 @@ func newRegistry(logger *slog.Logger, registrations ...ToolRegistration) (*Regis
 		logger = slog.Default()
 	}
 	registry := &Registry{
-		logger:       logger,
-		tools:        make(map[string]Tool, len(registrations)),
-		toolMetadata: make(map[string]model.ToolMetadata, len(registrations)),
-		permissions:  newPermissionSettings(PermissionModeReadOnly),
+		logger:        logger,
+		tools:         make(map[string]Tool, len(registrations)),
+		toolMetadata:  make(map[string]model.ToolMetadata, len(registrations)),
+		definitions:   make(map[string]model.FunctionTool, len(registrations)),
+		categoryTools: make(map[string][]string),
+		permissions:   newPermissionSettings(PermissionModeReadOnly),
 	}
 	for _, registration := range registrations {
 		if err := registry.Register(registration); err != nil {
@@ -181,7 +185,7 @@ func (r *Registry) Register(registration ToolRegistration) error {
 	if registeredTool == nil {
 		return errors.New("cannot register a nil tool")
 	}
-	definition := registeredTool.Definition()
+	definition := cloneFunctionTool(registeredTool.Definition())
 	if definition.Name == "" {
 		return errors.New("tool name is empty")
 	}
@@ -211,12 +215,22 @@ func (r *Registry) Register(registration ToolRegistration) error {
 	if r.toolMetadata == nil {
 		r.toolMetadata = make(map[string]model.ToolMetadata)
 	}
+	if r.definitions == nil {
+		r.definitions = make(map[string]model.FunctionTool)
+	}
+	if r.categoryTools == nil {
+		r.categoryTools = make(map[string][]string)
+	}
 	if _, exists := r.tools[definition.Name]; exists {
 		return errors.New("tool is already registered: " + definition.Name)
 	}
 	r.tools[definition.Name] = registeredTool
 	r.toolMetadata[definition.Name] = registration.Metadata
-	r.toolOrder = append(r.toolOrder, definition.Name)
+	r.definitions[definition.Name] = definition
+	index := sort.SearchStrings(r.definitionOrder, definition.Name)
+	r.definitionOrder = append(r.definitionOrder, "")
+	copy(r.definitionOrder[index+1:], r.definitionOrder[index:])
+	r.definitionOrder[index] = definition.Name
 	if category.Name != "" {
 		if r.categories == nil {
 			r.categories = make(map[string]model.ToolCategory)
@@ -225,6 +239,7 @@ func (r *Registry) Register(registration ToolRegistration) error {
 			r.categories[category.Name] = category
 			r.categoryOrder = append(r.categoryOrder, category.Name)
 		}
+		r.categoryTools[category.Name] = append(r.categoryTools[category.Name], definition.Name)
 	} else {
 		r.uncategorized++
 	}
@@ -248,19 +263,27 @@ func (r *Registry) Unregister(name string) bool {
 	}
 	delete(r.tools, name)
 	delete(r.toolMetadata, name)
-	for index, existing := range r.toolOrder {
+	delete(r.definitions, name)
+	for index, existing := range r.definitionOrder {
 		if existing == name {
-			r.toolOrder = append(r.toolOrder[:index], r.toolOrder[index+1:]...)
+			r.definitionOrder = append(r.definitionOrder[:index], r.definitionOrder[index+1:]...)
 			break
 		}
 	}
 	if categoryName != "" {
+		for index, existing := range r.categoryTools[categoryName] {
+			if existing == name {
+				r.categoryTools[categoryName] = append(r.categoryTools[categoryName][:index], r.categoryTools[categoryName][index+1:]...)
+				break
+			}
+		}
 		for _, metadata := range r.toolMetadata {
 			if metadata.Category.Name == categoryName {
 				return true
 			}
 		}
 		delete(r.categories, categoryName)
+		delete(r.categoryTools, categoryName)
 		for index, existing := range r.categoryOrder {
 			if existing == categoryName {
 				r.categoryOrder = append(r.categoryOrder[:index], r.categoryOrder[index+1:]...)
@@ -313,21 +336,11 @@ func (r *Registry) Definitions() []model.ResponseTool {
 		return nil
 	}
 	r.mu.RLock()
-	registeredTools := make(map[string]Tool, len(r.tools))
-	for name, registeredTool := range r.tools {
-		registeredTools[name] = registeredTool
+	definitions := make([]model.ResponseTool, 0, len(r.definitionOrder))
+	for _, name := range r.definitionOrder {
+		definitions = append(definitions, cloneFunctionTool(r.definitions[name]))
 	}
 	r.mu.RUnlock()
-
-	names := make([]string, 0, len(registeredTools))
-	for name := range registeredTools {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	definitions := make([]model.ResponseTool, 0, len(names))
-	for _, name := range names {
-		definitions = append(definitions, registeredTools[name].Definition())
-	}
 	return definitions
 }
 
@@ -351,16 +364,20 @@ func (r *Registry) DefinitionsForCategory(category string) []model.ResponseTool 
 		return nil
 	}
 	r.mu.RLock()
-	registeredTools := make([]Tool, 0)
-	for _, name := range r.toolOrder {
-		if r.toolMetadata[name].Category.Name == category {
-			registeredTools = append(registeredTools, r.tools[name])
-		}
+	names := r.categoryTools[category]
+	definitions := make([]model.ResponseTool, 0, len(names))
+	for _, name := range names {
+		definitions = append(definitions, cloneFunctionTool(r.definitions[name]))
 	}
 	r.mu.RUnlock()
-	definitions := make([]model.ResponseTool, 0, len(registeredTools))
-	for _, registeredTool := range registeredTools {
-		definitions = append(definitions, registeredTool.Definition())
-	}
 	return definitions
+}
+
+func cloneFunctionTool(definition model.FunctionTool) model.FunctionTool {
+	definition.Parameters = append(json.RawMessage(nil), definition.Parameters...)
+	if definition.Strict != nil {
+		strict := *definition.Strict
+		definition.Strict = &strict
+	}
+	return definition
 }

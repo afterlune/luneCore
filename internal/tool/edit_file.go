@@ -21,7 +21,7 @@ type EditFileTool struct {
 }
 
 func (EditFileTool) Definition() model.FunctionTool {
-	return functionDefinition("edit_file", "Replace one unique exact text occurrence in a workspace file. Large files are processed in chunks.", editFileSchema)
+	return functionDefinition("edit_file", "Replace one unique exact text match in a workspace file; large files are streamed in chunks.", editFileSchema)
 }
 
 func (t EditFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -44,7 +44,7 @@ func (t EditFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: err}
 	}
 	defer closeRoot()
-	path, err := resolveWorkspacePath(t.Workspace, args.Path, true)
+	path, err := resolveWorkspacePathAtRoot(root.Name(), args.Path, true)
 	if err != nil {
 		return Result{Err: err}
 	}

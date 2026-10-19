@@ -158,7 +158,7 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 			return nil, fmt.Errorf("add %s-to-%s edge: %w", edge[0], edge[1], err)
 		}
 	}
-	runner, err := workflow.Compile(graph.Config[State]{MachineID: machineID, Clone: graph.JSONClone[State]})
+	runner, err := workflow.Compile(graph.Config[State]{MachineID: machineID, Clone: cloneState})
 	if err != nil {
 		return nil, fmt.Errorf("compile agent graph: %w", err)
 	}

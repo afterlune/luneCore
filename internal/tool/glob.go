@@ -24,7 +24,7 @@ type GlobTool struct {
 }
 
 func (GlobTool) Definition() model.FunctionTool {
-	return functionDefinition("glob", "Find workspace files and directories by glob pattern; ** matches recursively. Use offset and limit to continue through large result sets.", globSchema)
+	return functionDefinition("glob", "Find workspace paths matching a pattern; ** matches recursively. Use offset and limit to page.", globSchema)
 }
 
 func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -47,6 +47,7 @@ func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if err != nil {
 		return Result{Err: err}
 	}
+	matcher := newGlobMatcher(pattern)
 	root, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
 	if err != nil {
 		return Result{Err: err}
@@ -62,7 +63,7 @@ func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		if name == "." {
 			return nil
 		}
-		if !globMatches(pattern, filepath.ToSlash(name)) {
+		if !matcher.matches(filepath.ToSlash(name)) {
 			return nil
 		}
 		if matches == maxSearchMatches {
@@ -138,32 +139,65 @@ func parseGlobPattern(raw string) ([]string, error) {
 }
 
 func globMatches(pattern []string, name string) bool {
-	parts := strings.Split(name, "/")
-	type position struct{ pattern, name int }
-	memo := make(map[position]bool)
-	seen := make(map[position]bool)
-	var match func(int, int) bool
-	match = func(patternIndex, nameIndex int) bool {
-		pos := position{patternIndex, nameIndex}
-		if seen[pos] {
-			return memo[pos]
-		}
-		seen[pos] = true
-		var ok bool
-		switch {
-		case patternIndex == len(pattern):
-			ok = nameIndex == len(parts)
-		case pattern[patternIndex] == "**":
-			ok = match(patternIndex+1, nameIndex)
-			for index := nameIndex; !ok && index < len(parts); index++ {
-				ok = match(patternIndex+1, index+1)
-			}
-		case nameIndex < len(parts):
-			segmentMatches, _ := path.Match(pattern[patternIndex], parts[nameIndex])
-			ok = segmentMatches && match(patternIndex+1, nameIndex+1)
-		}
-		memo[pos] = ok
-		return ok
+	matcher := newGlobMatcher(pattern)
+	return matcher.matches(name)
+}
+
+type globMatcher struct {
+	pattern []string
+	current []bool
+	next    []bool
+}
+
+func newGlobMatcher(pattern []string) globMatcher {
+	return globMatcher{
+		pattern: pattern,
+		current: make([]bool, len(pattern)+1),
+		next:    make([]bool, len(pattern)+1),
 	}
-	return match(0, 0)
+}
+
+// matches evaluates ** with reusable dynamic-programming buffers. The matcher
+// is local to one tool call, so no synchronization or per-entry allocations are needed.
+func (matcher *globMatcher) matches(name string) bool {
+	clear(matcher.current)
+	clear(matcher.next)
+	matcher.current[0] = true
+	matcher.expandDoubleStars(matcher.current)
+
+	for {
+		separator := strings.IndexByte(name, '/')
+		segment := name
+		if separator >= 0 {
+			segment = name[:separator]
+			name = name[separator+1:]
+		}
+		clear(matcher.next)
+		for index, pattern := range matcher.pattern {
+			if !matcher.current[index] {
+				continue
+			}
+			if pattern == "**" {
+				matcher.next[index] = true
+				continue
+			}
+			if matched, _ := path.Match(pattern, segment); matched {
+				matcher.next[index+1] = true
+			}
+		}
+		matcher.expandDoubleStars(matcher.next)
+		matcher.current, matcher.next = matcher.next, matcher.current
+		if separator < 0 {
+			break
+		}
+	}
+	return matcher.current[len(matcher.pattern)]
+}
+
+func (matcher *globMatcher) expandDoubleStars(states []bool) {
+	for index, pattern := range matcher.pattern {
+		if states[index] && pattern == "**" {
+			states[index+1] = true
+		}
+	}
 }

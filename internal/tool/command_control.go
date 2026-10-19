@@ -23,9 +23,9 @@ type commandControlArgs struct {
 
 func (t CommandControlTool) Definition() model.FunctionTool {
 	if t.Stop {
-		return functionDefinition("command_stop", "Stop a command owned by this agent. Stopping does not prove successful completion.", `{"type":"object","properties":{"command_id":{"type":"string"}},"required":["command_id"],"additionalProperties":false}`)
+		return functionDefinition("command_stop", "Stop a command owned by this agent. Stopping does not mean it succeeded.", `{"type":"object","properties":{"command_id":{"type":"string"}},"required":["command_id"],"additionalProperties":false}`)
 	}
-	return functionDefinition("command_status", "Read saved command output using byte cursors. A start receipt is not completion evidence; query until terminal or explicitly stop.", `{"type":"object","properties":{"command_id":{"type":"string"},"cursor":{"type":"integer","minimum":0},"wait_ms":{"type":"integer","minimum":0,"maximum":5000}},"required":["command_id"],"additionalProperties":false}`)
+	return functionDefinition("command_status", "Read this agent's command state and output from a byte cursor; wait up to 5 seconds. A start receipt is not completion.", `{"type":"object","properties":{"command_id":{"type":"string"},"cursor":{"type":"integer","minimum":0,"description":"Byte offset into saved output; defaults to 0"},"wait_ms":{"type":"integer","minimum":0,"maximum":5000,"description":"Maximum wait; defaults to 1000 ms"}},"required":["command_id"],"additionalProperties":false}`)
 }
 
 func (t CommandControlTool) authorizeCommand(ctx context.Context, raw json.RawMessage) error {
@@ -88,7 +88,7 @@ func (r *Registry) SetCommandManager(manager *command.Manager) error {
 	if !ok {
 		return errors.New("built-in command tool is unavailable")
 	}
-	metadata := model.ToolMetadata{Category: model.ToolCategory{Name: "command", Description: "Run a command in the workspace."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true}
+	metadata := model.ToolMetadata{Category: model.ToolCategory{Name: "command", Description: "Run workspace commands."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true}
 	for _, stop := range []bool{false, true} {
 		if err := r.Register(ToolRegistration{Tool: CommandControlTool{Manager: manager, Stop: stop}, Metadata: metadata}); err != nil {
 			return err

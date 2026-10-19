@@ -30,7 +30,7 @@ type GrepTool struct {
 }
 
 func (GrepTool) Definition() model.FunctionTool {
-	return optionalPathDefinition("grep", "Search text files by case-sensitive regular expression. Directories are searched recursively; .git is skipped. Use offset and limit to continue through large result sets.", grepSchema)
+	return optionalPathDefinition("grep", "Recursively search workspace files with a case-sensitive regex; skips .git and .map. Use offset and limit to page.", grepSchema)
 }
 
 func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -62,15 +62,15 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: err}
 	}
 	defer closeRoot()
-	root, rootInfo, err := resolveWorkspaceEntry(t.Workspace, args.Path)
+	rootPath, rootInfo, err := resolveWorkspaceEntryAtRoot(workspaceRoot.Name(), args.Path)
 	if err != nil {
 		return Result{Err: err}
 	}
-	rootRelative, err := rootRelativePath(workspaceRoot, root)
+	rootRelative, err := rootRelativePath(workspaceRoot, rootPath)
 	if err != nil {
 		return Result{Err: err}
 	}
-	if isInsideGitDirectory(workspaceRoot.Name(), root) {
+	if isInsideGitDirectory(workspaceRoot.Name(), rootPath) {
 		return Result{Output: "Search skipped: .git is excluded."}
 	}
 

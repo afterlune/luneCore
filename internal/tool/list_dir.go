@@ -20,7 +20,7 @@ type ListDirTool struct {
 }
 
 func (ListDirTool) Definition() model.FunctionTool {
-	return optionalPathDefinition("list_dir", "List sorted workspace directory entries. Use offset and limit to continue through large directories.", listDirSchema)
+	return optionalPathDefinition("list_dir", "List sorted workspace directory entries; use offset and limit to page.", listDirSchema)
 }
 
 func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -44,7 +44,7 @@ func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: err}
 	}
 	defer closeRoot()
-	directory, info, err := resolveWorkspaceEntry(t.Workspace, args.Path)
+	directory, info, err := resolveWorkspaceEntryAtRoot(root.Name(), args.Path)
 	if err != nil {
 		return Result{Err: err}
 	}

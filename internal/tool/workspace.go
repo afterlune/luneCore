@@ -54,6 +54,27 @@ func (identity *workspaceIdentity) closeRoot() error {
 	return identity.closeErr
 }
 
+// resolvedPath verifies that the path used by the sandbox still refers to the
+// directory pinned by the registry's root handle.
+func (identity *workspaceIdentity) resolvedPath() (string, error) {
+	if identity == nil || identity.root == nil {
+		return "", errors.New("workspace root is unavailable")
+	}
+	pinned, err := identity.root.Stat(".")
+	if err != nil {
+		return "", fmt.Errorf("inspect pinned workspace: %w", err)
+	}
+	path := identity.root.Name()
+	current, err := os.Stat(path)
+	if err != nil {
+		return "", fmt.Errorf("inspect workspace path: %w", err)
+	}
+	if !os.SameFile(pinned, current) {
+		return "", errors.New("workspace path no longer refers to the pinned workspace")
+	}
+	return path, nil
+}
+
 // openWorkspaceRoot pins file operations to a resolved workspace directory.
 func openWorkspaceRoot(workspace string) (*os.Root, error) {
 	path, err := canonicalWorkspace(workspace)
@@ -109,6 +130,12 @@ func resolveWorkspacePath(workspace, requestedPath string, mustExist bool) (stri
 	if err != nil {
 		return "", err
 	}
+	return resolveWorkspacePathAtRoot(root, requestedPath, mustExist)
+}
+
+// resolveWorkspacePathAtRoot validates a path against a root that has already
+// been canonicalized, as with the root pinned by a default tool registry.
+func resolveWorkspacePathAtRoot(root, requestedPath string, mustExist bool) (string, error) {
 	if strings.TrimSpace(requestedPath) == "" {
 		return "", errors.New("path must not be empty")
 	}
@@ -172,6 +199,12 @@ func resolveWorkspaceEntry(workspace, requestedPath string) (string, fs.FileInfo
 	if err != nil {
 		return "", nil, err
 	}
+	return resolveWorkspaceEntryAtRoot(root, requestedPath)
+}
+
+// resolveWorkspaceEntryAtRoot resolves an existing entry against a root that
+// has already been canonicalized.
+func resolveWorkspaceEntryAtRoot(root, requestedPath string) (string, fs.FileInfo, error) {
 	if strings.TrimSpace(requestedPath) == "" {
 		requestedPath = "."
 	}

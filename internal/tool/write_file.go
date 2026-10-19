@@ -20,7 +20,7 @@ type WriteFileTool struct {
 }
 
 func (WriteFileTool) Definition() model.FunctionTool {
-	return functionDefinition("write_file", "Create or replace a workspace file. The complete new contents are staged before replacing the existing file.", writeFileSchema)
+	return functionDefinition("write_file", "Create or replace a workspace file with complete contents.", writeFileSchema)
 }
 
 func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -39,7 +39,7 @@ func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: err}
 	}
 	defer closeRoot()
-	path, err := resolveWorkspacePath(t.Workspace, args.Path, false)
+	path, err := resolveWorkspacePathAtRoot(root.Name(), args.Path, false)
 	if err != nil {
 		return Result{Err: err}
 	}

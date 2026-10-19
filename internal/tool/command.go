@@ -26,6 +26,7 @@ const (
 type CommandTool struct {
 	Manager               *commandruntime.Manager
 	Workspace             string
+	workspace             *workspaceIdentity
 	Timeout               time.Duration
 	Executor              publictool.CommandExecutor
 	SandboxHelperPath     string
@@ -52,7 +53,7 @@ var highRiskCommandPatterns = []*regexp.Regexp{
 }
 
 func (CommandTool) Definition() model.FunctionTool {
-	return functionDefinition("command", "Run a non-interactive shell command. Return its state and bounded output; if running, use command_status or command_stop. A start receipt is not evidence of success.", commandSchema)
+	return functionDefinition("command", "Run a non-interactive shell command with bounded output. Poll with command_status until it finishes, or stop it with command_stop.", commandSchema)
 }
 
 func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -81,9 +82,19 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		}
 		timeout = time.Duration(*args.Timeout) * time.Millisecond
 	}
-	workspace, err := canonicalWorkspace(t.Workspace)
-	if err != nil {
-		return Result{Err: err}
+	workspace := t.Workspace
+	if t.workspace != nil && t.workspace.root != nil {
+		resolved, err := t.workspace.resolvedPath()
+		if err != nil {
+			return Result{Err: err}
+		}
+		workspace = resolved
+	} else {
+		var err error
+		workspace, err = canonicalWorkspace(workspace)
+		if err != nil {
+			return Result{Err: err}
+		}
 	}
 	authorization := publictool.PlanAuthorizationFromContext(ctx)
 	if reason := highRiskCommandReason(args.Command); reason != "" && !commandApproved(args.Command, authorization.ApprovedHighRiskCommands) {

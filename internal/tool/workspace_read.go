@@ -76,7 +76,7 @@ func (r *Registry) WorkspaceResolvedFilePath(ctx context.Context, relativePath s
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	resolved, err := resolveWorkspacePath(identity.root.Name(), filepath.FromSlash(relative), mustExist)
+	resolved, err := resolveWorkspacePathAtRoot(identity.root.Name(), filepath.FromSlash(relative), mustExist)
 	if err != nil {
 		return "", err
 	}
@@ -107,7 +107,7 @@ func (r *Registry) WorkspaceResolvedEntryPath(ctx context.Context, relativePath 
 	if err := ctx.Err(); err != nil {
 		return "", false, err
 	}
-	resolved, info, err := resolveWorkspaceEntry(identity.root.Name(), filepath.FromSlash(relative))
+	resolved, info, err := resolveWorkspaceEntryAtRoot(identity.root.Name(), filepath.FromSlash(relative))
 	if err != nil {
 		return "", false, err
 	}
