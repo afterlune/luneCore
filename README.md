@@ -51,23 +51,46 @@ func main() {
 }
 ```
 
-The workspace may supply `config.json` for model profiles and project runtime settings. Its model section has this shape:
+The workspace may supply `config.json` for model profiles and project runtime settings. Provider credentials and profiles live under `models`; execution defaults live under `runtime`:
 
 ```json
 {
-  "providers": {
-    "primary": {
-      "protocol": "responses",
-      "baseURL": "https://api.example.com",
-      "apiKey": "your-api-key"
-    }
-  },
   "models": {
-    "main": { "provider": "primary", "model": "model-id" }
+    "providers": {
+      "primary": {
+        "protocol": "responses",
+        "baseURL": "https://api.example.com",
+        "apiKey": "your-api-key"
+      }
+    },
+    "profiles": {
+      "main": {
+        "provider": "primary",
+        "model": "model-id",
+        "contextWindow": 1000000
+      }
+    },
+    "defaultProfile": "main"
   },
-  "defaultModel": "main"
+  "runtime": {
+    "contextWindow": 0,
+    "maxParallelAgents": 4,
+    "maxTeamChildrenPerAgent": 0,
+    "maxTeamDepth": 2,
+    "autoCompact": true,
+    "autoCompactThreshold": 0.8,
+    "reserveOutputTokens": 0
+  },
+  "attachments": {
+    "maxFiles": 0,
+    "maxFileBytes": 0,
+    "maxTotalBytes": 0
+  },
+  "mcpServers": {}
 }
 ```
+
+This grouped shape is required. Core rejects the previous flat config format and points to `config.example.json`; rewrite an existing file manually before upgrading.
 
 Core stores sessions, queued turns, the safe runtime event log, Graph checkpoints, and tool invocation records under `StateDir` (default `.luneagent`). Team branches share the agent run's Graph checkpoint. Graph format 10 checkpoints are stored in `checkpoints-v10.db`; older checkpoint files are left untouched and are not migrated. Enabled MCP-server state uses the same directory. Open a session-bound runtime for asynchronous control:
 
@@ -165,7 +188,7 @@ func main() {
 
 Implement model providers with the public `model.Provider` interface and register tools with the public `tool.Tool` interface. Provider methods receive normalized request, response, and stream types; the runtime owns history, tool execution, and checkpointing. Provider implementations must support concurrent calls from different sessions. Every registered tool must declare a category, permission class, and JSON parameter schema. The built-in lead-agent tool name `ask_user` is reserved.
 
-The `delegate_team` tool runs member agents as `luneGraph` fan-out branches in the same run. Delegation is disabled by default. Set a positive `maxTeamChildrenPerAgent` in workspace `config.json`, `Config.Execution`, or `TaskRequest.Execution`/`TurnRequest.Execution` to enable it; each agent's child limit is cumulative across repeated delegations. Set `maxTeamDepth` to cap recursion (root is depth zero; the default is two). Task-level zero inherits the host default. Precedence is task override, host execution defaults, workspace config, then built-in defaults. `maxParallelAgents` and `MaxConcurrency` only control scheduling concurrency. By default, results join in assignment order after every member finishes. Set `Config.Execution.TeamQuorum` for a host default, or pass `minimum_successes` for one delegation; `null` inherits the host default and `0` waits for every member. Reaching the threshold cancels unfinished branches, and their results are marked incomplete for the lead. Model profiles may set `contextWindow`; session/task/project context settings take precedence for the lead, while workers use their selected profile capacity.
+The `delegate_team` tool runs member agents as `luneGraph` fan-out branches in the same run. Delegation is disabled by default. Set a positive `runtime.maxTeamChildrenPerAgent` in workspace `config.json`, `Config.Execution`, or `TaskRequest.Execution`/`TurnRequest.Execution` to enable it; each agent's child limit is cumulative across repeated delegations. Set `runtime.maxTeamDepth` to cap recursion (root is depth zero; the default is two). Task-level zero inherits the host default. Precedence is task override, host execution defaults, workspace config, then built-in defaults. `runtime.maxParallelAgents` and `MaxConcurrency` only control scheduling concurrency. By default, results join in assignment order after every member finishes. Set `Config.Execution.TeamQuorum` for a host default, or pass `minimum_successes` for one delegation; `null` inherits the host default and `0` waits for every member. Reaching the threshold cancels unfinished branches, and their results are marked incomplete for the lead. Model profiles may set `contextWindow`; session/task/project context settings take precedence for the lead, while a worker's selected profile window takes precedence for that worker and an unset profile window inherits the effective task context.
 
 Each `delegate_team` call may choose `mode: "task"` or `mode: "fork"`. `task` is the default and gives each member only its assigned task. `fork` copies the input sent to the parent model before its current response, including completed tool results, then appends the member's task; the pending assistant response and its delegation call are excluded. Members may use different model profiles and still receive the same forked context. Prompt-cache hints are scoped by dispatch, provider, and actual model: OpenAI Responses receives a cache key, Anthropic Messages receives a breakpoint at the shared prefix, and DeepSeek uses its automatic cache without an unsupported key. Providers decide whether a cache hit occurs.
 

@@ -37,7 +37,9 @@ func (t *teamExecutor) PrepareBranch(_ context.Context, state agentgraph.State, 
 		return agentgraph.State{}, fmt.Errorf("team provider %q is no longer configured", profile.Provider)
 	}
 	state.ModelProfile = assignment.Model
-	state.ContextWindow = profile.ContextWindow
+	if profile.ContextWindow > 0 {
+		state.ContextWindow = profile.ContextWindow
+	}
 	state.Provider, state.Protocol = profile.Provider, provider.Protocol
 	state.ServerCompaction, state.SupportsInputAudio = provider.ServerCompaction, profile.SupportsInputAudio
 	state.Model, state.TeamModel, state.TeamProvider = profile.Model, profile.Model, profile.Provider
@@ -53,7 +55,8 @@ func (t *teamExecutor) Requester(_ context.Context, state agentgraph.State) (age
 	if !ok {
 		return nil, fmt.Errorf("team provider %q is no longer configured", profile.Provider)
 	}
-	if state.Provider != profile.Provider || state.Model != profile.Model || state.Protocol != provider.Protocol || state.ServerCompaction != provider.ServerCompaction || state.SupportsInputAudio != profile.SupportsInputAudio || state.ContextWindow != profile.ContextWindow {
+	contextWindowChanged := profile.ContextWindow > 0 && state.ContextWindow != profile.ContextWindow
+	if state.Provider != profile.Provider || state.Model != profile.Model || state.Protocol != provider.Protocol || state.ServerCompaction != provider.ServerCompaction || state.SupportsInputAudio != profile.SupportsInputAudio || contextWindowChanged {
 		return nil, errors.New("team model configuration changed; the paused task remains pinned to its original profile")
 	}
 	client, err := t.models.NewClient(state.ModelProfile, t.tools, t.core.logger)

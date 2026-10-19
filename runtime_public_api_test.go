@@ -148,9 +148,9 @@ func TestExternalGoPackageCanEmbedAndExtendCore(t *testing.T) {
 		Workspace: t.TempDir(), StateDir: t.TempDir(),
 		Memory: core.MemoryConfig{Disabled: true},
 		ModelConfig: &model.Config{
-			Providers:    map[string]model.ProviderConfig{"external": {Protocol: model.ProtocolResponses}},
-			Models:       map[string]model.ModelProfile{"main": {Provider: "external", Model: "test-model"}},
-			DefaultModel: "main",
+			Providers:      map[string]model.ProviderConfig{"external": {Protocol: model.ProtocolResponses}},
+			Profiles:       map[string]model.ModelProfile{"main": {Provider: "external", Model: "test-model"}},
+			DefaultProfile: "main",
 		},
 		ModelProviders: map[string]model.Provider{"external": externalProvider{}},
 		Tools: []tool.Registration{{Tool: externalTool{}, Metadata: tool.Metadata{
@@ -214,9 +214,9 @@ func TestHostPersonalInstructionsReachTaskRequests(t *testing.T) {
 		Memory:               core.MemoryConfig{Disabled: true},
 		PersonalInstructions: "Prefers concise answers.",
 		ModelConfig: &model.Config{
-			Providers:    map[string]model.ProviderConfig{"personal": {Protocol: model.ProtocolResponses}},
-			Models:       map[string]model.ModelProfile{"main": {Provider: "personal", Model: "test-model"}},
-			DefaultModel: "main",
+			Providers:      map[string]model.ProviderConfig{"personal": {Protocol: model.ProtocolResponses}},
+			Profiles:       map[string]model.ModelProfile{"main": {Provider: "personal", Model: "test-model"}},
+			DefaultProfile: "main",
 		},
 		ModelProviders: map[string]model.Provider{"personal": provider},
 	})
@@ -257,9 +257,9 @@ func TestCoreLoggerReceivesRuntimeLogsWithoutPayloads(t *testing.T) {
 		Workspace: t.TempDir(), StateDir: t.TempDir(), Logger: logger,
 		Memory: core.MemoryConfig{Disabled: true},
 		ModelConfig: &model.Config{
-			Providers:    map[string]model.ProviderConfig{"logging": {Protocol: model.ProtocolResponses}},
-			Models:       map[string]model.ModelProfile{"main": {Provider: "logging", Model: "test-model"}},
-			DefaultModel: "main",
+			Providers:      map[string]model.ProviderConfig{"logging": {Protocol: model.ProtocolResponses}},
+			Profiles:       map[string]model.ModelProfile{"main": {Provider: "logging", Model: "test-model"}},
+			DefaultProfile: "main",
 		},
 		ModelProviders: map[string]model.Provider{"logging": &loggingProvider{}},
 		Tools: []tool.Registration{{Tool: loggingTool{}, Metadata: tool.Metadata{
@@ -344,9 +344,9 @@ func defaultLoggerTestConfig(t *testing.T) core.Config {
 		Workspace: t.TempDir(), StateDir: t.TempDir(),
 		Memory: core.MemoryConfig{Disabled: true},
 		ModelConfig: &model.Config{
-			Providers:    map[string]model.ProviderConfig{"personal": {Protocol: model.ProtocolResponses}},
-			Models:       map[string]model.ModelProfile{"main": {Provider: "personal", Model: "test-model"}},
-			DefaultModel: "main",
+			Providers:      map[string]model.ProviderConfig{"personal": {Protocol: model.ProtocolResponses}},
+			Profiles:       map[string]model.ModelProfile{"main": {Provider: "personal", Model: "test-model"}},
+			DefaultProfile: "main",
 		},
 		ModelProviders: map[string]model.Provider{"personal": provider},
 	}
@@ -377,14 +377,14 @@ func TestHostProjectConfigSkipsWorkspaceConfigFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	project := core.DefaultProjectConfig()
-	project.ModelConfig = model.Config{
+	project.Models = model.Config{
 		Providers: map[string]model.ProviderConfig{
 			"host": {Protocol: model.ProtocolResponses, BaseURL: "https://example.test/v1", APIKey: "test-key"},
 		},
-		Models:       map[string]model.ModelProfile{"main": {Provider: "host", Model: "test-model"}},
-		DefaultModel: "main",
+		Profiles:       map[string]model.ModelProfile{"main": {Provider: "host", Model: "test-model"}},
+		DefaultProfile: "main",
 	}
-	project.ContextWindow = 32000
+	project.Runtime.ContextWindow = 32000
 	project.Attachments = core.ProjectAttachmentLimits{MaxFiles: 3}
 	project.MCPServers = map[string]core.MCPServerConfig{
 		"docs": {Transport: core.MCPTransportStdio, Command: "docs-mcp"},

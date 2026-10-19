@@ -76,18 +76,17 @@ func TestCoreUsesProtocolSpecificCompactionAndRebuildsContextOnProviderSwitch(t 
 	defer anthropicServer.Close()
 
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	writeProjectSettingsConfig(t, workspace, projectconfig.Config{
-		Providers: map[string]model.ProviderConfig{
+	writeProjectSettingsConfig(t, workspace, projectSettingsForTest(
+		map[string]model.ProviderConfig{
 			"responses": {Protocol: model.ProtocolResponses, BaseURL: responsesServer.URL, APIKey: "responses-key", ServerCompaction: true},
 			"messages":  {Protocol: model.ProtocolAnthropicMessages, BaseURL: anthropicServer.URL, APIKey: "anthropic-key"},
 		},
-		Models: map[string]model.ModelProfile{
+		map[string]model.ModelProfile{
 			"responses": {Provider: "responses", Model: "shared-model"},
 			"messages":  {Provider: "messages", Model: "shared-model", MaxOutputTokens: 1024},
 		},
-		DefaultModel: "responses", ContextWindow: 64000, ReserveOutputTokens: 4096,
-		AutoCompact: true, AutoCompactThreshold: 0.8,
-	})
+		"responses", projectconfig.RuntimeConfig{ContextWindow: 64000, ReserveOutputTokens: 4096, AutoCompact: true, AutoCompactThreshold: 0.8},
+	))
 	client := openSettingsCore(t, workspace, stateDir)
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {

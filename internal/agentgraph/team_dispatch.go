@@ -58,7 +58,7 @@ func (a *Agent) dispatchTeam(ctx context.Context, state State, call model.Output
 		parentCache := state.TeamForkBaseCache
 		inheritContext := mode == TeamDispatchFork && sameModelIdentity(
 			parentCache.Provider, parentCache.Model,
-			profile.Provider, profile.EffectiveModel(),
+			profile.Provider, profile.Model,
 		)
 		branchMode := TeamDispatchTask
 		branchPrefix := []model.InputItem(nil)

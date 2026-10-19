@@ -20,9 +20,9 @@ func TestCoreRoutesCommandsThroughInjectedExecutor(t *testing.T) {
 		Workspace: t.TempDir(), StateDir: t.TempDir(),
 		Memory: MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
-			Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
-			Models:       map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test-model"}},
-			DefaultModel: "host",
+			Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
+			Profiles:       map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test-model"}},
+			DefaultProfile: "host",
 		},
 		ModelProviders: map[string]publicmodel.Provider{"host": provider},
 		CommandExecutor: hostCommandExecutorFunc(func(ctx context.Context, request publictool.CommandRequest) (publictool.CommandResult, error) {

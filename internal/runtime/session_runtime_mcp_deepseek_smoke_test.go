@@ -33,11 +33,11 @@ func TestDeepSeekMCPInputProtocolsSmoke(t *testing.T) {
 				Protocol: publicmodel.ProtocolAnthropicMessages, BaseURL: "https://api.deepseek.com/anthropic", APIKey: apiKey,
 			},
 		},
-		Models: map[string]publicmodel.ModelProfile{
+		Profiles: map[string]publicmodel.ModelProfile{
 			"deepseek-responses": {Provider: "deepseek-responses", Model: modelID, MaxOutputTokens: 1024},
 			"deepseek-anthropic": {Provider: "deepseek-anthropic", Model: modelID, MaxOutputTokens: 1024},
 		},
-		DefaultModel: "deepseek-responses",
+		DefaultProfile: "deepseek-responses",
 	}
 	client, err := New(Config{
 		Workspace: t.TempDir(), StateDir: t.TempDir(), ModelConfig: modelConfig,

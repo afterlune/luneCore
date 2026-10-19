@@ -29,18 +29,14 @@ func TestInputReasoningEncryptedContentRoundTrip(t *testing.T) {
 	}
 }
 
-func TestModelProfileJSONAndEffectiveModel(t *testing.T) {
-	// 1. JSON with only modelId and displayName
-	const idOnly = `{"provider":"anthropic","modelId":"claude-3-7-sonnet","displayName":"Claude 3.7 Sonnet","contextWindow":200000,"maxOutputTokens":8192}`
+func TestModelProfileJSONUsesModelField(t *testing.T) {
+	const modelJSON = `{"provider":"anthropic","model":"claude-3-7-sonnet","displayName":"Claude 3.7 Sonnet","contextWindow":200000,"maxOutputTokens":8192}`
 	var p1 ModelProfile
-	if err := json.Unmarshal([]byte(idOnly), &p1); err != nil {
-		t.Fatalf("unmarshal idOnly: %v", err)
+	if err := json.Unmarshal([]byte(modelJSON), &p1); err != nil {
+		t.Fatalf("unmarshal model profile: %v", err)
 	}
-	if p1.Model != "claude-3-7-sonnet" || p1.ModelID != "claude-3-7-sonnet" {
-		t.Errorf("expected Model and ModelID to be 'claude-3-7-sonnet', got Model=%q, ModelID=%q", p1.Model, p1.ModelID)
-	}
-	if p1.EffectiveModel() != "claude-3-7-sonnet" {
-		t.Errorf("EffectiveModel() = %q, want 'claude-3-7-sonnet'", p1.EffectiveModel())
+	if p1.Model != "claude-3-7-sonnet" {
+		t.Errorf("Model = %q, want 'claude-3-7-sonnet'", p1.Model)
 	}
 	if p1.EffectiveDisplayName() != "Claude 3.7 Sonnet" {
 		t.Errorf("EffectiveDisplayName() = %q, want 'Claude 3.7 Sonnet'", p1.EffectiveDisplayName())
@@ -49,33 +45,33 @@ func TestModelProfileJSONAndEffectiveModel(t *testing.T) {
 		t.Errorf("ContextWindow = %d, want 200000", p1.ContextWindow)
 	}
 
-	// 2. JSON with legacy model only
+	// Profiles use one model identifier field.
 	const modelOnly = `{"provider":"deepseek","model":"deepseek-chat"}`
 	var p2 ModelProfile
 	if err := json.Unmarshal([]byte(modelOnly), &p2); err != nil {
 		t.Fatalf("unmarshal modelOnly: %v", err)
 	}
-	if p2.Model != "deepseek-chat" || p2.ModelID != "deepseek-chat" {
-		t.Errorf("expected Model and ModelID to be 'deepseek-chat', got Model=%q, ModelID=%q", p2.Model, p2.ModelID)
+	if p2.Model != "deepseek-chat" {
+		t.Errorf("Model = %q, want 'deepseek-chat'", p2.Model)
 	}
 	if p2.EffectiveDisplayName() != "deepseek-chat" {
 		t.Errorf("EffectiveDisplayName() = %q, want 'deepseek-chat'", p2.EffectiveDisplayName())
 	}
 
-	// 3. Config validation with modelId only
+	// Config validation uses profiles and a default profile.
 	cfg := Config{
 		Providers: map[string]ProviderConfig{
 			"anthropic": {Protocol: ProtocolAnthropicMessages, BaseURL: "https://api.anthropic.com", APIKey: "key"},
 		},
-		Models: map[string]ModelProfile{
+		Profiles: map[string]ModelProfile{
 			"main": p1,
 		},
-		DefaultModel: "main",
+		DefaultProfile: "main",
 	}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("validation failed with modelId profile: %v", err)
+		t.Fatalf("profile validation failed: %v", err)
 	}
-	cfg.Models["main"] = ModelProfile{Provider: "anthropic", Model: "claude", ContextWindow: -1}
+	cfg.Profiles["main"] = ModelProfile{Provider: "anthropic", Model: "claude", ContextWindow: -1}
 	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "contextWindow must not be negative") {
 		t.Fatalf("negative model profile contextWindow error = %v", err)
 	}

@@ -1,8 +1,6 @@
 package model
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -30,71 +28,40 @@ type ProviderConfig struct {
 // ModelProfile binds a stable profile name to a provider and model ID.
 type ModelProfile struct {
 	Provider           string `json:"provider"`
-	Model              string `json:"model,omitempty"`
-	ModelID            string `json:"modelId,omitempty"`
+	Model              string `json:"model"`
 	DisplayName        string `json:"displayName,omitempty"`
 	ContextWindow      int64  `json:"contextWindow,omitempty"`
 	MaxOutputTokens    int64  `json:"maxOutputTokens,omitempty"`
 	SupportsInputAudio bool   `json:"supportsInputAudio,omitempty"`
 }
 
-func (p *ModelProfile) UnmarshalJSON(data []byte) error {
-	type plain ModelProfile
-	var raw plain
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&raw); err != nil {
-		return err
-	}
-	*p = ModelProfile(raw)
-	if p.Model == "" && p.ModelID != "" {
-		p.Model = p.ModelID
-	}
-	if p.ModelID == "" && p.Model != "" {
-		p.ModelID = p.Model
-	}
-	return nil
-}
-
-// EffectiveModel returns the configured model identifier, falling back to ModelID.
-func (p ModelProfile) EffectiveModel() string {
-	if p.Model != "" {
-		return p.Model
-	}
-	return p.ModelID
-}
-
-// EffectiveDisplayName returns the friendly display name, falling back to EffectiveModel.
+// EffectiveDisplayName returns the friendly display name, falling back to Model.
 func (p ModelProfile) EffectiveDisplayName() string {
 	if p.DisplayName != "" {
 		return p.DisplayName
 	}
-	return p.EffectiveModel()
+	return p.Model
 }
 
-// Config is the programmatic equivalent of the model section in config.json.
+// Config is the model catalog nested under ProjectConfig.models.
 type Config struct {
-	Providers         map[string]ProviderConfig `json:"providers"`
-	Models            map[string]ModelProfile   `json:"models"`
-	DefaultModel      string                    `json:"defaultModel"`
-	MaxParallelAgents int                       `json:"maxParallelAgents,omitempty"`
+	Providers      map[string]ProviderConfig `json:"providers"`
+	Profiles       map[string]ModelProfile   `json:"profiles"`
+	DefaultProfile string                    `json:"defaultProfile"`
 }
 
 // Validate checks the built-in provider configuration. A provider supplied
 // through Core.Config.ModelProviders may omit APIKey, but still needs a valid
 // protocol descriptor so the runtime can select compaction capabilities.
 func (c Config) Validate() error {
-	if len(c.Providers) == 0 || len(c.Models) == 0 {
+	if len(c.Providers) == 0 || len(c.Profiles) == 0 {
 		return errors.New("at least one provider and model profile must be configured")
 	}
-	if strings.TrimSpace(c.DefaultModel) == "" {
-		return errors.New("defaultModel is required")
+	if strings.TrimSpace(c.DefaultProfile) == "" {
+		return errors.New("defaultProfile is required")
 	}
-	if _, ok := c.Models[c.DefaultModel]; !ok {
-		return fmt.Errorf("defaultModel %q does not name a configured model profile", c.DefaultModel)
-	}
-	if c.MaxParallelAgents < 0 {
-		return errors.New("maxParallelAgents must not be negative")
+	if _, ok := c.Profiles[c.DefaultProfile]; !ok {
+		return fmt.Errorf("defaultProfile %q does not name a configured model profile", c.DefaultProfile)
 	}
 	for name, provider := range c.Providers {
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name {
@@ -110,11 +77,11 @@ func (c Config) Validate() error {
 			return fmt.Errorf("provider %q: %w", name, err)
 		}
 	}
-	for name, profile := range c.Models {
+	for name, profile := range c.Profiles {
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name {
 			return errors.New("model profile names must be non-empty and unpadded")
 		}
-		if strings.TrimSpace(profile.EffectiveModel()) == "" {
+		if strings.TrimSpace(profile.Model) == "" {
 			return fmt.Errorf("model profile %q requires a model ID", name)
 		}
 		provider, ok := c.Providers[profile.Provider]
@@ -146,11 +113,4 @@ func validateBaseURL(value string) error {
 		return errors.New("baseURL must not contain surrounding whitespace")
 	}
 	return nil
-}
-
-func (c Config) ParallelLimit() int {
-	if c.MaxParallelAgents == 0 {
-		return DefaultMaxParallelAgents
-	}
-	return c.MaxParallelAgents
 }

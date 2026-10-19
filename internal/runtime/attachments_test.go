@@ -203,13 +203,13 @@ func TestRunTaskPersistsImageDataForSessionReplay(t *testing.T) {
 	defer server.Close()
 
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	writeProjectSettingsConfig(t, workspace, projectconfig.Config{
-		Providers: map[string]model.ProviderConfig{
+	writeProjectSettingsConfig(t, workspace, projectSettingsForTest(
+		map[string]model.ProviderConfig{
 			"main": {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "test-key"},
 		},
-		Models:       map[string]model.ModelProfile{"main": {Provider: "main", Model: "vision-model"}},
-		DefaultModel: "main",
-	})
+		map[string]model.ModelProfile{"main": {Provider: "main", Model: "vision-model"}},
+		"main", projectconfig.RuntimeConfig{},
+	))
 	client := openSettingsCore(t, workspace, stateDir)
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {

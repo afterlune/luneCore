@@ -33,13 +33,13 @@ func TestCoreEmitsLeadTextDeltasWithTaskIdentity(t *testing.T) {
 	defer server.Close()
 
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	writeProjectSettingsConfig(t, workspace, projectconfig.Config{
-		Providers: map[string]model.ProviderConfig{
+	writeProjectSettingsConfig(t, workspace, projectSettingsForTest(
+		map[string]model.ProviderConfig{
 			model.ProviderDeepSeek: {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "test-key"},
 		},
-		Models:       map[string]model.ModelProfile{"primary": {Provider: model.ProviderDeepSeek, Model: "deepseek-test"}},
-		DefaultModel: "primary", ContextWindow: 64000,
-	})
+		map[string]model.ModelProfile{"primary": {Provider: model.ProviderDeepSeek, Model: "deepseek-test"}},
+		"primary", projectconfig.RuntimeConfig{ContextWindow: 64000},
+	))
 	client := openSettingsCore(t, workspace, stateDir)
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
@@ -145,13 +145,13 @@ func TestCoreStreamingCancellationPausesAndResumeStreamsAgain(t *testing.T) {
 	defer server.Close()
 
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	writeProjectSettingsConfig(t, workspace, projectconfig.Config{
-		Providers: map[string]model.ProviderConfig{
+	writeProjectSettingsConfig(t, workspace, projectSettingsForTest(
+		map[string]model.ProviderConfig{
 			model.ProviderDeepSeek: {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "test-key"},
 		},
-		Models:       map[string]model.ModelProfile{"primary": {Provider: model.ProviderDeepSeek, Model: "deepseek-test"}},
-		DefaultModel: "primary",
-	})
+		map[string]model.ModelProfile{"primary": {Provider: model.ProviderDeepSeek, Model: "deepseek-test"}},
+		"primary", projectconfig.RuntimeConfig{},
+	))
 	client := openSettingsCore(t, workspace, stateDir)
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
@@ -281,13 +281,13 @@ func TestCoreProviderFailureAfterTextDeltaPausesTaskAndEmitsStreamFailure(t *tes
 	defer server.Close()
 
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	writeProjectSettingsConfig(t, workspace, projectconfig.Config{
-		Providers: map[string]model.ProviderConfig{
+	writeProjectSettingsConfig(t, workspace, projectSettingsForTest(
+		map[string]model.ProviderConfig{
 			model.ProviderDeepSeek: {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "test-key"},
 		},
-		Models:       map[string]model.ModelProfile{"primary": {Provider: model.ProviderDeepSeek, Model: "deepseek-test"}},
-		DefaultModel: "primary",
-	})
+		map[string]model.ModelProfile{"primary": {Provider: model.ProviderDeepSeek, Model: "deepseek-test"}},
+		"primary", projectconfig.RuntimeConfig{},
+	))
 	client := openSettingsCore(t, workspace, stateDir)
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {

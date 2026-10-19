@@ -29,20 +29,21 @@ import (
 
 // Config constructs an embedded runtime. ProjectConfig, when supplied, is the
 // complete project configuration and prevents config.json from being read.
-// Without it, project settings are loaded from config.json and ModelConfig
-// overlays matching model entries. ModelProviders replace protocol adapters.
+// Without it, project settings are loaded from config.json. ModelConfig and
+// MaxParallelAgents overlay the matching catalog and runtime values.
 type Config struct {
 	Workspace string
 	StateDir  string
 	// Logger receives structured logs from this Core and its internal components.
 	// When nil, New captures slog.Default() for the Core's lifetime.
-	Logger          *slog.Logger
-	ProjectConfig   *projectconfig.ProjectConfig
-	ModelConfig     *publicmodel.Config
-	ModelProviders  map[string]publicmodel.Provider
-	Tools           []publictool.Registration
-	CommandExecutor publictool.CommandExecutor
-	Commands        CommandOptions
+	Logger            *slog.Logger
+	ProjectConfig     *projectconfig.ProjectConfig
+	ModelConfig       *publicmodel.Config
+	MaxParallelAgents int
+	ModelProviders    map[string]publicmodel.Provider
+	Tools             []publictool.Registration
+	CommandExecutor   publictool.CommandExecutor
+	Commands          CommandOptions
 	// CommandToolchainPaths grants command sandboxes read and execute access to
 	// host-owned toolchain directories. It is intentionally empty by default and
 	// is not loaded from the shared ProjectConfig.
@@ -179,7 +180,7 @@ func New(config Config) (_ *Core, err error) {
 			}
 		}
 	}()
-	projectConfig, err := projectconfig.LoadForRuntime(workspace, config.ModelConfig, config.ModelProviders, config.ProjectConfig)
+	projectConfig, err := projectconfig.LoadForRuntime(workspace, config.ModelConfig, config.ModelProviders, config.ProjectConfig, config.MaxParallelAgents)
 	if err != nil {
 		return nil, err
 	}
@@ -226,13 +227,13 @@ func New(config Config) (_ *Core, err error) {
 	}()
 	executionDefaults := config.Execution
 	if executionDefaults.MaxTeamChildrenPerAgent == 0 {
-		executionDefaults.MaxTeamChildrenPerAgent = projectConfig.MaxTeamChildrenPerAgent
+		executionDefaults.MaxTeamChildrenPerAgent = projectConfig.Runtime.MaxTeamChildrenPerAgent
 	}
 	if executionDefaults.MaxTeamChildrenPerAgent == 0 {
 		executionDefaults.MaxTeamChildrenPerAgent = agentgraph.DefaultMaxTeamChildrenPerAgent
 	}
 	if executionDefaults.MaxTeamDepth == 0 {
-		executionDefaults.MaxTeamDepth = projectConfig.MaxTeamDepth
+		executionDefaults.MaxTeamDepth = projectConfig.Runtime.MaxTeamDepth
 	}
 	if executionDefaults.MaxTeamDepth == 0 {
 		executionDefaults.MaxTeamDepth = agentgraph.DefaultMaxTeamDepth
@@ -244,8 +245,8 @@ func New(config Config) (_ *Core, err error) {
 		models:           models,
 		attachmentLimits: projectConfig.Attachments,
 		taskDefaults: taskSettings{
-			ContextWindow: projectConfig.ContextWindow, ReserveOutputTokens: projectConfig.ReserveOutputTokens,
-			AutoCompact: projectConfig.AutoCompact, AutoCompactThreshold: projectConfig.AutoCompactThreshold,
+			ContextWindow: projectConfig.Runtime.ContextWindow, ReserveOutputTokens: projectConfig.Runtime.ReserveOutputTokens,
+			AutoCompact: projectConfig.Runtime.AutoCompact, AutoCompactThreshold: projectConfig.Runtime.AutoCompactThreshold,
 		},
 		checkpoints:          checkpoints,
 		sessions:             sessions,

@@ -211,6 +211,63 @@ func TestTeamBranchesRunConcurrentlyAndJoinInAssignmentOrder(t *testing.T) {
 	t.Error("worker usage request was not persisted")
 }
 
+func TestTeamContextWindowInheritsParentUnlessProfileOverridesIt(t *testing.T) {
+	providers := map[string]model.Provider{
+		model.ProviderDeepSeek: &teamGraphProvider{name: model.ProviderDeepSeek},
+	}
+	catalog, err := model.NewProviderCatalogWithProviders(model.Config{
+		Providers: map[string]model.ProviderConfig{
+			model.ProviderDeepSeek: {Protocol: model.ProtocolResponses, BaseURL: "https://deepseek.example", APIKey: "test"},
+		},
+		Models: map[string]model.ModelProfile{
+			"inherited":  {Provider: model.ProviderDeepSeek, Model: "worker-model"},
+			"configured": {Provider: model.ProviderDeepSeek, Model: "configured-model", ContextWindow: 128000},
+		},
+		DefaultModel: "inherited",
+	}, providers)
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	executor := &teamExecutor{core: &Core{}, models: catalog, tools: registry}
+	parent := agentgraph.State{
+		AgentID: "lead/worker", ContextWindow: 1_000_000, Provider: model.ProviderDeepSeek,
+		Protocol: model.ProtocolResponses,
+	}
+
+	inherited, err := executor.PrepareBranch(context.Background(), parent, agentgraph.TeamAssignment{Model: "inherited"}, agentgraph.TaskOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inherited.ContextWindow != 1_000_000 {
+		t.Fatalf("inherited profile context window = %d, want parent capacity 1000000", inherited.ContextWindow)
+	}
+	if _, err := executor.Requester(context.Background(), inherited); err != nil {
+		t.Fatalf("requester rejected inherited context capacity: %v", err)
+	}
+
+	configured, err := executor.PrepareBranch(context.Background(), parent, agentgraph.TeamAssignment{Model: "configured"}, agentgraph.TaskOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if configured.ContextWindow != 128000 {
+		t.Fatalf("configured profile context window = %d, want 128000", configured.ContextWindow)
+	}
+	if _, err := executor.Requester(context.Background(), configured); err != nil {
+		t.Fatalf("requester rejected configured profile capacity: %v", err)
+	}
+
+	staleCheckpoint := configured
+	staleCheckpoint.ContextWindow = 1_000_000
+	if _, err := executor.Requester(context.Background(), staleCheckpoint); err == nil || !strings.Contains(err.Error(), "configuration changed") {
+		t.Fatalf("requester error = %v, want changed configured context capacity", err)
+	}
+}
+
 func mustJSON(t *testing.T, value any) []byte {
 	t.Helper()
 	encoded, err := json.Marshal(value)

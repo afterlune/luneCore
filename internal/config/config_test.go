@@ -8,19 +8,21 @@ import (
 	"testing"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 func TestValidateRejectsNonFiniteAutoCompactThreshold(t *testing.T) {
-	base := Config{
-		Providers: map[string]model.ProviderConfig{
-			"provider": {Protocol: model.ProtocolResponses, BaseURL: "https://example.test", APIKey: "key"},
+	base := Config{ProjectConfig: ProjectConfig{
+		Models: publicmodel.Config{
+			Providers:      map[string]publicmodel.ProviderConfig{"provider": {Protocol: publicmodel.ProtocolResponses, BaseURL: "https://example.test", APIKey: "key"}},
+			Profiles:       map[string]publicmodel.ModelProfile{"main": {Provider: "provider", Model: "model"}},
+			DefaultProfile: "main",
 		},
-		Models:       map[string]model.ModelProfile{"main": {Provider: "provider", Model: "model"}},
-		DefaultModel: "main",
-	}
+		Runtime: RuntimeConfig{AutoCompact: true},
+	}}
 	for _, threshold := range []float64{math.NaN(), math.Inf(1), math.Inf(-1)} {
 		config := base
-		config.AutoCompactThreshold = threshold
+		config.Runtime.AutoCompactThreshold = threshold
 		if err := config.Validate(); err == nil {
 			t.Errorf("Validate accepted non-finite autoCompactThreshold %v", threshold)
 		}
@@ -38,26 +40,26 @@ func writeConfig(t *testing.T, data string) string {
 
 func TestLoadProjectConfigAndApplyDefaults(t *testing.T) {
 	path := writeConfig(t, `{
-		"providers": {"vendor-a": {"protocol":"responses","baseURL":"https://example.com","apiKey":"key","serverCompaction":true}},
-		"models": {"lead": {"provider":"vendor-a","model":"model-a"}},
-		"defaultModel":"lead",
-		"contextWindow": 128000,
-		"autoCompact": true,
-		"reserveOutputTokens": 4096,
+		"models": {
+			"providers": {"vendor-a": {"protocol":"responses","baseURL":"https://example.com","apiKey":"key","serverCompaction":true}},
+			"profiles": {"lead": {"provider":"vendor-a","model":"model-a"}},
+			"defaultProfile":"lead"
+		},
+		"runtime": {"contextWindow": 128000, "autoCompact": true, "reserveOutputTokens": 4096},
 		"attachments": {"maxFiles": 4, "maxFileBytes": 1048576, "maxTotalBytes": 4194304}
 	}`)
 	config, err := Load(path)
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if config.ContextWindow != 128000 || config.ReserveOutputTokens != 4096 {
-		t.Fatalf("context settings = (%d, %d)", config.ContextWindow, config.ReserveOutputTokens)
+	if config.Runtime.ContextWindow != 128000 || config.Runtime.ReserveOutputTokens != 4096 {
+		t.Fatalf("context settings = (%d, %d)", config.Runtime.ContextWindow, config.Runtime.ReserveOutputTokens)
 	}
-	if !config.Providers["vendor-a"].ServerCompaction {
+	if !config.Models.Providers["vendor-a"].ServerCompaction {
 		t.Fatal("serverCompaction capability was not loaded")
 	}
-	if !config.AutoCompact || config.AutoCompactThreshold != 0.8 {
-		t.Fatalf("auto compact = (%v, %v), want true and 0.8", config.AutoCompact, config.AutoCompactThreshold)
+	if !config.Runtime.AutoCompact || config.Runtime.AutoCompactThreshold != 0.8 {
+		t.Fatalf("auto compact = (%v, %v), want true and 0.8", config.Runtime.AutoCompact, config.Runtime.AutoCompactThreshold)
 	}
 	if config.Attachments.MaxFiles != 4 || config.Attachments.MaxFileBytes != 1048576 || config.Attachments.MaxTotalBytes != 4194304 {
 		t.Fatalf("attachment limits = %#v", config.Attachments)
@@ -70,9 +72,8 @@ func TestLoadProjectConfigAndApplyDefaults(t *testing.T) {
 
 func TestLoadMCPServerConfigsWithoutStartingServers(t *testing.T) {
 	path := writeConfig(t, `{
-		"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},
-		"models":{"lead":{"provider":"deepseek","model":"model-a"}},
-		"defaultModel":"lead",
+		"models":{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},"profiles":{"lead":{"provider":"deepseek","model":"model-a"}},"defaultProfile":"lead"},
+		"runtime":{},
 		"mcpServers":{
 			"local-files":{"transport":"stdio","command":"mcp-files","args":["--root","./data"],"env":{"MCP_TOKEN":"${MCP_TOKEN}"}},
 			"remote-docs":{"transport":"streamable-http","url":"https://mcp.example.test/v1/mcp?region=west","clientMetadataURL":"https://client.example.test/oauth/lune.json"}
@@ -94,14 +95,13 @@ func TestLoadMCPServerConfigsWithoutStartingServers(t *testing.T) {
 
 func TestLoadProjectConfigEnablesAutoCompactionByDefault(t *testing.T) {
 	config, err := Load(writeConfig(t, `{
-		"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},
-		"models":{"lead":{"provider":"deepseek","model":"model-a"}},
-		"defaultModel":"lead"
+		"models":{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},"profiles":{"lead":{"provider":"deepseek","model":"model-a"}},"defaultProfile":"lead"},
+		"runtime":{}
 	}`))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if config.ContextWindow != 0 || config.ReserveOutputTokens != 0 || !config.AutoCompact || config.AutoCompactThreshold != 0.8 {
+	if config.Runtime.ContextWindow != 0 || config.Runtime.ReserveOutputTokens != 0 || !config.Runtime.AutoCompact || config.Runtime.AutoCompactThreshold != 0.8 {
 		t.Fatalf("project defaults = %#v, want auto compaction enabled at 0.8 with no guessed context window", config)
 	}
 	if config.Attachments != (AttachmentLimits{}) {
@@ -111,40 +111,34 @@ func TestLoadProjectConfigEnablesAutoCompactionByDefault(t *testing.T) {
 
 func TestLoadProjectConfigPreservesExplicitAutoCompactOff(t *testing.T) {
 	config, err := Load(writeConfig(t, `{
-		"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},
-		"models":{"lead":{"provider":"deepseek","model":"model-a"}},
-		"defaultModel":"lead",
-		"autoCompact":false
+		"models":{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},"profiles":{"lead":{"provider":"deepseek","model":"model-a"}},"defaultProfile":"lead"},
+		"runtime":{"autoCompact":false}
 	}`))
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if config.AutoCompact || config.AutoCompactThreshold != 0 {
-		t.Fatalf("explicit autoCompact:false changed to %#v", config)
+	if config.Runtime.AutoCompact || config.Runtime.AutoCompactThreshold != 0 {
+		t.Fatalf("explicit autoCompact:false changed to %#v", config.Runtime)
 	}
 }
 
-func TestLoadMigratesLegacyAPIKeyAndAllowsProjectSettings(t *testing.T) {
-	config, err := Load(writeConfig(t, `{"apikey":"old-key","contextWindow":64000,"autoCompact":true}`))
-	if err != nil {
-		t.Fatalf("Load legacy config: %v", err)
-	}
-	if config.DefaultModel != model.DeepSeekFlashModel || config.Providers[model.ProviderDeepSeek].APIKey != "old-key" {
-		t.Fatalf("legacy config migration = %#v", config)
-	}
-	if config.ContextWindow != 64000 || config.AutoCompactThreshold != 0.8 {
-		t.Fatalf("project settings after legacy migration = %#v", config)
+func TestLoadRejectsLegacyFlatConfig(t *testing.T) {
+	_, err := Load(writeConfig(t, `{"providers":{},"models":{},"defaultModel":"main","contextWindow":64000}`))
+	if err == nil || !strings.Contains(err.Error(), "expected the grouped models/runtime config format") {
+		t.Fatalf("Load error = %v, want a grouped-format migration message", err)
 	}
 }
 
 func TestLoadRejectsUnknownAndInvalidFields(t *testing.T) {
-	base := `"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},"models":{"lead":{"provider":"deepseek","model":"m"}},"defaultModel":"lead"`
+	baseCatalog := `"models":{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},"profiles":{"lead":{"provider":"deepseek","model":"m"}},"defaultProfile":"lead"}`
+	base := baseCatalog + `,"runtime":{}`
+	runtimeConfig := func(fields string) string { return `{` + baseCatalog + `,"runtime":{` + fields + `}}` }
 	cases := []struct {
 		name string
 		data string
 		want string
 	}{
-		{"unknown top-level", `{` + base + `,"mispelled":true}`, "unknown config field"},
+		{"unknown top-level", `{` + base + `,"mispelled":true}`, "unknown field"},
 		{"unknown MCP server field", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","unexpected":true}}}`, "unknown field"},
 		{"unsupported MCP transport", `{` + base + `,"mcpServers":{"server":{"transport":"sse","url":"https://mcp.example.test"}}}`, "transport must be"},
 		{"stdio requires command", `{` + base + `,"mcpServers":{"server":{"transport":"stdio"}}}`, "requires a non-empty command"},
@@ -165,21 +159,22 @@ func TestLoadRejectsUnknownAndInvalidFields(t *testing.T) {
 		{"MCP env key cannot contain equals", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","env":{"BAD=KEY":"value"}}}}`, "must not contain '=' or NUL"},
 		{"MCP env key cannot contain NUL", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","env":{"BAD\u0000KEY":"value"}}}}`, "must not contain '=' or NUL"},
 		{"MCP env value cannot contain NUL", `{` + base + `,"mcpServers":{"server":{"transport":"stdio","command":"mcp","env":{"KEY":"bad\u0000value"}}}}`, "must not contain NUL"},
-		{"unknown provider field", `{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key","endpoint":"x"}},"models":{"lead":{"provider":"deepseek","model":"m"}},"defaultModel":"lead"}`, "unknown field"},
+		{"unknown provider field", `{"models":{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key","endpoint":"x"}},"profiles":{"lead":{"provider":"deepseek","model":"m"}},"defaultProfile":"lead"},"runtime":{}}`, "unknown field"},
+		{"modelId alias", `{"models":{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},"profiles":{"lead":{"provider":"deepseek","modelId":"m"}},"defaultProfile":"lead"},"runtime":{}}`, "unknown field"},
 		{"unknown attachment field", `{` + base + `,"attachments":{"maxFileSize":12}}`, "unknown field"},
-		{"missing provider key", `{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":" "}},"models":{"lead":{"provider":"deepseek","model":"m"}},"defaultModel":"lead"}`, "non-empty apiKey"},
-		{"missing messages output limit", `{"providers":{"anthropic":{"protocol":"anthropic-messages","baseURL":"https://example.com","apiKey":"key"}},"models":{"lead":{"provider":"anthropic","model":"m"}},"defaultModel":"lead"}`, "requires maxOutputTokens"},
-		{"bad default profile", `{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},"models":{"lead":{"provider":"deepseek","model":"m"}},"defaultModel":"other"}`, "does not name"},
-		{"legacy plus model catalog", `{"apikey":"key","providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}}}`, "cannot be combined"},
-		{"negative context window", `{` + base + `,"contextWindow":-1}`, "contextWindow must not be negative"},
-		{"negative reserved tokens", `{` + base + `,"reserveOutputTokens":-1}`, "reserveOutputTokens must not be negative"},
-		{"reserved tokens exceed window", `{` + base + `,"contextWindow":1000,"reserveOutputTokens":1000}`, "must be smaller than contextWindow"},
-		{"threshold below zero", `{` + base + `,"autoCompactThreshold":-0.1}`, "between 0 and 1"},
-		{"threshold above one", `{` + base + `,"autoCompactThreshold":1.1}`, "between 0 and 1"},
+		{"missing provider key", `{"models":{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":" "}},"profiles":{"lead":{"provider":"deepseek","model":"m"}},"defaultProfile":"lead"},"runtime":{}}`, "non-empty apiKey"},
+		{"missing messages output limit", `{"models":{"providers":{"anthropic":{"protocol":"anthropic-messages","baseURL":"https://example.com","apiKey":"key"}},"profiles":{"lead":{"provider":"anthropic","model":"m"}},"defaultProfile":"lead"},"runtime":{}}`, "requires maxOutputTokens"},
+		{"bad default profile", `{"models":{"providers":{"deepseek":{"protocol":"responses","baseURL":"https://example.com","apiKey":"key"}},"profiles":{"lead":{"provider":"deepseek","model":"m"}},"defaultProfile":"other"},"runtime":{}}`, "does not name"},
+		{"legacy apikey", `{` + base + `,"apikey":"key"}`, "unknown field"},
+		{"negative context window", runtimeConfig(`"contextWindow":-1`), "runtime.contextWindow must not be negative"},
+		{"negative reserved tokens", runtimeConfig(`"reserveOutputTokens":-1`), "runtime.reserveOutputTokens must not be negative"},
+		{"reserved tokens exceed window", runtimeConfig(`"contextWindow":1000,"reserveOutputTokens":1000`), "must be smaller than runtime.contextWindow"},
+		{"threshold below zero", runtimeConfig(`"autoCompactThreshold":-0.1`), "between 0 and 1"},
+		{"threshold above one", runtimeConfig(`"autoCompactThreshold":1.1`), "between 0 and 1"},
 		{"negative max files", `{` + base + `,"attachments":{"maxFiles":-1}}`, "attachments.maxFiles must not be negative"},
 		{"negative file size", `{` + base + `,"attachments":{"maxFileBytes":-1}}`, "attachments.maxFileBytes must not be negative"},
 		{"negative total size", `{` + base + `,"attachments":{"maxTotalBytes":-1}}`, "attachments.maxTotalBytes must not be negative"},
-		{"wrong field type", `{` + base + `,"contextWindow":"large"}`, "cannot unmarshal string"},
+		{"wrong field type", runtimeConfig(`"contextWindow":"large"`), "cannot unmarshal string"},
 	}
 	for _, test := range cases {
 		t.Run(test.name, func(t *testing.T) {
@@ -192,7 +187,7 @@ func TestLoadRejectsUnknownAndInvalidFields(t *testing.T) {
 }
 
 func TestLoadRejectsTrailingJSON(t *testing.T) {
-	data := `{"apikey":"key"} {}`
+	data := `{"models":{},"runtime":{}} {}`
 	_, err := Load(writeConfig(t, data))
 	if err == nil || !strings.Contains(err.Error(), "expected one JSON object") {
 		t.Fatalf("Load error = %v, want trailing JSON error", err)

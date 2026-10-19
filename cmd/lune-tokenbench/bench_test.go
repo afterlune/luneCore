@@ -62,7 +62,7 @@ func TestRunBenchmarkUsesMeasuredCoreUsageWithoutExternalProvider(t *testing.T) 
 
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config.json")
-	config := fmt.Sprintf(`{"providers":{"host":{"protocol":"responses","baseURL":%q,"apiKey":"test"}},"models":{"primary":{"provider":"host","model":"test-model"}},"defaultModel":"primary"}`, server.URL)
+	config := fmt.Sprintf(`{"models":{"providers":{"host":{"protocol":"responses","baseURL":%q,"apiKey":"test"}},"profiles":{"primary":{"provider":"host","model":"test-model"}},"defaultProfile":"primary"},"runtime":{}}`, server.URL)
 	if err := os.WriteFile(configPath, []byte(config), 0600); err != nil {
 		t.Fatal(err)
 	}

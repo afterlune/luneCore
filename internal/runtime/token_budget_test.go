@@ -92,7 +92,7 @@ func TestExecutionTokenBudgetPersistsAcrossPauseAndRecovery(t *testing.T) {
 	stateDir := t.TempDir()
 	config := runtimeTestConfig(t.TempDir(), stateDir, provider)
 	config.Memory = MemoryConfig{}
-	config.ModelConfig.Models["host"] = publicmodel.ModelProfile{Provider: "host", Model: "test-model", MaxOutputTokens: 2048}
+	config.ModelConfig.Profiles["host"] = publicmodel.ModelProfile{Provider: "host", Model: "test-model", MaxOutputTokens: 2048}
 	client, err := New(config)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -172,7 +172,7 @@ func TestForkPausedTaskStartsWithFreshTokenBudget(t *testing.T) {
 	provider := &executionBudgetProvider{}
 	stateDir := t.TempDir()
 	config := runtimeTestConfig(t.TempDir(), stateDir, provider)
-	config.ModelConfig.Models["host"] = publicmodel.ModelProfile{Provider: "host", Model: "test-model", MaxOutputTokens: 2048}
+	config.ModelConfig.Profiles["host"] = publicmodel.ModelProfile{Provider: "host", Model: "test-model", MaxOutputTokens: 2048}
 	client, err := New(config)
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -279,7 +279,7 @@ func TestDiscardPausedTaskClearsTokenBudget(t *testing.T) {
 func TestBudgetCappedIncompleteResponsePausesTask(t *testing.T) {
 	provider := &executionBudgetProvider{incompleteFirstModelResponse: true}
 	config := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
-	config.ModelConfig.Models["host"] = publicmodel.ModelProfile{Provider: "host", Model: "test-model", MaxOutputTokens: 50_000}
+	config.ModelConfig.Profiles["host"] = publicmodel.ModelProfile{Provider: "host", Model: "test-model", MaxOutputTokens: 50_000}
 	client, err := New(config)
 	if err != nil {
 		t.Fatalf("New: %v", err)

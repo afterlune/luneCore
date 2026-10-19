@@ -266,9 +266,10 @@ func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, a
 		OutputTokens: usage.OutputTokens, OutputTokensDetails: TokenOutputDetails{ReasoningTokens: usage.OutputTokensDetails.ReasoningTokens}, TotalTokens: totalTokens}
 	contextWindow := state.ContextWindow
 	if agentID != "" && agentID != "lead" {
-		contextWindow = 0
 		if workerProfile, ok := c.models.Profile(profile); ok {
-			contextWindow = workerProfile.ContextWindow
+			if workerProfile.ContextWindow > 0 {
+				contextWindow = workerProfile.ContextWindow
+			}
 		}
 	}
 	if state.SessionID != "" {

@@ -19,25 +19,29 @@ import (
 	projectconfig "github.com/afterlune/luneCore/internal/config"
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
+	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 func writeSettingsConfig(t *testing.T, workspace, endpoint string) {
 	t.Helper()
-	config := projectconfig.Config{
-		Providers: map[string]model.ProviderConfig{
-			"provider-a": {Protocol: model.ProtocolResponses, BaseURL: endpoint, APIKey: "key-a"},
-			"provider-b": {Protocol: model.ProtocolResponses, BaseURL: endpoint, APIKey: "key-b"},
+	config := projectconfig.ProjectConfig{
+		Models: publicmodel.Config{
+			Providers: map[string]publicmodel.ProviderConfig{
+				"provider-a": {Protocol: model.ProtocolResponses, BaseURL: endpoint, APIKey: "key-a"},
+				"provider-b": {Protocol: model.ProtocolResponses, BaseURL: endpoint, APIKey: "key-b"},
+			},
+			Profiles: map[string]publicmodel.ModelProfile{
+				"primary": {Provider: "provider-a", Model: "primary-wire-model"},
+				"review":  {Provider: "provider-b", Model: "review-wire-model"},
+			},
+			DefaultProfile: "primary",
 		},
-		Models: map[string]model.ModelProfile{
-			"primary": {Provider: "provider-a", Model: "primary-wire-model"},
-			"review":  {Provider: "provider-b", Model: "review-wire-model"},
-		},
-		DefaultModel: "primary",
+		Runtime: projectconfig.RuntimeConfig{AutoCompact: true},
 	}
 	writeProjectSettingsConfig(t, workspace, config)
 }
 
-func writeProjectSettingsConfig(t *testing.T, workspace string, config projectconfig.Config) {
+func writeProjectSettingsConfig(t *testing.T, workspace string, config projectconfig.ProjectConfig) {
 	t.Helper()
 	data, err := json.Marshal(config)
 	if err != nil {
@@ -45,6 +49,20 @@ func writeProjectSettingsConfig(t *testing.T, workspace string, config projectco
 	}
 	if err := os.WriteFile(filepath.Join(workspace, projectconfig.FileName), data, 0600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func projectSettingsForTest(providers map[string]model.ProviderConfig, profiles map[string]model.ModelProfile, defaultProfile string, runtime projectconfig.RuntimeConfig) projectconfig.ProjectConfig {
+	publicProviders := make(map[string]publicmodel.ProviderConfig, len(providers))
+	for name, provider := range providers {
+		publicProviders[name] = publicmodel.ProviderConfig{
+			Protocol: provider.Protocol, BaseURL: provider.BaseURL, APIKey: provider.APIKey,
+			ServerCompaction: provider.ServerCompaction,
+		}
+	}
+	return projectconfig.ProjectConfig{
+		Models:  publicmodel.Config{Providers: publicProviders, Profiles: profiles, DefaultProfile: defaultProfile},
+		Runtime: runtime,
 	}
 }
 
@@ -86,9 +104,9 @@ func TestCoreTeamTreeLimitPrecedence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load project config: %v", err)
 	}
-	project.MaxTeamChildrenPerAgent = 7
-	project.MaxTeamDepth = 3
-	writeProjectSettingsConfig(t, workspace, project)
+	project.Runtime.MaxTeamChildrenPerAgent = 7
+	project.Runtime.MaxTeamDepth = 3
+	writeProjectSettingsConfig(t, workspace, project.ProjectConfig)
 
 	projectClient := openSettingsCore(t, workspace, t.TempDir())
 	if got := projectClient.executionDefaults; got.MaxTeamChildrenPerAgent != 7 || got.MaxTeamDepth != 3 {
@@ -125,14 +143,17 @@ func TestModelProfileContextWindowIsUsedAfterSessionAndProjectSettings(t *testin
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			workspace := t.TempDir()
-			config := projectconfig.Config{
-				Providers: map[string]model.ProviderConfig{
-					"provider-a": {Protocol: model.ProtocolResponses, BaseURL: "http://127.0.0.1:1", APIKey: "key-a"},
+			config := projectconfig.ProjectConfig{
+				Models: publicmodel.Config{
+					Providers: map[string]publicmodel.ProviderConfig{
+						"provider-a": {Protocol: model.ProtocolResponses, BaseURL: "http://127.0.0.1:1", APIKey: "key-a"},
+					},
+					Profiles: map[string]publicmodel.ModelProfile{
+						"primary": {Provider: "provider-a", Model: "primary-wire-model", ContextWindow: 96000},
+					},
+					DefaultProfile: "primary",
 				},
-				Models: map[string]model.ModelProfile{
-					"primary": {Provider: "provider-a", Model: "primary-wire-model", ContextWindow: 96000},
-				},
-				DefaultModel: "primary", ContextWindow: test.projectWindow,
+				Runtime: projectconfig.RuntimeConfig{ContextWindow: test.projectWindow, AutoCompact: true},
 			}
 			writeProjectSettingsConfig(t, workspace, config)
 			client := openSettingsCore(t, workspace, t.TempDir())
@@ -212,17 +233,19 @@ func TestSessionTaskSettingsInheritProjectDefaultsAndPersistOverrides(t *testing
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	project := projectconfig.Config{
-		Providers: map[string]model.ProviderConfig{
-			"provider-a": {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "key-a"},
-			"provider-b": {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "key-b"},
+	project := projectconfig.ProjectConfig{
+		Models: publicmodel.Config{
+			Providers: map[string]publicmodel.ProviderConfig{
+				"provider-a": {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "key-a"},
+				"provider-b": {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "key-b"},
+			},
+			Profiles: map[string]publicmodel.ModelProfile{
+				"primary": {Provider: "provider-a", Model: "primary-wire-model"},
+				"review":  {Provider: "provider-b", Model: "review-wire-model"},
+			},
+			DefaultProfile: "primary",
 		},
-		Models: map[string]model.ModelProfile{
-			"primary": {Provider: "provider-a", Model: "primary-wire-model"},
-			"review":  {Provider: "provider-b", Model: "review-wire-model"},
-		},
-		DefaultModel: "primary", ContextWindow: 64000, ReserveOutputTokens: 4096,
-		AutoCompact: true, AutoCompactThreshold: 0.75,
+		Runtime: projectconfig.RuntimeConfig{ContextWindow: 64000, ReserveOutputTokens: 4096, AutoCompact: true, AutoCompactThreshold: 0.75},
 	}
 	writeProjectSettingsConfig(t, workspace, project)
 	client := openSettingsCore(t, workspace, stateDir)
@@ -315,14 +338,17 @@ func TestLegacySessionWithoutTaskOverridesInheritsProjectDefaults(t *testing.T) 
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	project := projectconfig.Config{
-		Providers: map[string]model.ProviderConfig{
-			"provider-a": {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "key-a"},
+	project := projectconfig.ProjectConfig{
+		Models: publicmodel.Config{
+			Providers: map[string]publicmodel.ProviderConfig{
+				"provider-a": {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "key-a"},
+			},
+			Profiles: map[string]publicmodel.ModelProfile{
+				"primary": {Provider: "provider-a", Model: "primary-wire-model"},
+			},
+			DefaultProfile: "primary",
 		},
-		Models: map[string]model.ModelProfile{
-			"primary": {Provider: "provider-a", Model: "primary-wire-model"},
-		},
-		DefaultModel: "primary", ContextWindow: 32000, ReserveOutputTokens: 2048, AutoCompact: true,
+		Runtime: projectconfig.RuntimeConfig{ContextWindow: 32000, ReserveOutputTokens: 2048, AutoCompact: true},
 	}
 	writeProjectSettingsConfig(t, workspace, project)
 	store, err := session.Open(filepath.Join(stateDir, "sessions.db"))

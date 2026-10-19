@@ -85,26 +85,26 @@ func TestCoreAcceptsHostProviderAndRegisteredTool(t *testing.T) {
 
 func TestProgrammaticModelConfigOverridesFileAndStateDirOwnsMCPState(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	project := projectconfig.Config{
-		Providers: map[string]model.ProviderConfig{
+	project := projectSettingsForTest(
+		map[string]model.ProviderConfig{
 			"file-provider": {Protocol: model.ProtocolResponses, BaseURL: "https://file-provider.invalid", APIKey: "file-key"},
 			"host":          {Protocol: model.ProtocolResponses, BaseURL: "https://old-host.invalid", APIKey: "file-key"},
 		},
-		Models: map[string]model.ModelProfile{
+		map[string]model.ModelProfile{
 			"file-profile": {Provider: "file-provider", Model: "file-model"},
 			"host-profile": {Provider: "host", Model: "old-model"},
 		},
-		DefaultModel: "file-profile", ContextWindow: 24000,
-	}
+		"file-profile", projectconfig.RuntimeConfig{ContextWindow: 24000, AutoCompact: true},
+	)
 	writeProjectSettingsConfig(t, workspace, project)
 	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{hostTextResponse("unused")}}
 	client, err := New(Config{
 		Workspace: workspace, StateDir: stateDir,
 		Memory: MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
-			Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
-			Models:       map[string]publicmodel.ModelProfile{"host-profile": {Provider: "host", Model: "new-model"}},
-			DefaultModel: "host-profile",
+			Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
+			Profiles:       map[string]publicmodel.ModelProfile{"host-profile": {Provider: "host", Model: "new-model"}},
+			DefaultProfile: "host-profile",
 		},
 		ModelProviders: map[string]publicmodel.Provider{"host": provider},
 	})

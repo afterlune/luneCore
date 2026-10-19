@@ -23,70 +23,44 @@ const (
 	DefaultAttachmentMaxTotalBytes int64 = 20 << 20
 )
 
-// Config is the workspace's project configuration. Provider and model fields
-// retain their existing JSON shapes; other settings are optional additions.
-type Config struct {
-	Providers               map[string]model.ProviderConfig `json:"providers"`
-	Models                  map[string]model.ModelProfile   `json:"models"`
-	DefaultModel            string                          `json:"defaultModel"`
-	MaxParallelAgents       int                             `json:"maxParallelAgents,omitempty"`
-	MaxTeamChildrenPerAgent int                             `json:"maxTeamChildrenPerAgent,omitempty"`
-	MaxTeamDepth            int                             `json:"maxTeamDepth,omitempty"`
-	ContextWindow           int64                           `json:"contextWindow,omitempty"`        // Tokens; zero means unset.
-	AutoCompact             bool                            `json:"autoCompact"`                    // Defaults to true; set false to disable.
-	AutoCompactThreshold    float64                         `json:"autoCompactThreshold,omitempty"` // Ratio from 0 to 1; defaults to 0.8 when enabled.
-	ReserveOutputTokens     int64                           `json:"reserveOutputTokens,omitempty"`  // Tokens; zero means unset.
-	Attachments             AttachmentLimits                `json:"attachments,omitempty"`
-	MCPServers              map[string]MCPServerConfig      `json:"mcpServers,omitempty"`
-	legacyAPIKey            string
+// RuntimeConfig contains project-level task defaults and execution limits.
+type RuntimeConfig struct {
+	MaxParallelAgents       int     `json:"maxParallelAgents,omitempty"`
+	MaxTeamChildrenPerAgent int     `json:"maxTeamChildrenPerAgent,omitempty"`
+	MaxTeamDepth            int     `json:"maxTeamDepth,omitempty"`
+	ContextWindow           int64   `json:"contextWindow,omitempty"`
+	AutoCompact             bool    `json:"autoCompact"`
+	AutoCompactThreshold    float64 `json:"autoCompactThreshold,omitempty"`
+	ReserveOutputTokens     int64   `json:"reserveOutputTokens,omitempty"`
 }
 
-// ProjectConfig is the complete project configuration supplied by a host.
-// Hosts may use this instead of loading config.json themselves.
+// ProjectConfig is the canonical config.json and host-supplied project shape.
 type ProjectConfig struct {
-	ModelConfig             publicmodel.Config         `json:"modelConfig"`
-	MaxTeamChildrenPerAgent int                        `json:"maxTeamChildrenPerAgent,omitempty"`
-	MaxTeamDepth            int                        `json:"maxTeamDepth,omitempty"`
-	ContextWindow           int64                      `json:"contextWindow,omitempty"`
-	AutoCompact             bool                       `json:"autoCompact"`
-	AutoCompactThreshold    float64                    `json:"autoCompactThreshold,omitempty"`
-	ReserveOutputTokens     int64                      `json:"reserveOutputTokens,omitempty"`
-	Attachments             AttachmentLimits           `json:"attachments,omitempty"`
-	MCPServers              map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+	Models      publicmodel.Config         `json:"models"`
+	Runtime     RuntimeConfig              `json:"runtime"`
+	Attachments AttachmentLimits           `json:"attachments,omitempty"`
+	MCPServers  map[string]MCPServerConfig `json:"mcpServers,omitempty"`
 }
 
-// DefaultProjectConfig returns the same runtime defaults used by config.json.
+// Config is the validated runtime form of ProjectConfig.
+type Config struct {
+	ProjectConfig
+}
+
+// DefaultProjectConfig returns the defaults used by config.json.
 func DefaultProjectConfig() ProjectConfig {
 	return ProjectConfig{
-		ModelConfig: publicmodel.Config{
+		Models: publicmodel.Config{
 			Providers: map[string]publicmodel.ProviderConfig{},
-			Models:    map[string]publicmodel.ModelProfile{},
+			Profiles:  map[string]publicmodel.ModelProfile{},
 		},
-		AutoCompact: true, AutoCompactThreshold: DefaultAutoCompactThreshold,
+		Runtime:    RuntimeConfig{AutoCompact: true, AutoCompactThreshold: DefaultAutoCompactThreshold},
 		MCPServers: map[string]MCPServerConfig{},
 	}
 }
 
 func (c ProjectConfig) toConfig() Config {
-	providers := make(map[string]model.ProviderConfig, len(c.ModelConfig.Providers))
-	for name, provider := range c.ModelConfig.Providers {
-		providers[name] = model.ProviderConfig{
-			Protocol: provider.Protocol, BaseURL: provider.BaseURL, APIKey: provider.APIKey,
-			ServerCompaction: provider.ServerCompaction,
-		}
-	}
-	profiles := make(map[string]model.ModelProfile, len(c.ModelConfig.Models))
-	for name, profile := range c.ModelConfig.Models {
-		profiles[name] = profile
-	}
-	return Config{
-		Providers: providers, Models: profiles, DefaultModel: c.ModelConfig.DefaultModel,
-		MaxParallelAgents:       c.ModelConfig.MaxParallelAgents,
-		MaxTeamChildrenPerAgent: c.MaxTeamChildrenPerAgent, MaxTeamDepth: c.MaxTeamDepth,
-		ContextWindow: c.ContextWindow, AutoCompact: c.AutoCompact,
-		AutoCompactThreshold: c.AutoCompactThreshold, ReserveOutputTokens: c.ReserveOutputTokens,
-		Attachments: c.Attachments, MCPServers: c.MCPServers,
-	}
+	return Config{ProjectConfig: c}
 }
 
 // Validate checks the complete host-supplied project configuration.
@@ -118,27 +92,28 @@ func load(path string, validateModelCatalog bool) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("read %s: %w", path, err)
 	}
-	var config Config
+	var topLevel map[string]json.RawMessage
+	topDecoder := json.NewDecoder(bytes.NewReader(data))
+	if err := topDecoder.Decode(&topLevel); err != nil {
+		return Config{}, fmt.Errorf("decode %s: %w", path, err)
+	}
+	if err := topDecoder.Decode(new(any)); err != io.EOF {
+		return Config{}, fmt.Errorf("decode %s: expected one JSON object", path)
+	}
+	if _, nested := topLevel["runtime"]; !nested {
+		return Config{}, fmt.Errorf("decode %s: expected the grouped models/runtime config format; update it using config.example.json", path)
+	}
+	project := DefaultProjectConfig()
+	project.Runtime.AutoCompactThreshold = 0
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&config); err != nil {
+	if err := decoder.Decode(&project); err != nil {
 		return Config{}, fmt.Errorf("decode %s: %w", path, err)
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return Config{}, fmt.Errorf("decode %s: expected one JSON object", path)
 	}
-	if config.legacyAPIKey != "" {
-		if len(config.Providers) != 0 || len(config.Models) != 0 || config.DefaultModel != "" {
-			return Config{}, fmt.Errorf("%s: legacy apikey cannot be combined with providers or models", path)
-		}
-		config.Providers = map[string]model.ProviderConfig{model.ProviderDeepSeek: {
-			Protocol: model.ProtocolResponses, BaseURL: model.DeepSeekResponsesBaseURL, APIKey: config.legacyAPIKey,
-		}}
-		config.Models = map[string]model.ModelProfile{
-			model.DeepSeekFlashModel: {Provider: model.ProviderDeepSeek, Model: model.DeepSeekFlashModel},
-		}
-		config.DefaultModel = model.DeepSeekFlashModel
-	}
+	config := Config{ProjectConfig: project}
 	config.applyDefaults()
 	var validationErr error
 	if validateModelCatalog {
@@ -152,50 +127,10 @@ func load(path string, validateModelCatalog bool) (Config, error) {
 	return config, nil
 }
 
-// UnmarshalJSON accepts the old single-provider apikey input and rejects
-// unknown fields at the project and nested configuration levels.
-func (c *Config) UnmarshalJSON(data []byte) error {
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(data, &fields); err != nil {
-		return err
-	}
-	legacyAPIKey := ""
-	if raw, exists := fields["apikey"]; exists {
-		if err := json.Unmarshal(raw, &legacyAPIKey); err != nil {
-			return fmt.Errorf("apikey must be a string: %w", err)
-		}
-		delete(fields, "apikey")
-	}
-	for key := range fields {
-		switch key {
-		case "providers", "models", "defaultModel", "maxParallelAgents", "maxTeamChildrenPerAgent", "maxTeamDepth", "contextWindow", "autoCompact", "autoCompactThreshold", "reserveOutputTokens", "attachments", "mcpServers":
-		default:
-			return fmt.Errorf("unknown config field %q", key)
-		}
-	}
-	cleaned, err := json.Marshal(fields)
-	if err != nil {
-		return err
-	}
-	type plain Config
-	var decoded plain
-	decoder := json.NewDecoder(bytes.NewReader(cleaned))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&decoded); err != nil {
-		return err
-	}
-	*c = Config(decoded)
-	if _, explicitlySet := fields["autoCompact"]; !explicitlySet {
-		c.AutoCompact = true
-	}
-	c.legacyAPIKey = legacyAPIKey
-	return nil
-}
-
 // Validate checks project settings, the model catalog, and MCP server configs.
 func (c *Config) applyDefaults() {
-	if c.AutoCompact && c.AutoCompactThreshold == 0 {
-		c.AutoCompactThreshold = DefaultAutoCompactThreshold
+	if c.Runtime.AutoCompact && c.Runtime.AutoCompactThreshold == 0 {
+		c.Runtime.AutoCompactThreshold = DefaultAutoCompactThreshold
 	}
 }
 
@@ -210,24 +145,27 @@ func (c Config) validateRuntimeSettings() error {
 	if err := validateMCPServers(c.MCPServers); err != nil {
 		return err
 	}
-	if c.ContextWindow < 0 {
-		return errors.New("contextWindow must not be negative")
+	if c.Runtime.MaxParallelAgents < 0 {
+		return errors.New("runtime.maxParallelAgents must not be negative")
 	}
-	if c.MaxTeamChildrenPerAgent < 0 {
-		return errors.New("maxTeamChildrenPerAgent must not be negative")
+	if c.Runtime.ContextWindow < 0 {
+		return errors.New("runtime.contextWindow must not be negative")
 	}
-	if c.MaxTeamDepth < 0 {
-		return errors.New("maxTeamDepth must not be negative")
+	if c.Runtime.MaxTeamChildrenPerAgent < 0 {
+		return errors.New("runtime.maxTeamChildrenPerAgent must not be negative")
 	}
-	if c.ReserveOutputTokens < 0 {
-		return errors.New("reserveOutputTokens must not be negative")
+	if c.Runtime.MaxTeamDepth < 0 {
+		return errors.New("runtime.maxTeamDepth must not be negative")
 	}
-	if c.ContextWindow > 0 && c.ReserveOutputTokens >= c.ContextWindow {
-		return errors.New("reserveOutputTokens must be smaller than contextWindow")
+	if c.Runtime.ReserveOutputTokens < 0 {
+		return errors.New("runtime.reserveOutputTokens must not be negative")
 	}
-	if math.IsNaN(c.AutoCompactThreshold) || math.IsInf(c.AutoCompactThreshold, 0) ||
-		c.AutoCompactThreshold < 0 || c.AutoCompactThreshold > 1 {
-		return errors.New("autoCompactThreshold must be between 0 and 1; 0 means unset")
+	if c.Runtime.ContextWindow > 0 && c.Runtime.ReserveOutputTokens >= c.Runtime.ContextWindow {
+		return errors.New("runtime.reserveOutputTokens must be smaller than runtime.contextWindow")
+	}
+	if math.IsNaN(c.Runtime.AutoCompactThreshold) || math.IsInf(c.Runtime.AutoCompactThreshold, 0) ||
+		c.Runtime.AutoCompactThreshold < 0 || c.Runtime.AutoCompactThreshold > 1 {
+		return errors.New("runtime.autoCompactThreshold must be between 0 and 1; 0 means unset")
 	}
 	if c.Attachments.MaxFiles < 0 {
 		return errors.New("attachments.maxFiles must not be negative")
@@ -241,12 +179,19 @@ func (c Config) validateRuntimeSettings() error {
 	return nil
 }
 
-// ModelConfig returns the model catalog portion consumed by model providers.
+// ModelConfig returns the internal model catalog consumed by model providers.
 func (c Config) ModelConfig() model.Config {
+	providers := make(map[string]model.ProviderConfig, len(c.Models.Providers))
+	for name, provider := range c.Models.Providers {
+		providers[name] = model.ProviderConfig{
+			Protocol: provider.Protocol, BaseURL: provider.BaseURL, APIKey: provider.APIKey,
+			ServerCompaction: provider.ServerCompaction,
+		}
+	}
 	return model.Config{
-		Providers:         c.Providers,
-		Models:            c.Models,
-		DefaultModel:      c.DefaultModel,
-		MaxParallelAgents: c.MaxParallelAgents,
+		Providers:         providers,
+		Models:            c.Models.Profiles,
+		DefaultModel:      c.Models.DefaultProfile,
+		MaxParallelAgents: c.Runtime.MaxParallelAgents,
 	}
 }

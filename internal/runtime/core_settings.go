@@ -50,7 +50,7 @@ func (c *Core) ListModelProfiles() []ModelOption {
 	profiles := c.models.Profiles()
 	options := make([]ModelOption, 0, len(profiles))
 	for id, profile := range profiles {
-		m := profile.EffectiveModel()
+		m := profile.Model
 		if m == "" {
 			m = profile.Model
 		}

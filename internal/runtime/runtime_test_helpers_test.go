@@ -53,9 +53,9 @@ func runtimeTestConfig(workspace, stateDir string, provider publicmodel.Provider
 		Workspace: workspace, StateDir: stateDir,
 		Memory: MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
-			Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
-			Models:       map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test-model"}},
-			DefaultModel: "host",
+			Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
+			Profiles:       map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test-model"}},
+			DefaultProfile: "host",
 		},
 		ModelProviders: map[string]publicmodel.Provider{"host": provider},
 	}
@@ -89,9 +89,9 @@ func newProgrammaticCore(t *testing.T, provider publicmodel.Provider, hostTools 
 		Workspace: workspace, StateDir: stateDir,
 		Memory: MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
-			Providers:    map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
-			Models:       map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test-model"}},
-			DefaultModel: "host",
+			Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
+			Profiles:       map[string]publicmodel.ModelProfile{"host": {Provider: "host", Model: "test-model"}},
+			DefaultProfile: "host",
 		},
 		ModelProviders: map[string]publicmodel.Provider{"host": provider},
 		Tools:          hostTools,

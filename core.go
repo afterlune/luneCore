@@ -168,6 +168,7 @@ type PendingRequest = coreruntime.PendingRequest
 type PendingRequestKind = coreruntime.PendingRequestKind
 type PermissionMode = coreruntime.PermissionMode
 type ProjectConfig = projectconfig.ProjectConfig
+type ProjectRuntimeConfig = projectconfig.RuntimeConfig
 type ProjectAttachmentLimits = projectconfig.AttachmentLimits
 type PlanAuthorization = coreruntime.PlanAuthorization
 type PlanImplementation = coreruntime.PlanImplementation

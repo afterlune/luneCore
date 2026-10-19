@@ -23,7 +23,7 @@ func resolveModelID(requestModel string, profile ModelProfile) string {
 	if requestModel != "" {
 		return requestModel
 	}
-	return profile.EffectiveModel()
+	return profile.Model
 }
 
 func providerEndpoint(protocol, baseURL string) (string, error) {
