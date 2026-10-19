@@ -263,3 +263,21 @@ func TestProposedPlanRequiresOneCompleteNonEmptyBlock(t *testing.T) {
 		}
 	}
 }
+
+func TestProposedPlanPreservesInlineCodeTags(t *testing.T) {
+	text := "Here is the plan:\n\n<proposed_plan>\n# Analysis\nNotice that `<proposed_plan>` in backticks is preserved.\n```markdown\n<proposed_plan>inner code</proposed_plan>\n```\nStep 1: Done\n</proposed_plan>\n\nLet me know!"
+	response, err := json.Marshal(hostTextResponse(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := extractProposedPlan(response)
+	if plan == nil {
+		t.Fatal("expected plan to be extracted, got nil")
+	}
+	if !strings.Contains(plan.Text, "`<proposed_plan>`") {
+		t.Errorf("expected plan to preserve `<proposed_plan>`, got: %s", plan.Text)
+	}
+	if !strings.Contains(plan.Text, "<proposed_plan>inner code</proposed_plan>") {
+		t.Errorf("expected plan to preserve fenced code block, got: %s", plan.Text)
+	}
+}

@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/afterlune/luneCore/internal/model"
 	publictool "github.com/afterlune/luneCore/tool"
 )
+
+var reMarkdownCode = regexp.MustCompile("(?s)```.*?```|`[^`\n]+`")
 
 var (
 	// ErrPlanUnavailable means the source execution did not complete with a valid plan.
@@ -55,6 +59,8 @@ type PlanImplementation struct {
 }
 
 // extractProposedPlan recognizes one complete plan block in a model response.
+// Inline mentions or code blocks like `<proposed_plan>` are protected so that
+// discussing plan tags in code spans does not invalidate the actual plan.
 func extractProposedPlan(raw json.RawMessage) *ProposedPlan {
 	if len(raw) == 0 || !json.Valid(raw) {
 		return nil
@@ -75,22 +81,37 @@ func extractProposedPlan(raw json.RawMessage) *ProposedPlan {
 			}
 		}
 	}
-	const open, close = "<proposed_plan>", "</proposed_plan>"
 	content := text.String()
-	start := strings.Index(content, open)
-	if start < 0 || strings.Contains(content[start+len(open):], open) {
+	if !strings.Contains(strings.ToLower(content), "proposed_plan") {
+		return nil
+	}
+
+	var codeTokens []string
+	protected := reMarkdownCode.ReplaceAllStringFunc(content, func(m string) string {
+		idx := len(codeTokens)
+		codeTokens = append(codeTokens, m)
+		return "\x00CODE_" + strconv.Itoa(idx) + "\x00"
+	})
+
+	const open, close = "<proposed_plan>", "</proposed_plan>"
+	start := strings.Index(protected, open)
+	if start < 0 || strings.Contains(protected[start+len(open):], open) {
 		return nil
 	}
 	start += len(open)
-	end := strings.Index(content[start:], close)
+	end := strings.Index(protected[start:], close)
 	if end < 0 {
 		return nil
 	}
 	end += start
-	if strings.Contains(content[end+len(close):], close) {
+	if strings.Contains(protected[end+len(close):], close) {
 		return nil
 	}
-	plan := strings.TrimSpace(content[start:end])
+	planRaw := protected[start:end]
+	for idx, token := range codeTokens {
+		planRaw = strings.ReplaceAll(planRaw, "\x00CODE_"+strconv.Itoa(idx)+"\x00", token)
+	}
+	plan := strings.TrimSpace(planRaw)
 	if plan == "" {
 		return nil
 	}

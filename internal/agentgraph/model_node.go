@@ -22,8 +22,9 @@ func taskInstructions(goal, permissionMode string, planMode, canDelegate, teamEn
 	if planMode {
 		instructions = append(instructions,
 			"You are in Plan mode.\n\n"+
+				"If the user prompt is a greeting, pleasantry, or does not specify a task to plan, reply naturally directly without calling tools or inspecting the workspace.\n\n"+
 				"Inspect the workspace and produce a concrete, actionable implementation plan.\n\n"+
-				"Ask the user (using the ask_user tool) to clarify any ambiguous requirements, architectural decisions, scope, or priorities that cannot be determined from the existing context. Do not make these decisions on the user's behalf.\n\n"+
+				"Inspect discoverable facts first; use reasonable defaults for routine technical details. Ask the user (using the ask_user tool) to clarify only critical architectural decisions, scope boundaries, or material ambiguities that cannot be determined from existing context. Do not make these decisions on the user's behalf. Never ask vague open-ended questions like 'what should we do next'. When calling ask_user, put questions into the tool call and do not repeat them in message text.\n\n"+
 				"Do not modify files or run commands that change the workspace.\n\n"+
 				"Present the final plan enclosed in `<proposed_plan>` and `</proposed_plan>` tags.")
 		if teamEnabled {

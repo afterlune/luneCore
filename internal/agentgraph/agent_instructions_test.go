@@ -108,9 +108,11 @@ func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing
 	instructions := requester.requests[0].Instructions
 	for _, expected := range []string{
 		"You are in Plan mode.",
+		"If the user prompt is a greeting, pleasantry, or does not specify a task to plan, reply naturally directly without calling tools or inspecting the workspace.",
 		"Inspect the workspace and produce a concrete, actionable implementation plan.",
 		"Ask the user (using the ask_user tool) to clarify",
 		"Do not make these decisions on the user's behalf.",
+		"When calling ask_user, put questions into the tool call and do not repeat them in message text.",
 		"Do not modify files or run commands that change the workspace.",
 		"<proposed_plan>",
 	} {
