@@ -98,7 +98,7 @@ func TestTeamBranchesRunConcurrentlyAndJoinInAssignmentOrder(t *testing.T) {
 		},
 		Models: map[string]model.ModelProfile{
 			"lead":   {Provider: model.ProviderDeepSeek, Model: "lead-model"},
-			"fast":   {Provider: model.ProviderDeepSeek, Model: "fast-model"},
+			"fast":   {Provider: model.ProviderDeepSeek, Model: "fast-model", ContextWindow: 64000},
 			"review": {Provider: model.ProviderAnthropic, Model: "review-model", MaxOutputTokens: 1024},
 		},
 		DefaultModel: "lead", MaxParallelAgents: 2,
@@ -140,6 +140,7 @@ func TestTeamBranchesRunConcurrentlyAndJoinInAssignmentOrder(t *testing.T) {
 	agent, err := agentgraph.NewWithOptions(requester, registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "lead", Provider: profile.Provider, Model: profile.Model,
 		Protocol: model.ProtocolResponses, Team: core.team,
+		Execution: agentgraph.ExecutionOptions{MaxTeamChildrenPerAgent: 2, MaxTeamDepth: 1},
 		StreamObserverFor: func(agent agentgraph.State, event model.ModelStreamEvent) {
 			core.onModelStreamForTask(TaskState{}, agent.AgentID, agent.AgentName, agent.ModelProfile, agent.Provider, agent.Model, event)
 		},
@@ -199,6 +200,15 @@ func TestTeamBranchesRunConcurrentlyAndJoinInAssignmentOrder(t *testing.T) {
 	if totals := usageSession.AgentUsage["lead/reader"]; totals.Requests != 1 || totals.Total != 5 {
 		t.Errorf("team usage for lead/reader = %#v, want one measured request", totals)
 	}
+	for i := len(usageSession.UsageRequests) - 1; i >= 0; i-- {
+		if usageSession.UsageRequests[i].AgentID == "lead/reader" {
+			if got := usageSession.UsageRequests[i].ContextWindow; got != 64000 {
+				t.Errorf("worker context window = %d, want profile capacity 64000", got)
+			}
+			return
+		}
+	}
+	t.Error("worker usage request was not persisted")
 }
 
 func mustJSON(t *testing.T, value any) []byte {

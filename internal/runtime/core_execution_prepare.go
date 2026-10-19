@@ -98,6 +98,12 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 		if resolveErr != nil {
 			return taskRunSetup{}, resolveErr
 		}
+		if effective.ContextWindow <= 0 && profile.ContextWindow > 0 {
+			effective.ContextWindow = profile.ContextWindow
+			if effective.ReserveOutputTokens >= effective.ContextWindow {
+				return taskRunSetup{}, fmt.Errorf("reserveOutputTokens must be smaller than model profile %q contextWindow", settings.ModelProfile)
+			}
+		}
 		taskOptions = agentgraph.TaskOptions{
 			MaxToolRounds: request.maxRounds, ReasoningEffort: settings.ReasoningEffort,
 			PlanMode: request.planMode,

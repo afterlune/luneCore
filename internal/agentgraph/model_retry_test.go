@@ -154,7 +154,10 @@ func TestModelRetryTeamFailureIsMerged(t *testing.T) {
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"partial result"}]}]}`),
 	}}
 	timing, _ := retryTestAgent()
-	agent, err := NewWithOptions(requester, registry, AgentOptions{Team: team, retry: timing.options.retry})
+	agent, err := NewWithOptions(requester, registry, AgentOptions{
+		Team: team, retry: timing.options.retry,
+		Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 2},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

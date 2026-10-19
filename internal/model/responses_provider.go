@@ -15,6 +15,19 @@ type responsesProvider struct {
 	httpClient *http.Client
 }
 
+type responsesWireRequest struct {
+	ResponsesRequest
+	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+}
+
+func (p *responsesProvider) wireRequest(request ModelRequest) responsesWireRequest {
+	wire := responsesWireRequest{ResponsesRequest: ResponsesRequest(request)}
+	if p.providerID == ProviderOpenAI && request.PromptCache != nil {
+		wire.PromptCacheKey = request.PromptCache.Key
+	}
+	return wire
+}
+
 func newResponsesProvider(providerID, apiKey, endpoint string, httpClient *http.Client) *responsesProvider {
 	return &responsesProvider{providerID: providerID, apiKey: apiKey, endpoint: endpoint, httpClient: httpClient}
 }
@@ -28,7 +41,7 @@ func (p *responsesProvider) CreateResponse(ctx context.Context, request ModelReq
 		request.MaxOutputTokens = &limit
 	}
 	request.Stream = false
-	wire := ResponsesRequest(request)
+	wire := p.wireRequest(request)
 	response, err := postJSON(ctx, p.httpClient, p.endpoint, map[string]string{
 		"Authorization": "Bearer " + p.apiKey,
 	}, wire)
@@ -59,7 +72,7 @@ func (p *responsesProvider) StreamResponse(ctx context.Context, request ModelReq
 		request.MaxOutputTokens = &limit
 	}
 	request.Stream = true
-	wire := ResponsesRequest(request)
+	wire := p.wireRequest(request)
 	response, err := postJSON(ctx, p.httpClient, p.endpoint, map[string]string{
 		"Authorization": "Bearer " + p.apiKey,
 		"Accept":        "text/event-stream",

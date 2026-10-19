@@ -11,6 +11,15 @@ import (
 
 func (a *Agent) handleModelResponse(ctx context.Context, state State, request model.ModelRequest, response *model.ModelResponse, visibleNames []string, compactionThreshold int64, serverCompactionRequested bool) (graph.Transition[State], error) {
 	var err error
+	state.TeamForkBaseInput = nil
+	if a.options.Team != nil && request.Input != nil {
+		for _, call := range responseFunctionCalls(response.Output) {
+			if call.Name == teamDispatchToolName {
+				state.TeamForkBaseInput = cloneResponseInput(request.Input)
+				break
+			}
+		}
+	}
 	if serverCompactionRequested {
 		if responseContainsCompaction(response.Output) {
 			a.notifyCompaction(ContextCompactionEvent{Stage: "completed", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold})
@@ -30,6 +39,10 @@ func (a *Agent) handleModelResponse(ctx context.Context, state State, request mo
 		return a.failTask(state, err)
 	}
 	state.History = pruneHistoryBeforeLatestCompaction(state.History)
+	if responseContainsCompaction(response.Output) {
+		state.TeamForked = false
+		state.TeamForkPrefixItems = 0
+	}
 	state.Transcript, err = appendTranscriptOutput(state.Transcript, response.Output)
 	if err != nil {
 		return a.failTask(state, err)

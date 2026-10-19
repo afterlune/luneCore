@@ -47,7 +47,7 @@ type hostProvider struct{ inner publicmodel.Provider }
 func (p hostProvider) Name() string { return p.inner.Name() }
 
 func (p hostProvider) CreateResponse(ctx context.Context, request ModelRequest, profile ModelProfile) (*ModelResponse, error) {
-	hostRequest, err := cloneForHost(request)
+	hostRequest, err := cloneModelRequestForHost(request)
 	if err != nil {
 		return nil, fmt.Errorf("copy request for host provider: %w", err)
 	}
@@ -64,7 +64,7 @@ func (p hostProvider) CreateResponse(ctx context.Context, request ModelRequest, 
 }
 
 func (p hostProvider) StreamResponse(ctx context.Context, request ModelRequest, profile ModelProfile, emit func(ModelStreamEvent) error) (*ModelResponse, error) {
-	hostRequest, err := cloneForHost(request)
+	hostRequest, err := cloneModelRequestForHost(request)
 	if err != nil {
 		return nil, fmt.Errorf("copy request for host provider: %w", err)
 	}
@@ -87,6 +87,18 @@ func (p hostProvider) StreamResponse(ctx context.Context, request ModelRequest, 
 		return nil, fmt.Errorf("copy response from host provider: %w", err)
 	}
 	return responseCopy, requestErr
+}
+
+func cloneModelRequestForHost(request ModelRequest) (publicmodel.ModelRequest, error) {
+	hostRequest, err := cloneForHost(request)
+	if err != nil {
+		return hostRequest, err
+	}
+	if request.PromptCache != nil {
+		hint := *request.PromptCache
+		hostRequest.PromptCache = &hint
+	}
+	return hostRequest, nil
 }
 
 func cloneForHost[T any](value T) (T, error) {

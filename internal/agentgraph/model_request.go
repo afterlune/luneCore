@@ -120,6 +120,7 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 	}
 	compactionThreshold := int64(0)
 	serverCompactionRequested := false
+	forkCachePrefixValid := true
 	if state.AutoCompact && state.ContextWindow <= 0 && !state.CompactionWarningEmitted {
 		a.notifyCompaction(ContextCompactionEvent{
 			Stage: "skipped", Mode: "local", Error: errors.New("contextWindow is unset or disabled; automatic compaction is waiting for a positive window"),
@@ -151,7 +152,13 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 				Stage: "started", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold,
 			})
 		} else {
-			state, request, _, err = a.prepareAutomaticCompaction(requestCtx, state, request)
+			var compacted bool
+			state, request, compacted, err = a.prepareAutomaticCompaction(requestCtx, state, request)
+			forkCachePrefixValid = !compacted
+			if compacted {
+				state.TeamForked = false
+				state.TeamForkPrefixItems = 0
+			}
 			if err != nil {
 				if ctx.Err() != nil {
 					return graph.Transition[State]{}, ctx.Err()
@@ -173,6 +180,16 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 		"visible_tools", visibleNames,
 	)
 	sendRequest := func(request model.ModelRequest) (*model.ModelResponse, error) {
+		request.PromptCache = nil
+		if forkCachePrefixValid && request.Input != nil {
+			inputItems := len(request.Input.Items)
+			if request.Input.Text != nil && inputItems == 0 {
+				inputItems = 1
+			}
+			if hint := teamForkCacheHint(state); hint != nil && hint.PrefixItems <= inputItems {
+				request.PromptCache = hint
+			}
+		}
 		var emit func(model.ModelStreamEvent) error
 		if a.options.StreamObserverFor != nil || a.options.StreamObserver != nil {
 			emit = func(event model.ModelStreamEvent) error {
@@ -196,7 +213,13 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 			Error: errors.New("provider rejected context_management; switching this task to local compaction"),
 		})
 		request.ContextManagement = nil
-		state, request, _, err = a.prepareAutomaticCompaction(requestCtx, state, request)
+		var compacted bool
+		state, request, compacted, err = a.prepareAutomaticCompaction(requestCtx, state, request)
+		forkCachePrefixValid = !compacted
+		if compacted {
+			state.TeamForked = false
+			state.TeamForkPrefixItems = 0
+		}
 		if err != nil {
 			if ctx.Err() != nil {
 				return graph.Transition[State]{}, ctx.Err()

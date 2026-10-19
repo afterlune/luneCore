@@ -34,7 +34,7 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 	}}
 	agent, err := NewWithOptions(requester, registry, AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek,
-		Model: "deepseek-test", Team: team,
+		Model: "deepseek-test", Team: team, Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 2},
 	})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
@@ -88,7 +88,7 @@ func TestAgentDispatchesTeamProfilesAndSynthesizesPartialResults(t *testing.T) {
 	for _, definition := range requester.requests[0].Tools {
 		if function, ok := definition.(model.FunctionTool); ok && function.Name == teamDispatchToolName {
 			teamTool = true
-			if !strings.Contains(string(function.Parameters), `"enum":["lead","research"]`) {
+			if !strings.Contains(string(function.Parameters), `"enum":["task","fork"]`) || !strings.Contains(string(function.Parameters), `"enum":["lead","research"]`) {
 				t.Errorf("team tool profile choices = %s", function.Parameters)
 			}
 		}
@@ -117,7 +117,7 @@ func TestAgentTeamQuorumMergesEarlyAndMarksPendingMembers(t *testing.T) {
 	}}
 	agent, err := NewWithOptions(requester, registry, AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek,
-		Model: "lead-model", Team: team, Execution: ExecutionOptions{TeamQuorum: 1},
+		Model: "lead-model", Team: team, Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 2, TeamQuorum: 1},
 	})
 	if err != nil {
 		t.Fatalf("NewWithOptions: %v", err)
@@ -160,7 +160,7 @@ func TestAgentDelegationCanOverrideHostQuorumToWaitForAll(t *testing.T) {
 	}}
 	agent, err := NewWithOptions(requester, registry, AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek,
-		Model: "lead-model", Team: team, Execution: ExecutionOptions{TeamQuorum: 1},
+		Model: "lead-model", Team: team, Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 2, TeamQuorum: 1},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -213,23 +213,173 @@ func TestParseTeamAssignmentsAcceptsPerDispatchQuorum(t *testing.T) {
 		"worker": {Provider: model.ProviderDeepSeek, Model: "worker-model"},
 	}}
 	assignments := `"tasks":[{"id":"one","model":"worker","task":"work"}]`
-	_, inherited, err := parseTeamAssignments("{"+assignments+"}", team, 2)
-	if err != nil || inherited != nil {
-		t.Fatalf("inherited quorum = %v, error=%v", inherited, err)
+	_, mode, inherited, err := parseTeamAssignments("{"+assignments+"}", team, 2)
+	if err != nil || mode != TeamDispatchTask || inherited != nil {
+		t.Fatalf("default dispatch mode/quorum = %q/%v, error=%v", mode, inherited, err)
 	}
-	_, waitAll, err := parseTeamAssignments("{"+assignments+`,"minimum_successes":0}`, team, 2)
-	if err != nil || waitAll == nil || *waitAll != 0 {
-		t.Fatalf("zero quorum override = %v, error=%v", waitAll, err)
+	_, mode, waitAll, err := parseTeamAssignments("{"+assignments+`,"mode":"fork","minimum_successes":0}`, team, 2)
+	if err != nil || mode != TeamDispatchFork || waitAll == nil || *waitAll != 0 {
+		t.Fatalf("fork mode and zero quorum override = %q/%v, error=%v", mode, waitAll, err)
 	}
-	if _, _, err := parseTeamAssignments("{"+assignments+`,"minimum_successes":2}`, team, 2); err == nil {
+	if _, _, _, err := parseTeamAssignments("{"+assignments+`,"minimum_successes":2}`, team, 2); err == nil {
 		t.Fatal("quorum larger than assignment count should be rejected")
 	}
-	if _, _, err := parseTeamAssignments("{"+assignments+"}", team, 0); err == nil {
+	if _, _, _, err := parseTeamAssignments("{"+assignments+"}", team, 0); err == nil {
 		t.Fatal("delegation with no remaining quota should be rejected")
+	}
+	for _, mode := range []string{`"unknown"`, `""`, `null`} {
+		if _, _, _, err := parseTeamAssignments("{"+assignments+`,"mode":`+mode+`}`, team, 2); err == nil {
+			t.Errorf("invalid dispatch mode %s should be rejected", mode)
+		}
 	}
 }
 
-func TestAgentTeamTreeDefaultsToFourChildrenAndTwoLevels(t *testing.T) {
+func TestForkDispatchCopiesPreDispatchHistoryAndScopesCacheByModel(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	team := &forkRecordingTeamExecutor{
+		profiles: map[string]model.ModelProfile{
+			"same-a": {Provider: model.ProviderOpenAI, Model: "shared-model"},
+			"same-b": {Provider: model.ProviderOpenAI, Model: "shared-model"},
+			"other":  {Provider: model.ProviderAnthropic, Model: "different-model"},
+		},
+		requests: make(map[string]model.ModelRequest),
+		states:   make(map[string]State),
+	}
+	requester := &scriptedRequester{responses: []*model.Response{
+		teamDispatchResponseForAssignments("dispatch-call", TeamDispatchFork, []TeamAssignment{
+			{ID: "fork-0", Model: "same-a", Task: "task zero"},
+			{ID: "fork-1", Model: "same-b", Task: "task one"},
+			{ID: "fork-2", Model: "other", Task: "task two"},
+		}),
+		teamTextResponse("synthesized fork results"),
+	}}
+	agent, err := NewWithOptions(requester, registry, AgentOptions{
+		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderOpenAI,
+		Model: "shared-model", Team: team, Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 3},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := model.NewResponseInputItems(
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("initial user request")},
+		model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText("prior assistant context")},
+		model.InputFunctionCall{CallID: "prior-call", Name: "read_file", Arguments: `{"path":"a.go"}`},
+		model.InputFunctionCallOutput{CallID: "prior-call", Output: model.NewToolOutputText("previous tool result")},
+	)
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "fork-context-run", nil, input, TaskOptions{}, store, graph.Options{MaxConcurrency: 4})
+	if err != nil || result.Status != graph.StatusCompleted {
+		t.Fatalf("fork run status=%q error=%v", result.Status, err)
+	}
+	if len(requester.requests) < 2 || requester.requests[0].Input == nil {
+		t.Fatalf("lead model requests = %d, want dispatch and synthesis", len(requester.requests))
+	}
+	prefixCount := len(requester.requests[0].Input.Items)
+	team.mu.Lock()
+	branchRequests := make(map[string]model.ModelRequest, len(team.requests))
+	branchStates := make(map[string]State, len(team.states))
+	for id, request := range team.requests {
+		branchRequests[id] = request
+	}
+	for id, state := range team.states {
+		branchStates[id] = state
+	}
+	team.mu.Unlock()
+	if len(branchRequests) != 3 {
+		t.Fatalf("fork branch requests = %d, want 3", len(branchRequests))
+	}
+	for id, request := range branchRequests {
+		inputCount := -1
+		if request.Input != nil {
+			inputCount = len(request.Input.Items)
+		}
+		if inputCount != prefixCount+1 {
+			t.Errorf("branch %q input item count = %d, want %d", id, inputCount, prefixCount+1)
+			continue
+		}
+		encoded, err := json.Marshal(request.Input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, expected := range []string{"initial user request", "prior assistant context", "previous tool result"} {
+			if !strings.Contains(string(encoded), expected) {
+				t.Errorf("branch %q fork input is missing %q: %s", id, expected, encoded)
+			}
+		}
+		for _, excluded := range []string{"dispatch-call", "delegate_team"} {
+			if strings.Contains(string(encoded), excluded) {
+				t.Errorf("branch %q copied the pending parent call %q: %s", id, excluded, encoded)
+			}
+		}
+		if request.PromptCache == nil || request.PromptCache.PrefixItems != prefixCount {
+			t.Errorf("branch %q prompt cache hint = %#v, want prefix count %d", id, request.PromptCache, prefixCount)
+		}
+		encodedState, err := json.Marshal(branchStates[id])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored State
+		if err := json.Unmarshal(encodedState, &restored); err != nil {
+			t.Fatal(err)
+		}
+		if !restored.TeamForked || restored.TeamForkPrefixItems != prefixCount || restored.TeamDispatchMode != TeamDispatchFork || restored.TaskSettingsVersion != CurrentTaskSettingsVersion {
+			t.Errorf("fork checkpoint state = %#v", restored)
+		}
+	}
+	first, second, different := branchRequests["lead/fork-0"].PromptCache, branchRequests["lead/fork-1"].PromptCache, branchRequests["lead/fork-2"].PromptCache
+	if first != nil && second != nil && first.Key != second.Key {
+		t.Error("same-provider, same-model fork siblings should use the same cache key")
+	}
+	if first != nil && different != nil && first.Key == different.Key {
+		t.Error("a different provider/model should use a different cache key")
+	}
+}
+
+func TestAgentTeamDelegationIsDisabledByDefault(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	team := &treeTeamExecutor{
+		profiles: map[string]model.ModelProfile{"worker": {Provider: model.ProviderDeepSeek, Model: "worker-model"}},
+		calls:    make(map[string]int),
+		requests: make(map[string][]model.ModelRequest),
+	}
+	root := &scriptedRequester{responses: []*model.Response{
+		teamDispatchResponse("default-disabled", "child", 1),
+		teamTextResponse("completed without delegating"),
+	}}
+	agent, err := NewWithOptions(root, registry, AgentOptions{
+		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek,
+		Model: "lead-model", Team: team,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("delegation is disabled without a positive limit")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "default-team-disabled", nil, input, TaskOptions{}, store, graph.Options{})
+	if err != nil || result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("default team status=%q error=%v", result.Status, err)
+	}
+	if hasTeamTool(root.requests[0].Tools) || len(team.prepared) != 0 || result.Final.TeamChildrenCreated != 0 || result.Final.Execution.MaxTeamChildrenPerAgent != 0 {
+		t.Fatalf("delegation was not disabled by default: requests=%#v prepared=%d state=%#v", root.requests[0].Tools, len(team.prepared), result.Final)
+	}
+}
+
+func TestAgentTeamTreeUsesConfiguredChildAndDepthLimits(t *testing.T) {
 	registry, err := tool.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +395,7 @@ func TestAgentTeamTreeDefaultsToFourChildrenAndTwoLevels(t *testing.T) {
 	}}
 	agent, err := NewWithOptions(root, registry, AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek,
-		Model: "lead-model", Team: team,
+		Model: "lead-model", Team: team, Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 4, MaxTeamDepth: 2},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -331,7 +481,7 @@ func TestAgentTeamChildQuotaIsCumulativeAcrossDispatches(t *testing.T) {
 	}}
 	agent, err := NewWithOptions(root, registry, AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek,
-		Model: "lead-model", Team: team,
+		Model: "lead-model", Team: team, Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 4},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -430,6 +580,9 @@ func (t *treeTeamExecutor) PrepareBranch(_ context.Context, state State, assignm
 	profile := t.profiles[assignment.Model]
 	state.ModelProfile, state.Model, state.Provider = assignment.Model, profile.Model, profile.Provider
 	state.Protocol = model.ProtocolResponses
+	if profile.Provider == model.ProviderAnthropic {
+		state.Protocol = model.ProtocolAnthropicMessages
+	}
 	state.TeamModel, state.TeamProvider = profile.Model, profile.Provider
 	return state, nil
 }
@@ -460,6 +613,10 @@ func (r treeTeamRequester) CreateResponse(_ context.Context, request model.Model
 }
 
 func teamDispatchResponse(callID, prefix string, count int) *model.Response {
+	return teamDispatchResponseWithMode(callID, prefix, count, TeamDispatchTask)
+}
+
+func teamDispatchResponseWithMode(callID, prefix string, count int, mode string) *model.Response {
 	if count < 1 {
 		panic("team dispatch test response requires at least one task")
 	}
@@ -467,7 +624,11 @@ func teamDispatchResponse(callID, prefix string, count int) *model.Response {
 	for index := range tasks {
 		tasks[index] = TeamAssignment{ID: fmt.Sprintf("%s-%d", prefix, index), Model: "worker", Task: fmt.Sprintf("%s task %d", prefix, index)}
 	}
-	arguments, err := json.Marshal(map[string]any{"tasks": tasks, "minimum_successes": nil})
+	return teamDispatchResponseForAssignments(callID, mode, tasks)
+}
+
+func teamDispatchResponseForAssignments(callID, mode string, tasks []TeamAssignment) *model.Response {
+	arguments, err := json.Marshal(map[string]any{"mode": mode, "tasks": tasks, "minimum_successes": nil})
 	if err != nil {
 		panic(err)
 	}
@@ -538,6 +699,7 @@ func TestAgentGraphJoinsNestedTeamBranches(t *testing.T) {
 	}}
 	agent, err := NewWithOptions(lead, registry, AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek, Model: "lead-model", Team: team,
+		Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 2, MaxTeamDepth: 2},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -586,6 +748,44 @@ type scriptedTeamExecutor struct {
 	assignments        []TeamAssignment
 	options            []TaskOptions
 	branchInstructions []string
+}
+
+type forkRecordingTeamExecutor struct {
+	profiles map[string]model.ModelProfile
+	mu       sync.Mutex
+	requests map[string]model.ModelRequest
+	states   map[string]State
+}
+
+func (t *forkRecordingTeamExecutor) Profiles() map[string]model.ModelProfile { return t.profiles }
+
+func (t *forkRecordingTeamExecutor) MaxParallelAgents() int { return 4 }
+
+func (t *forkRecordingTeamExecutor) PrepareBranch(_ context.Context, state State, assignment TeamAssignment, _ TaskOptions) (State, error) {
+	t.mu.Lock()
+	t.states[state.AgentID] = state
+	t.mu.Unlock()
+	profile := t.profiles[assignment.Model]
+	state.ModelProfile, state.Model, state.Provider = assignment.Model, profile.Model, profile.Provider
+	state.Protocol = model.ProtocolResponses
+	state.TeamModel, state.TeamProvider = profile.Model, profile.Provider
+	return state, nil
+}
+
+func (t *forkRecordingTeamExecutor) Requester(_ context.Context, state State) (Requester, error) {
+	return forkRecordingRequester{team: t, agentID: state.AgentID}, nil
+}
+
+type forkRecordingRequester struct {
+	team    *forkRecordingTeamExecutor
+	agentID string
+}
+
+func (r forkRecordingRequester) CreateResponse(_ context.Context, request model.ModelRequest) (*model.ModelResponse, error) {
+	r.team.mu.Lock()
+	r.team.requests[r.agentID] = request
+	r.team.mu.Unlock()
+	return teamTextResponse("completed " + r.agentID), nil
 }
 
 type scriptedBranchRequester struct {

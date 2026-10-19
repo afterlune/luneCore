@@ -79,6 +79,7 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 			identity := publictool.CallIdentityFromContext(ctx)
 			c.emit(Event{Kind: EventAgentStarted, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 				AgentID: state.AgentID, AgentName: state.AgentName, AgentRole: "worker", TeamRunID: state.TeamRunID,
+				AgentTask: state.TeamTask, ContextWindow: state.ContextWindow,
 				ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model, Status: TaskRunning})
 		},
 		OnBranchFinished: func(ctx context.Context, state agentgraph.State, branchErr error) {
@@ -92,6 +93,7 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 			}
 			c.emit(Event{Kind: EventAgentFinished, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 				AgentID: state.AgentID, AgentName: state.AgentName, AgentRole: "worker", TeamRunID: state.TeamRunID,
+				AgentTask: state.TeamTask, ContextWindow: state.ContextWindow,
 				ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model, Status: status, Err: errorString(branchErr)})
 		},
 		CompactionObserver: func(event agentgraph.ContextCompactionEvent) {

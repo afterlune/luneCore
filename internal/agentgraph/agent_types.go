@@ -19,11 +19,14 @@ const ExecutionBlockerContinuation = "execution_blocker"
 const TokenBudgetContinuation = "token_budget"
 
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
-const CurrentTaskSettingsVersion = 11
+const CurrentTaskSettingsVersion = 12
 
 const (
-	// DefaultMaxTeamChildrenPerAgent is the default cumulative fan-out quota per agent.
-	DefaultMaxTeamChildrenPerAgent = 4
+	TeamDispatchTask = "task"
+	TeamDispatchFork = "fork"
+
+	// DefaultMaxTeamChildrenPerAgent disables delegation until a positive limit is configured.
+	DefaultMaxTeamChildrenPerAgent = 0
 	// DefaultMaxTeamDepth counts root as depth zero, allowing children and grandchildren.
 	DefaultMaxTeamDepth = 2
 )
@@ -156,6 +159,7 @@ type State struct {
 	FinalResponse            *model.Response              `json:"final_response,omitempty"`
 	TeamBranch               bool                         `json:"team_branch,omitempty"`
 	TeamTaskID               string                       `json:"team_task_id,omitempty"`
+	TeamTask                 string                       `json:"team_task,omitempty"`
 	TeamModel                string                       `json:"team_model,omitempty"`
 	TeamProvider             string                       `json:"team_provider,omitempty"`
 	TeamText                 string                       `json:"team_text,omitempty"`
@@ -165,6 +169,10 @@ type State struct {
 	TeamDispatchID           string                       `json:"team_dispatch_id,omitempty"`
 	TeamAssignments          []TeamAssignment             `json:"team_assignments,omitempty"`
 	TeamMinimumSuccesses     int                          `json:"team_minimum_successes,omitempty"`
+	TeamDispatchMode         string                       `json:"team_dispatch_mode,omitempty"`
+	TeamForkBaseInput        *model.ResponseInput         `json:"team_fork_base_input,omitempty"`
+	TeamForked               bool                         `json:"team_forked,omitempty"`
+	TeamForkPrefixItems      int                          `json:"team_fork_prefix_items,omitempty"`
 	TeamDepth                int                          `json:"team_depth,omitempty"`
 	TeamChildrenCreated      int                          `json:"team_children_created,omitempty"`
 	UserQuestions            []model.UserQuestionItem     `json:"user_questions,omitempty"`

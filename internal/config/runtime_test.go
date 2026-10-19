@@ -35,7 +35,7 @@ func TestLoadForRuntimeMergesHostModelsBeforeValidation(t *testing.T) {
 		Providers: map[string]publicmodel.ProviderConfig{
 			"vendor": {Protocol: publicmodel.ProtocolResponses, BaseURL: "https://host.example.test/v1", APIKey: "host-key"},
 		},
-		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "vendor", Model: "host-model"}},
+		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "vendor", Model: "host-model", ContextWindow: 128000}},
 		DefaultModel: "main", MaxParallelAgents: 2,
 	}
 
@@ -54,6 +54,36 @@ func TestLoadForRuntimeMergesHostModelsBeforeValidation(t *testing.T) {
 	}
 	if loaded.DefaultModel != "main" || loaded.MaxParallelAgents != 2 || loaded.Models["main"].Model != "host-model" {
 		t.Fatalf("host model settings were not merged: %#v", loaded.ModelConfig())
+	}
+	if loaded.Models["main"].ContextWindow != 128000 {
+		t.Fatalf("host model profile context window was not merged: %d", loaded.Models["main"].ContextWindow)
+	}
+}
+
+func TestLoadForRuntimeReadsAndValidatesTeamTreeLimits(t *testing.T) {
+	path := writeConfig(t, `{"maxTeamChildrenPerAgent":7,"maxTeamDepth":3}`)
+	supplied := &publicmodel.Config{
+		Providers: map[string]publicmodel.ProviderConfig{
+			"vendor": {Protocol: publicmodel.ProtocolResponses, BaseURL: "https://host.example.test/v1", APIKey: "host-key"},
+		},
+		Models:       map[string]publicmodel.ModelProfile{"main": {Provider: "vendor", Model: "host-model"}},
+		DefaultModel: "main",
+	}
+	loaded, err := LoadForRuntime(filepath.Dir(path), supplied, nil, nil)
+	if err != nil {
+		t.Fatalf("LoadForRuntime: %v", err)
+	}
+	if loaded.MaxTeamChildrenPerAgent != 7 || loaded.MaxTeamDepth != 3 {
+		t.Fatalf("team limits = (%d, %d)", loaded.MaxTeamChildrenPerAgent, loaded.MaxTeamDepth)
+	}
+
+	for _, field := range []string{"maxTeamChildrenPerAgent", "maxTeamDepth"} {
+		t.Run("negative "+field, func(t *testing.T) {
+			negativePath := writeConfig(t, `{"`+field+`":-1}`)
+			if _, err := LoadForRuntime(filepath.Dir(negativePath), supplied, nil, nil); err == nil {
+				t.Fatalf("negative %s was accepted", field)
+			}
+		})
 	}
 }
 
@@ -151,6 +181,8 @@ func TestLoadForRuntimeUsesHostProjectConfigWithoutReadingFile(t *testing.T) {
 		DefaultModel: "main",
 	}
 	project.ContextWindow = 64000
+	project.MaxTeamChildrenPerAgent = 8
+	project.MaxTeamDepth = 3
 	project.ReserveOutputTokens = 4096
 	project.Attachments = AttachmentLimits{MaxFiles: 3}
 	project.MCPServers = map[string]MCPServerConfig{
@@ -161,7 +193,7 @@ func TestLoadForRuntimeUsesHostProjectConfigWithoutReadingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadForRuntime with host project config: %v", err)
 	}
-	if loaded.ModelConfig().DefaultModel != "main" || loaded.ContextWindow != 64000 || loaded.ReserveOutputTokens != 4096 {
+	if loaded.ModelConfig().DefaultModel != "main" || loaded.ContextWindow != 64000 || loaded.ReserveOutputTokens != 4096 || loaded.MaxTeamChildrenPerAgent != 8 || loaded.MaxTeamDepth != 3 {
 		t.Fatalf("host project config was not applied: %#v", loaded)
 	}
 	if loaded.Attachments.MaxFiles != 3 || loaded.MCPServers["docs"].Command != "docs-mcp" {

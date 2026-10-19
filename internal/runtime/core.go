@@ -226,7 +226,13 @@ func New(config Config) (_ *Core, err error) {
 	}()
 	executionDefaults := config.Execution
 	if executionDefaults.MaxTeamChildrenPerAgent == 0 {
+		executionDefaults.MaxTeamChildrenPerAgent = projectConfig.MaxTeamChildrenPerAgent
+	}
+	if executionDefaults.MaxTeamChildrenPerAgent == 0 {
 		executionDefaults.MaxTeamChildrenPerAgent = agentgraph.DefaultMaxTeamChildrenPerAgent
+	}
+	if executionDefaults.MaxTeamDepth == 0 {
+		executionDefaults.MaxTeamDepth = projectConfig.MaxTeamDepth
 	}
 	if executionDefaults.MaxTeamDepth == 0 {
 		executionDefaults.MaxTeamDepth = agentgraph.DefaultMaxTeamDepth
@@ -312,4 +318,12 @@ func New(config Config) (_ *Core, err error) {
 	closeCheckpoints, closeSessions, closeRegistry, closeMCPManager = false, false, false, false
 	keepStateLock = true
 	return c, nil
+}
+
+// MaxParallelAgents returns the maximum parallel agent limit for team delegations.
+func (c *Core) MaxParallelAgents() int {
+	if c.team == nil {
+		return 0
+	}
+	return c.team.MaxParallelAgents()
 }

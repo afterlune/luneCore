@@ -47,7 +47,7 @@ func LoadForRuntime(workspace string, supplied *publicmodel.Config, hostProvider
 		}
 		for name, profile := range supplied.Models {
 			loaded.Models[name] = model.ModelProfile{
-				Provider: profile.Provider, Model: profile.Model, MaxOutputTokens: profile.MaxOutputTokens,
+				Provider: profile.Provider, Model: profile.EffectiveModel(), ModelID: profile.EffectiveModel(), DisplayName: profile.DisplayName, ContextWindow: profile.ContextWindow, MaxOutputTokens: profile.MaxOutputTokens,
 				SupportsInputAudio: profile.SupportsInputAudio,
 			}
 		}

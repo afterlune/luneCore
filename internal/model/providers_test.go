@@ -53,13 +53,16 @@ func TestHostProviderUsesSharedResponseDTOs(t *testing.T) {
 	request := ModelRequest{Input: NewResponseInputItems(
 		InputReasoning{EncryptedContent: "opaque-state"},
 		InputFunctionCallOutput{CallID: "call-1", TranscriptOnly: []ContentPart{InputText{Text: "host-only"}}},
-	)}
+	), PromptCache: &publicmodel.PromptCacheHint{Key: "host-cache-key", PrefixItems: 1}}
 	response, err := provider.CreateResponse(context.Background(), request, ModelProfile{Provider: "host", Model: "host-model"})
 	if err != nil {
 		t.Fatalf("create response: %v", err)
 	}
 	if response == probe.response || response.Status != probe.response.Status {
 		t.Fatalf("host provider response = %#v, want an isolated copy of %#v", response, probe.response)
+	}
+	if probe.request.PromptCache == nil || *probe.request.PromptCache != *request.PromptCache || probe.request.PromptCache == request.PromptCache {
+		t.Fatalf("host prompt-cache hint = %#v, want an isolated copy of %#v", probe.request.PromptCache, request.PromptCache)
 	}
 	reasoning, ok := probe.request.Input.Items[0].(publicmodel.InputReasoning)
 	if !ok || reasoning.EncryptedContent != "opaque-state" {
@@ -126,24 +129,57 @@ func TestDeepSeekProviderCreateResponse(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer ds-key" {
 			t.Errorf("authorization = %q", got)
 		}
-		var request ResponseRequest
+		var request struct {
+			Model          string `json:"model"`
+			Stream         bool   `json:"stream"`
+			PromptCacheKey string `json:"prompt_cache_key"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode request: %v", err)
 		}
 		if request.Model != "deepseek-override" || request.Stream {
 			t.Errorf("request model/stream = %q/%v", request.Model, request.Stream)
 		}
+		if request.PromptCacheKey != "" {
+			t.Errorf("unsupported prompt_cache_key leaked into DeepSeek request: %q", request.PromptCacheKey)
+		}
 		_, _ = fmt.Fprint(w, `{"id":"resp-1","object":"response","status":"completed","model":"deepseek-test","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"hello"}]}],"usage":{"input_tokens":4,"output_tokens":2,"total_tokens":6}}`)
 	}))
 	defer server.Close()
 	provider := newResponsesProvider(ProviderDeepSeek, "ds-key", server.URL+"/responses", server.Client())
 	profile := ModelProfile{Provider: ProviderDeepSeek, Model: "deepseek-test"}
-	response, err := provider.CreateResponse(context.Background(), ResponseRequest{Model: "deepseek-override", Input: NewResponseInputText("hi")}, profile)
+	response, err := provider.CreateResponse(context.Background(), ResponseRequest{
+		Model: "deepseek-override", Input: NewResponseInputText("hi"),
+		PromptCache: &PromptCacheHint{Key: "must-not-be-sent"},
+	}, profile)
 	if err != nil {
 		t.Fatalf("CreateResponse: %v", err)
 	}
 	if response.ID != "resp-1" || response.Usage.TotalTokens != 6 {
 		t.Fatalf("response = %#v", response)
+	}
+}
+
+func TestOpenAIResponsesSendsPromptCacheKey(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		var key string
+		if err := json.Unmarshal(request["prompt_cache_key"], &key); err != nil || key != "lune-cache-key" {
+			t.Errorf("prompt_cache_key = %q, error=%v", key, err)
+		}
+		_, _ = fmt.Fprint(w, `{"id":"resp-cache","object":"response","status":"completed","model":"gpt-test","output":[],"usage":{"input_tokens":2,"output_tokens":1,"total_tokens":3}}`)
+	}))
+	defer server.Close()
+	provider := newResponsesProvider(ProviderOpenAI, "openai-key", server.URL, server.Client())
+	_, err := provider.CreateResponse(context.Background(), ModelRequest{
+		Model: "gpt-test", Input: NewResponseInputText("cached prefix"),
+		PromptCache: &PromptCacheHint{Key: "lune-cache-key", PrefixItems: 1},
+	}, ModelProfile{Provider: ProviderOpenAI, Model: "gpt-test"})
+	if err != nil {
+		t.Fatalf("CreateResponse: %v", err)
 	}
 }
 
@@ -271,6 +307,34 @@ func TestAnthropicMessagesRejectsUnsupportedModalitiesExplicitly(t *testing.T) {
 	_, err := toAnthropicRequest(request, ModelProfile{Model: "claude-test", MaxOutputTokens: 100}, false)
 	if err == nil || !strings.Contains(err.Error(), "cannot map content part") {
 		t.Fatalf("unsupported modality error = %v", err)
+	}
+}
+
+func TestAnthropicPromptCacheBreakpointMarksLastSharedInputItem(t *testing.T) {
+	request := ModelRequest{
+		Instructions: "stable instructions",
+		Input: NewResponseInputItems(
+			InputMessage{Role: RoleUser, Content: NewMessageText("shared one")},
+			InputMessage{Role: RoleUser, Content: NewMessageText("shared two")},
+			InputMessage{Role: RoleUser, Content: NewMessageText("branch task")},
+		),
+		PromptCache: &PromptCacheHint{Key: "provider-agnostic-key", PrefixItems: 2},
+	}
+	wire, err := toAnthropicRequest(request, ModelProfile{Model: "claude-test", MaxOutputTokens: 100}, false)
+	if err != nil {
+		t.Fatalf("toAnthropicRequest: %v", err)
+	}
+	if len(wire.Messages) != 1 || len(wire.Messages[0].Content) != 3 {
+		t.Fatalf("Anthropic messages = %#v, want one merged message with three blocks", wire.Messages)
+	}
+	if wire.Messages[0].Content[0]["cache_control"] != nil {
+		t.Fatalf("cache breakpoint was placed before the shared prefix ended: %#v", wire.Messages[0].Content[0])
+	}
+	if control, ok := wire.Messages[0].Content[1]["cache_control"].(map[string]string); !ok || control["type"] != "ephemeral" {
+		t.Fatalf("cache breakpoint = %#v, want ephemeral on the last common block", wire.Messages[0].Content[1]["cache_control"])
+	}
+	if wire.Messages[0].Content[2]["cache_control"] != nil {
+		t.Fatalf("branch-specific task block was cached: %#v", wire.Messages[0].Content[2])
 	}
 }
 

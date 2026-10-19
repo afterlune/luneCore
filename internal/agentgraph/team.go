@@ -73,6 +73,8 @@ func (a *Agent) mergeTeam(ctx context.Context, _ graph.CallInfo, parent State, b
 	parent = appendToolOutput(parent, output)
 	parent.TeamAssignments, parent.TeamDispatchID = nil, ""
 	parent.TeamMinimumSuccesses = 0
+	parent.TeamDispatchMode = ""
+	parent.TeamForkBaseInput = nil
 	return parent, nil
 }
 

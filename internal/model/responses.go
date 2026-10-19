@@ -8,6 +8,7 @@ import (
 )
 
 type ModelRequest = publicmodel.ModelRequest
+type PromptCacheHint = publicmodel.PromptCacheHint
 type ContextManagementItem = publicmodel.ContextManagementItem
 type ResponseRequest = publicmodel.ResponseRequest
 type ResponseInput = publicmodel.ResponseInput

@@ -21,6 +21,17 @@ type ModelRequest struct {
 	Tools             []ResponseTool          `json:"tools,omitempty"`
 	ToolChoice        *ToolChoice             `json:"tool_choice,omitempty"`
 	User              string                  `json:"user,omitempty"`
+	// PromptCache is an advisory hint for provider adapters. It is not part of
+	// the wire request because cache controls differ between model protocols.
+	PromptCache *PromptCacheHint `json:"-"`
+}
+
+// PromptCacheHint describes a stable input prefix that sibling requests may
+// reuse. Key is a provider-specific routing hint; PrefixItems identifies the
+// final shared item for protocols that require an explicit cache breakpoint.
+type PromptCacheHint struct {
+	Key         string
+	PrefixItems int
 }
 
 // ContextManagementItem configures server-side Responses API compaction.

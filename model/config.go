@@ -1,6 +1,8 @@
 package model
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/url"
@@ -28,9 +30,46 @@ type ProviderConfig struct {
 // ModelProfile binds a stable profile name to a provider and model ID.
 type ModelProfile struct {
 	Provider           string `json:"provider"`
-	Model              string `json:"model"`
+	Model              string `json:"model,omitempty"`
+	ModelID            string `json:"modelId,omitempty"`
+	DisplayName        string `json:"displayName,omitempty"`
+	ContextWindow      int64  `json:"contextWindow,omitempty"`
 	MaxOutputTokens    int64  `json:"maxOutputTokens,omitempty"`
 	SupportsInputAudio bool   `json:"supportsInputAudio,omitempty"`
+}
+
+func (p *ModelProfile) UnmarshalJSON(data []byte) error {
+	type plain ModelProfile
+	var raw plain
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&raw); err != nil {
+		return err
+	}
+	*p = ModelProfile(raw)
+	if p.Model == "" && p.ModelID != "" {
+		p.Model = p.ModelID
+	}
+	if p.ModelID == "" && p.Model != "" {
+		p.ModelID = p.Model
+	}
+	return nil
+}
+
+// EffectiveModel returns the configured model identifier, falling back to ModelID.
+func (p ModelProfile) EffectiveModel() string {
+	if p.Model != "" {
+		return p.Model
+	}
+	return p.ModelID
+}
+
+// EffectiveDisplayName returns the friendly display name, falling back to EffectiveModel.
+func (p ModelProfile) EffectiveDisplayName() string {
+	if p.DisplayName != "" {
+		return p.DisplayName
+	}
+	return p.EffectiveModel()
 }
 
 // Config is the programmatic equivalent of the model section in config.json.
@@ -75,7 +114,7 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name {
 			return errors.New("model profile names must be non-empty and unpadded")
 		}
-		if strings.TrimSpace(profile.Model) == "" {
+		if strings.TrimSpace(profile.EffectiveModel()) == "" {
 			return fmt.Errorf("model profile %q requires a model ID", name)
 		}
 		provider, ok := c.Providers[profile.Provider]
@@ -84,6 +123,9 @@ func (c Config) Validate() error {
 		}
 		if profile.MaxOutputTokens < 0 {
 			return fmt.Errorf("model profile %q maxOutputTokens must not be negative", name)
+		}
+		if profile.ContextWindow < 0 {
+			return fmt.Errorf("model profile %q contextWindow must not be negative", name)
 		}
 		if profile.SupportsInputAudio && provider.Protocol != ProtocolResponses {
 			return fmt.Errorf("model profile %q enables supportsInputAudio but does not use the Responses protocol", name)

@@ -66,8 +66,88 @@ func TestCoreDefaultsTeamTreeLimits(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	writeSettingsConfig(t, workspace, "http://127.0.0.1:1")
 	client := openSettingsCore(t, workspace, stateDir)
-	if client.executionDefaults.MaxTeamChildrenPerAgent != agentgraph.DefaultMaxTeamChildrenPerAgent || client.executionDefaults.MaxTeamDepth != agentgraph.DefaultMaxTeamDepth {
+	if client.executionDefaults.MaxTeamChildrenPerAgent != 0 || client.executionDefaults.MaxTeamDepth != agentgraph.DefaultMaxTeamDepth {
 		t.Fatalf("default team execution limits = %#v", client.executionDefaults)
+	}
+}
+
+func TestCoreTeamTreeLimitPrecedence(t *testing.T) {
+	workspace := t.TempDir()
+	writeSettingsConfig(t, workspace, "http://127.0.0.1:1")
+	project, err := projectconfig.Load(filepath.Join(workspace, projectconfig.FileName))
+	if err != nil {
+		t.Fatalf("load project config: %v", err)
+	}
+	project.MaxTeamChildrenPerAgent = 7
+	project.MaxTeamDepth = 3
+	writeProjectSettingsConfig(t, workspace, project)
+
+	projectClient := openSettingsCore(t, workspace, t.TempDir())
+	if got := projectClient.executionDefaults; got.MaxTeamChildrenPerAgent != 7 || got.MaxTeamDepth != 3 {
+		t.Fatalf("project team limits = %#v", got)
+	}
+
+	hostClient, err := New(Config{
+		Workspace: workspace, StateDir: t.TempDir(), Memory: MemoryConfig{Disabled: true},
+		Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 2, MaxTeamDepth: 1},
+	})
+	if err != nil {
+		t.Fatalf("New with host team limits: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := hostClient.Close(); err != nil {
+			t.Errorf("close Core: %v", err)
+		}
+	})
+	if got := hostClient.executionDefaults; got.MaxTeamChildrenPerAgent != 2 || got.MaxTeamDepth != 1 {
+		t.Fatalf("host limits did not override project limits: %#v", got)
+	}
+}
+
+func TestModelProfileContextWindowIsUsedAfterSessionAndProjectSettings(t *testing.T) {
+	for _, test := range []struct {
+		name          string
+		projectWindow int64
+		sessionWindow int64
+		wantWindow    int64
+	}{
+		{name: "profile fallback", wantWindow: 96000},
+		{name: "project override", projectWindow: 32000, wantWindow: 32000},
+		{name: "session override", projectWindow: 32000, sessionWindow: 16000, wantWindow: 16000},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			workspace := t.TempDir()
+			config := projectconfig.Config{
+				Providers: map[string]model.ProviderConfig{
+					"provider-a": {Protocol: model.ProtocolResponses, BaseURL: "http://127.0.0.1:1", APIKey: "key-a"},
+				},
+				Models: map[string]model.ModelProfile{
+					"primary": {Provider: "provider-a", Model: "primary-wire-model", ContextWindow: 96000},
+				},
+				DefaultModel: "primary", ContextWindow: test.projectWindow,
+			}
+			writeProjectSettingsConfig(t, workspace, config)
+			client := openSettingsCore(t, workspace, t.TempDir())
+			saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+			if err != nil {
+				t.Fatalf("CreateSession: %v", err)
+			}
+			if test.sessionWindow > 0 {
+				window := test.sessionWindow
+				if err := client.SetSessionSettings(context.Background(), saved.ID, SessionSettings{
+					ModelProfile: "primary", ContextWindow: &window,
+				}); err != nil {
+					t.Fatalf("SetSessionSettings: %v", err)
+				}
+			}
+			setup, err := client.prepareTaskRun(context.Background(), taskRunConfig{sessionID: saved.ID, maxRounds: 10})
+			if err != nil {
+				t.Fatalf("prepareTaskRun: %v", err)
+			}
+			if setup.taskOptions.ContextWindow != test.wantWindow {
+				t.Fatalf("task context window = %d, want %d", setup.taskOptions.ContextWindow, test.wantWindow)
+			}
+		})
 	}
 }
 

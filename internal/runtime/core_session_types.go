@@ -58,9 +58,11 @@ type MCPServerStatus struct {
 // ModelOption is a model profile exposed to clients without leaking the
 // internal model package through Core's public API.
 type ModelOption struct {
-	Profile  string `json:"profile"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+	Profile       string `json:"profile"`
+	Provider      string `json:"provider"`
+	Model         string `json:"model"`
+	DisplayName   string `json:"displayName,omitempty"`
+	ContextWindow int64  `json:"contextWindow,omitempty"`
 }
 
 // Session contains durable conversation state, not TUI transcript caches.

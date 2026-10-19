@@ -50,7 +50,17 @@ func (c *Core) ListModelProfiles() []ModelOption {
 	profiles := c.models.Profiles()
 	options := make([]ModelOption, 0, len(profiles))
 	for id, profile := range profiles {
-		options = append(options, ModelOption{Profile: id, Provider: profile.Provider, Model: profile.Model})
+		m := profile.EffectiveModel()
+		if m == "" {
+			m = profile.Model
+		}
+		options = append(options, ModelOption{
+			Profile:       id,
+			Provider:      profile.Provider,
+			Model:         m,
+			DisplayName:   profile.DisplayName,
+			ContextWindow: profile.ContextWindow,
+		})
 	}
 	sort.Slice(options, func(i, j int) bool { return options[i].Profile < options[j].Profile })
 	return options

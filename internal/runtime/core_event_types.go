@@ -78,6 +78,7 @@ type Event struct {
 	AgentID              string
 	AgentName            string
 	AgentRole            string
+	AgentTask            string
 	TeamRunID            string
 	Provider             string
 	ModelProfile         string

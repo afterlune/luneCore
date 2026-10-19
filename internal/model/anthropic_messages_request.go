@@ -49,10 +49,20 @@ func toAnthropicRequest(request ModelRequest, profile ModelProfile, stream bool)
 	if request.Input != nil {
 		if request.Input.Text != nil {
 			wire.Messages = append(wire.Messages, anthropicMessage{Role: "user", Content: []map[string]any{{"type": "text", "text": *request.Input.Text}}})
+			if request.PromptCache != nil && request.PromptCache.PrefixItems > 0 {
+				markAnthropicCacheBreakpoint(&wire, &system)
+			}
 		} else {
-			for _, item := range request.Input.Items {
+			for index, item := range request.Input.Items {
+				beforeSystem, beforeMessages, beforeBlocks := len(system), len(wire.Messages), 0
+				if beforeMessages > 0 {
+					beforeBlocks = len(wire.Messages[beforeMessages-1].Content)
+				}
 				if err := appendAnthropicInput(&wire, &system, item); err != nil {
 					return anthropicRequest{}, err
+				}
+				if request.PromptCache != nil && index+1 == request.PromptCache.PrefixItems {
+					markAnthropicCacheBreakpointAfterInput(&wire, &system, beforeSystem, beforeMessages, beforeBlocks)
 				}
 			}
 		}
@@ -120,6 +130,41 @@ func toAnthropicRequest(request ModelRequest, profile ModelProfile, stream bool)
 		return anthropicRequest{}, errors.New("Anthropic Messages requires system instructions or at least one message")
 	}
 	return wire, nil
+}
+
+func markAnthropicCacheBreakpointAfterInput(wire *anthropicRequest, system *[]map[string]any, beforeSystem, beforeMessages, beforeBlocks int) {
+	if len(*system) > beforeSystem {
+		markAnthropicCacheBlock((*system)[len(*system)-1])
+		return
+	}
+	if len(wire.Messages) > beforeMessages {
+		content := wire.Messages[len(wire.Messages)-1].Content
+		if len(content) > 0 {
+			markAnthropicCacheBlock(content[len(content)-1])
+		}
+		return
+	}
+	if len(wire.Messages) > 0 {
+		content := wire.Messages[len(wire.Messages)-1].Content
+		if len(content) > beforeBlocks {
+			markAnthropicCacheBlock(content[len(content)-1])
+		}
+	}
+}
+
+func markAnthropicCacheBreakpoint(wire *anthropicRequest, system *[]map[string]any) {
+	if len(*system) > 0 {
+		markAnthropicCacheBlock((*system)[len(*system)-1])
+		return
+	}
+	if len(wire.Messages) > 0 && len(wire.Messages[len(wire.Messages)-1].Content) > 0 {
+		content := wire.Messages[len(wire.Messages)-1].Content
+		markAnthropicCacheBlock(content[len(content)-1])
+	}
+}
+
+func markAnthropicCacheBlock(block map[string]any) {
+	block["cache_control"] = map[string]string{"type": "ephemeral"}
 }
 
 func anthropicToolChoice(choice ToolChoice) (map[string]any, error) {

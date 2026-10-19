@@ -20,6 +20,7 @@ type userQuestionInput struct {
 }
 
 type teamDispatchRequest struct {
+	Mode             json.RawMessage  `json:"mode,omitempty"`
 	Tasks            []TeamAssignment `json:"tasks"`
 	MinimumSuccesses *int             `json:"minimum_successes,omitempty"`
 }
@@ -89,6 +90,10 @@ func teamDispatchDefinition(team TeamExecutor, maxChildren int) model.FunctionTo
 	parameters, _ := json.Marshal(map[string]any{
 		"type": "object",
 		"properties": map[string]any{
+			"mode": map[string]any{
+				"type": "string", "enum": []string{TeamDispatchTask, TeamDispatchFork},
+				"description": "Use task for isolated context; fork to include the parent conversation and completed tool results before this dispatch, followed by each member's task.",
+			},
 			"tasks": map[string]any{
 				"type":     "array",
 				"minItems": 1,
@@ -112,34 +117,45 @@ func teamDispatchDefinition(team TeamExecutor, maxChildren int) model.FunctionTo
 				"description": "Minimum successful members before results can merge. Use null to inherit the host default; zero waits for every member.",
 			},
 		},
-		"required":             []string{"tasks", "minimum_successes"},
+		"required":             []string{"mode", "tasks", "minimum_successes"},
 		"additionalProperties": false,
 	})
 	strict := true
 	return model.FunctionTool{
 		Name: teamDispatchToolName,
 		Description: "Delegate independent work to multiple team members at once. Choose each member's model profile from the listed catalog. " +
-			"Use this proactively when a task has at least two worthwhile, bounded subtasks that can make progress in parallel; dispatch independent work together and give each member a distinct deliverable. Skip trivial or dependent work and stay within the task limit shown by this tool. Members have isolated context, share the workspace and current permissions, and return results for you to synthesize. Set minimum_successes to null to use the host default or zero to wait for every member.",
+			"Use this proactively when a task has at least two worthwhile, bounded subtasks that can make progress in parallel; dispatch independent work together and give each member a distinct deliverable. Skip trivial or dependent work and stay within the task limit shown by this tool. Use task for isolated context, or fork when members need the parent's conversation and completed tool results before their own task. Fork context is passed to every member; cache reuse is possible only where the provider and model can reuse the same prefix. Members share the workspace and current permissions, and return results for you to synthesize. Set minimum_successes to null to use the host default or zero to wait for every member.",
 		Parameters: parameters,
 		Strict:     &strict,
 	}
 }
 
-func parseTeamAssignments(arguments string, team TeamExecutor, maxChildren int) ([]TeamAssignment, *int, error) {
+func parseTeamAssignments(arguments string, team TeamExecutor, maxChildren int) ([]TeamAssignment, string, *int, error) {
 	decoder := json.NewDecoder(strings.NewReader(arguments))
 	decoder.DisallowUnknownFields()
 	var request teamDispatchRequest
 	if err := decoder.Decode(&request); err != nil {
-		return nil, nil, err
+		return nil, "", nil, err
 	}
 	if err := decoder.Decode(new(any)); err != io.EOF {
-		return nil, nil, errors.New("expected one JSON object")
+		return nil, "", nil, errors.New("expected one JSON object")
+	}
+	mode := TeamDispatchTask
+	if len(request.Mode) > 0 {
+		var requestedMode string
+		if err := json.Unmarshal(request.Mode, &requestedMode); err != nil {
+			return nil, "", nil, fmt.Errorf("mode must be a string: %w", err)
+		}
+		mode = requestedMode
+	}
+	if mode != TeamDispatchTask && mode != TeamDispatchFork {
+		return nil, "", nil, fmt.Errorf("mode must be %q or %q", TeamDispatchTask, TeamDispatchFork)
 	}
 	if maxChildren <= 0 || len(request.Tasks) == 0 || len(request.Tasks) > maxChildren {
-		return nil, nil, fmt.Errorf("team task count must be between 1 and %d", maxChildren)
+		return nil, "", nil, fmt.Errorf("team task count must be between 1 and %d", maxChildren)
 	}
 	if request.MinimumSuccesses != nil && (*request.MinimumSuccesses < 0 || *request.MinimumSuccesses > len(request.Tasks)) {
-		return nil, nil, fmt.Errorf("minimum_successes must be between 0 and %d", len(request.Tasks))
+		return nil, "", nil, fmt.Errorf("minimum_successes must be between 0 and %d", len(request.Tasks))
 	}
 	profiles := team.Profiles()
 	seen := make(map[string]struct{}, len(request.Tasks))
@@ -149,17 +165,17 @@ func parseTeamAssignments(arguments string, team TeamExecutor, maxChildren int) 
 		task.Model = strings.TrimSpace(task.Model)
 		task.Task = strings.TrimSpace(task.Task)
 		if task.ID == "" || task.Task == "" {
-			return nil, nil, errors.New("each team task requires a non-empty id and task")
+			return nil, "", nil, errors.New("each team task requires a non-empty id and task")
 		}
 		if _, exists := seen[task.ID]; exists {
-			return nil, nil, fmt.Errorf("team member id %q is repeated", task.ID)
+			return nil, "", nil, fmt.Errorf("team member id %q is repeated", task.ID)
 		}
 		seen[task.ID] = struct{}{}
 		if _, exists := profiles[task.Model]; !exists {
-			return nil, nil, fmt.Errorf("unknown team model profile %q", task.Model)
+			return nil, "", nil, fmt.Errorf("unknown team model profile %q", task.Model)
 		}
 	}
-	return request.Tasks, request.MinimumSuccesses, nil
+	return request.Tasks, mode, request.MinimumSuccesses, nil
 }
 
 func formatTeamResults(results []TeamMemberResult) string {

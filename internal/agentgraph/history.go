@@ -78,6 +78,16 @@ func ensureTranscript(state *State) {
 	state.Transcript = *model.NewResponseInputItems(state.History.Items...)
 }
 
+func cloneResponseInput(input *model.ResponseInput) *model.ResponseInput {
+	if input == nil {
+		return nil
+	}
+	if input.Text != nil {
+		return model.NewResponseInputText(*input.Text)
+	}
+	return model.NewResponseInputItems(input.Items...)
+}
+
 func appendResponseHistory(history model.ResponseInput, output []model.ResponseOutputItem) (model.ResponseInput, error) {
 	items := append([]model.InputItem(nil), history.Items...)
 	for _, item := range output {

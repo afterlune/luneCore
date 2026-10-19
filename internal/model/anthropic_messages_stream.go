@@ -61,7 +61,8 @@ func readAnthropicStream(ctx context.Context, body interface{ Read([]byte) (int,
 			if start.Model != "" {
 				response.Model = start.Model
 			}
-			response.Usage.InputTokens = start.Usage.InputTokens
+			inputTokens := start.Usage.InputTokens + start.Usage.CacheReadInputTokens + start.Usage.CacheCreationInputTokens
+			response.Usage.InputTokens = inputTokens
 			response.Usage.InputTokensDetails = TokenInputDetails{
 				CachedTokens: start.Usage.CacheReadInputTokens, CacheCreationTokens: start.Usage.CacheCreationInputTokens,
 			}

@@ -10,6 +10,7 @@ import (
 )
 
 const (
+	ProviderOpenAI            = "openai"
 	ProviderDeepSeek          = "deepseek"
 	ProviderAnthropic         = "anthropic"
 	ProtocolResponses         = "responses"
@@ -73,7 +74,7 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(name) == "" || strings.TrimSpace(name) != name {
 			return errors.New("model profile names must be non-empty and unpadded")
 		}
-		if strings.TrimSpace(profile.Model) == "" {
+		if strings.TrimSpace(profile.EffectiveModel()) == "" {
 			return fmt.Errorf("model profile %q requires a model ID", name)
 		}
 		provider, ok := c.Providers[profile.Provider]

@@ -26,29 +26,33 @@ const (
 // Config is the workspace's project configuration. Provider and model fields
 // retain their existing JSON shapes; other settings are optional additions.
 type Config struct {
-	Providers            map[string]model.ProviderConfig `json:"providers"`
-	Models               map[string]model.ModelProfile   `json:"models"`
-	DefaultModel         string                          `json:"defaultModel"`
-	MaxParallelAgents    int                             `json:"maxParallelAgents,omitempty"`
-	ContextWindow        int64                           `json:"contextWindow,omitempty"`        // Tokens; zero means unset.
-	AutoCompact          bool                            `json:"autoCompact"`                    // Defaults to true; set false to disable.
-	AutoCompactThreshold float64                         `json:"autoCompactThreshold,omitempty"` // Ratio from 0 to 1; defaults to 0.8 when enabled.
-	ReserveOutputTokens  int64                           `json:"reserveOutputTokens,omitempty"`  // Tokens; zero means unset.
-	Attachments          AttachmentLimits                `json:"attachments,omitempty"`
-	MCPServers           map[string]MCPServerConfig      `json:"mcpServers,omitempty"`
-	legacyAPIKey         string
+	Providers               map[string]model.ProviderConfig `json:"providers"`
+	Models                  map[string]model.ModelProfile   `json:"models"`
+	DefaultModel            string                          `json:"defaultModel"`
+	MaxParallelAgents       int                             `json:"maxParallelAgents,omitempty"`
+	MaxTeamChildrenPerAgent int                             `json:"maxTeamChildrenPerAgent,omitempty"`
+	MaxTeamDepth            int                             `json:"maxTeamDepth,omitempty"`
+	ContextWindow           int64                           `json:"contextWindow,omitempty"`        // Tokens; zero means unset.
+	AutoCompact             bool                            `json:"autoCompact"`                    // Defaults to true; set false to disable.
+	AutoCompactThreshold    float64                         `json:"autoCompactThreshold,omitempty"` // Ratio from 0 to 1; defaults to 0.8 when enabled.
+	ReserveOutputTokens     int64                           `json:"reserveOutputTokens,omitempty"`  // Tokens; zero means unset.
+	Attachments             AttachmentLimits                `json:"attachments,omitempty"`
+	MCPServers              map[string]MCPServerConfig      `json:"mcpServers,omitempty"`
+	legacyAPIKey            string
 }
 
 // ProjectConfig is the complete project configuration supplied by a host.
 // Hosts may use this instead of loading config.json themselves.
 type ProjectConfig struct {
-	ModelConfig          publicmodel.Config         `json:"modelConfig"`
-	ContextWindow        int64                      `json:"contextWindow,omitempty"`
-	AutoCompact          bool                       `json:"autoCompact"`
-	AutoCompactThreshold float64                    `json:"autoCompactThreshold,omitempty"`
-	ReserveOutputTokens  int64                      `json:"reserveOutputTokens,omitempty"`
-	Attachments          AttachmentLimits           `json:"attachments,omitempty"`
-	MCPServers           map[string]MCPServerConfig `json:"mcpServers,omitempty"`
+	ModelConfig             publicmodel.Config         `json:"modelConfig"`
+	MaxTeamChildrenPerAgent int                        `json:"maxTeamChildrenPerAgent,omitempty"`
+	MaxTeamDepth            int                        `json:"maxTeamDepth,omitempty"`
+	ContextWindow           int64                      `json:"contextWindow,omitempty"`
+	AutoCompact             bool                       `json:"autoCompact"`
+	AutoCompactThreshold    float64                    `json:"autoCompactThreshold,omitempty"`
+	ReserveOutputTokens     int64                      `json:"reserveOutputTokens,omitempty"`
+	Attachments             AttachmentLimits           `json:"attachments,omitempty"`
+	MCPServers              map[string]MCPServerConfig `json:"mcpServers,omitempty"`
 }
 
 // DefaultProjectConfig returns the same runtime defaults used by config.json.
@@ -77,8 +81,9 @@ func (c ProjectConfig) toConfig() Config {
 	}
 	return Config{
 		Providers: providers, Models: profiles, DefaultModel: c.ModelConfig.DefaultModel,
-		MaxParallelAgents: c.ModelConfig.MaxParallelAgents,
-		ContextWindow:     c.ContextWindow, AutoCompact: c.AutoCompact,
+		MaxParallelAgents:       c.ModelConfig.MaxParallelAgents,
+		MaxTeamChildrenPerAgent: c.MaxTeamChildrenPerAgent, MaxTeamDepth: c.MaxTeamDepth,
+		ContextWindow: c.ContextWindow, AutoCompact: c.AutoCompact,
 		AutoCompactThreshold: c.AutoCompactThreshold, ReserveOutputTokens: c.ReserveOutputTokens,
 		Attachments: c.Attachments, MCPServers: c.MCPServers,
 	}
@@ -163,7 +168,7 @@ func (c *Config) UnmarshalJSON(data []byte) error {
 	}
 	for key := range fields {
 		switch key {
-		case "providers", "models", "defaultModel", "maxParallelAgents", "contextWindow", "autoCompact", "autoCompactThreshold", "reserveOutputTokens", "attachments", "mcpServers":
+		case "providers", "models", "defaultModel", "maxParallelAgents", "maxTeamChildrenPerAgent", "maxTeamDepth", "contextWindow", "autoCompact", "autoCompactThreshold", "reserveOutputTokens", "attachments", "mcpServers":
 		default:
 			return fmt.Errorf("unknown config field %q", key)
 		}
@@ -207,6 +212,12 @@ func (c Config) validateRuntimeSettings() error {
 	}
 	if c.ContextWindow < 0 {
 		return errors.New("contextWindow must not be negative")
+	}
+	if c.MaxTeamChildrenPerAgent < 0 {
+		return errors.New("maxTeamChildrenPerAgent must not be negative")
+	}
+	if c.MaxTeamDepth < 0 {
+		return errors.New("maxTeamDepth must not be negative")
 	}
 	if c.ReserveOutputTokens < 0 {
 		return errors.New("reserveOutputTokens must not be negative")

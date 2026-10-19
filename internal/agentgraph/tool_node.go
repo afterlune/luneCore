@@ -103,78 +103,14 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			return graph.Wait(state, UserQuestionContinuation, toolNode), nil
 		}
 	case call.Name == teamDispatchToolName && a.options.Team != nil:
-		remaining := state.Execution.MaxTeamChildrenPerAgent - state.TeamChildrenCreated
-		if state.TeamDepth >= state.Execution.MaxTeamDepth || remaining <= 0 {
-			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Team request rejected: this agent has reached its delegation limit")}
-			break
-		}
-		assignments, minimumSuccesses, err := parseTeamAssignments(call.Arguments, a.options.Team, remaining)
+		transition, result, err := a.dispatchTeam(ctx, state, call, info.CallID)
 		if err != nil {
-			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Team request rejected: " + err.Error())}
-		} else {
-			quorum := a.options.Execution.TeamQuorum
-			if minimumSuccesses != nil {
-				quorum = *minimumSuccesses
-			}
-			if quorum < 0 || quorum > len(assignments) {
-				output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(fmt.Sprintf("Team request rejected: minimum success threshold must be between 0 and %d", len(assignments)))}
-				break
-			}
-			state.TeamAssignments = append([]TeamAssignment(nil), assignments...)
-			state.TeamMinimumSuccesses = quorum
-			state.TeamDispatchID = state.RunID + ":" + state.ExecutionID + ":" + info.CallID
-			branches := make([]graph.Branch[State], 0, len(assignments))
-			taskOptions := TaskOptions{
-				ExecutionID: state.ExecutionID, MaxToolRounds: state.MaxToolRounds,
-				ReasoningEffort: state.ReasoningEffort, PermissionOverride: state.PermissionOverride, PlanMode: state.PlanMode,
-				PersonalInstructions:     state.PersonalInstructions,
-				ProjectInstructionsReady: state.ProjectInstructionsReady,
-				ProjectInstructions:      cloneProjectInstructions(state.ProjectInstructions),
-				PlanAuthorization:        state.PlanAuthorization, NoInteractiveDecisions: state.NoInteractiveDecisions,
-			}
-			for _, assignment := range assignments {
-				input, inputErr := model.NewResponseInput(assignment.Task)
-				if inputErr != nil {
-					return graph.Transition[State]{}, inputErr
-				}
-				branch, branchErr := initialState(nil, nil, input)
-				if branchErr != nil {
-					return graph.Transition[State]{}, branchErr
-				}
-				branch.RunID, branch.ExecutionID = state.RunID, state.ExecutionID
-				branch.AgentID = state.AgentID + "/" + assignment.ID
-				branch.AgentName, branch.TeamTaskID = assignment.ID, assignment.ID
-				branch.TeamModel = assignment.Model
-				branch.TeamBranch = true
-				branch.TeamRunID, branch.TeamDispatchID = state.TeamDispatchID, ""
-				branch.TeamDepth = state.TeamDepth + 1
-				branch.TeamChildrenCreated = 0
-				branch.TaskSettingsVersion = CurrentTaskSettingsVersion
-				branch.MaxToolRounds = state.MaxToolRounds
-				branch.Execution = state.Execution
-				branch.PermissionOverride = state.PermissionOverride
-				branch.PlanMode = state.PlanMode
-				branch.PlanAuthorization = state.PlanAuthorization
-				branch.NoInteractiveDecisions = state.NoInteractiveDecisions
-				branch.ReasoningEffort = state.ReasoningEffort
-				branch.PersonalInstructions = state.PersonalInstructions
-				branch.ProjectInstructionsReady = state.ProjectInstructionsReady
-				branch.ProjectInstructions = cloneProjectInstructions(state.ProjectInstructions)
-				branch, branchErr = a.options.Team.PrepareBranch(ctx, branch, assignment, taskOptions)
-				if branchErr != nil {
-					return graph.Transition[State]{}, branchErr
-				}
-				branch.PermissionOverride = state.PermissionOverride
-				branch.TeamDepth = state.TeamDepth + 1
-				branch.TeamChildrenCreated = 0
-				branch.PlanMode = state.PlanMode
-				branch.PlanAuthorization = state.PlanAuthorization
-				branch.NoInteractiveDecisions = state.NoInteractiveDecisions
-				branches = append(branches, graph.Branch[State]{Target: teamModelNode, State: branch, EntryTimeout: a.options.Execution.TeamEntryTimeout})
-			}
-			state.TeamChildrenCreated += len(assignments)
-			return graph.FanOut(state, branches...), nil
+			return graph.Transition[State]{}, err
 		}
+		if result == nil {
+			return transition, nil
+		}
+		output = *result
 	case a.categorized != nil && call.Name == model.CategorySelectorName:
 		permissionMode := state.PermissionOverride
 		if permissionMode == "" && a.options.CurrentPermissionMode != nil {
@@ -207,6 +143,9 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			}
 			return graph.Transition[State]{}, err
 		}
+	}
+	if call.Name == teamDispatchToolName {
+		state.TeamForkBaseInput = nil
 	}
 	state = appendToolOutput(state, output)
 	return a.nextToolTransition(state), nil

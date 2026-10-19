@@ -339,6 +339,7 @@ func TestSessionRuntimeFinalizesCompletedCheckpointAfterRestartWithoutRerunning(
 	if _, err := sessionDB.Exec(`DROP TRIGGER reject_turn_result`); err != nil {
 		t.Fatal(err)
 	}
+	_ = sessionDB.Close()
 	if err := client.Close(); err != nil {
 		t.Fatal(err)
 	}

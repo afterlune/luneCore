@@ -267,6 +267,9 @@ func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, a
 	contextWindow := state.ContextWindow
 	if agentID != "" && agentID != "lead" {
 		contextWindow = 0
+		if workerProfile, ok := c.models.Profile(profile); ok {
+			contextWindow = workerProfile.ContextWindow
+		}
 	}
 	if state.SessionID != "" {
 		if err := c.recordUsageForAgent(context.Background(), state.SessionID, value, agentID, profile, provider, modelID, contextWindow, estimatedInputTokens, purpose); err != nil {
