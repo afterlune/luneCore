@@ -69,6 +69,14 @@ func TestCoreDefaultsTeamTreeLimits(t *testing.T) {
 	if client.executionDefaults.MaxTeamChildrenPerAgent != 0 || client.executionDefaults.MaxTeamDepth != agentgraph.DefaultMaxTeamDepth {
 		t.Fatalf("default team execution limits = %#v", client.executionDefaults)
 	}
+	defaults := client.ExecutionDefaults()
+	if defaults != client.executionDefaults {
+		t.Fatalf("public execution defaults = %#v, want %#v", defaults, client.executionDefaults)
+	}
+	defaults.MaxTeamChildrenPerAgent = 99
+	if client.ExecutionDefaults().MaxTeamChildrenPerAgent != 0 {
+		t.Fatal("changing the returned defaults mutated Core")
+	}
 }
 
 func TestCoreTeamTreeLimitPrecedence(t *testing.T) {

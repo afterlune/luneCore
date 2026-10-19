@@ -327,3 +327,12 @@ func (c *Core) MaxParallelAgents() int {
 	}
 	return c.team.MaxParallelAgents()
 }
+
+// ExecutionDefaults returns the resolved host and project execution limits.
+// A running or paused task keeps its own effective limits in TaskState.Execution.
+func (c *Core) ExecutionDefaults() ExecutionOptions {
+	if c == nil {
+		return ExecutionOptions{}
+	}
+	return c.executionDefaults
+}
