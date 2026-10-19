@@ -26,9 +26,10 @@ type ModelRequest struct {
 	PromptCache *PromptCacheHint `json:"-"`
 }
 
-// PromptCacheHint describes a stable input prefix that sibling requests may
-// reuse. Key is a provider-specific routing hint; PrefixItems identifies the
-// final shared item for protocols that require an explicit cache breakpoint.
+// PromptCacheHint describes a stable input prefix that related requests may
+// reuse. It is advisory; the provider validates the rendered prompt prefix.
+// Key is a provider-specific routing hint; PrefixItems identifies the final
+// shared item for protocols that require an explicit cache breakpoint.
 type PromptCacheHint struct {
 	Key         string
 	PrefixItems int

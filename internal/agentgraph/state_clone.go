@@ -35,6 +35,7 @@ func cloneState(state State) (State, error) {
 		return State{}, fmt.Errorf("clone final response: %w", err)
 	}
 	clone.TeamAssignments = append([]TeamAssignment(nil), state.TeamAssignments...)
+	clone.TeamBranchModes = append([]string(nil), state.TeamBranchModes...)
 	if state.TeamForkBaseInput != nil && (state.TeamForkBaseInput.Text != nil || state.TeamForkBaseInput.Items != nil) {
 		forkInput, err := model.CloneResponseInput(*state.TeamForkBaseInput)
 		if err != nil {

@@ -17,9 +17,9 @@ func TestRuntimeToolDescriptionsRetainDecisionAndDispatchConstraints(t *testing.
 			"defaults for routine details", "unique IDs", "answer choices", "free text",
 		},
 		"delegate_team": {
-			"independent tasks", "distinct deliverables", "listed model profiles", "task uses isolated context",
-			"fork also includes parent history", "matching provider/model prefix", "share the workspace and permissions",
-			"minimum_successes null uses the host default", "zero waits for all",
+			"independent tasks", "distinct deliverables", "task gives each member only its assignment",
+			"same provider/model", "may reuse cache", "other profiles receive only their assignment", "inspect the workspace", "share workspace and permissions",
+			"minimum_successes null uses host default", "zero waits for all",
 		},
 	}
 	for name, terms := range want {

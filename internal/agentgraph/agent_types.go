@@ -19,7 +19,7 @@ const ExecutionBlockerContinuation = "execution_blocker"
 const TokenBudgetContinuation = "token_budget"
 
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
-const CurrentTaskSettingsVersion = 12
+const CurrentTaskSettingsVersion = 13
 
 const (
 	TeamDispatchTask = "task"
@@ -47,11 +47,19 @@ type TeamAssignment struct {
 }
 
 type TeamMemberResult struct {
-	ID       string
-	Model    string
-	Provider string
-	Text     string
-	Error    string
+	ID          string
+	Model       string
+	Provider    string
+	ContextMode string
+	Text        string
+	Error       string
+}
+
+type teamCacheIdentity struct {
+	Provider string `json:"provider,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+	Model    string `json:"model,omitempty"`
+	Key      string `json:"key,omitempty"`
 }
 
 type TeamExecutor interface {
@@ -169,7 +177,10 @@ type State struct {
 	TeamAssignments          []TeamAssignment             `json:"team_assignments,omitempty"`
 	TeamMinimumSuccesses     int                          `json:"team_minimum_successes,omitempty"`
 	TeamDispatchMode         string                       `json:"team_dispatch_mode,omitempty"`
+	TeamBranchModes          []string                     `json:"team_branch_modes,omitempty"`
 	TeamForkBaseInput        *model.ResponseInput         `json:"team_fork_base_input,omitempty"`
+	TeamForkBaseCache        teamCacheIdentity            `json:"team_fork_base_cache,omitzero"`
+	TeamForkSourceCache      teamCacheIdentity            `json:"team_fork_source_cache,omitzero"`
 	TeamForked               bool                         `json:"team_forked,omitempty"`
 	TeamForkPrefixItems      int                          `json:"team_fork_prefix_items,omitempty"`
 	TeamDepth                int                          `json:"team_depth,omitempty"`

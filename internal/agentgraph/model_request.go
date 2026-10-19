@@ -92,7 +92,7 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 	if request.Model == "" {
 		request.Model = a.options.Model
 	}
-	request.Instructions = taskInstructions(state.Goal, permissionMode, state.PlanMode, state.TeamBranch, contains(visibleNames, teamDispatchToolName))
+	request.Instructions = taskInstructions(state.Goal, permissionMode, state.PlanMode, contains(visibleNames, teamDispatchToolName), a.options.Team != nil)
 	if !state.TeamBranch && a.options.MemorySummaryFor != nil {
 		if summary, summaryErr := a.options.MemorySummaryFor(ctx, state); summaryErr != nil {
 			a.options.Logger.WarnContext(ctx, "load workspace memory summary", "error_type", fmt.Sprintf("%T", summaryErr))
@@ -179,17 +179,8 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 		"selected_category", state.SelectedCategory,
 		"visible_tools", visibleNames,
 	)
-	sendRequest := func(request model.ModelRequest) (*model.ModelResponse, error) {
-		request.PromptCache = nil
-		if forkCachePrefixValid && request.Input != nil {
-			inputItems := len(request.Input.Items)
-			if request.Input.Text != nil && inputItems == 0 {
-				inputItems = 1
-			}
-			if hint := teamForkCacheHint(state); hint != nil && hint.PrefixItems <= inputItems {
-				request.PromptCache = hint
-			}
-		}
+	sendRequest := func(request *model.ModelRequest) (*model.ModelResponse, error) {
+		request.PromptCache = requestPromptCacheHint(state, *request, visibleNames, forkCachePrefixValid)
 		var emit func(model.ModelStreamEvent) error
 		if a.options.StreamObserverFor != nil || a.options.StreamObserver != nil {
 			emit = func(event model.ModelStreamEvent) error {
@@ -203,9 +194,9 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 				return nil
 			}
 		}
-		return a.sendModel(requestCtx, state, requester, request, emit)
+		return a.sendModel(requestCtx, state, requester, *request, emit)
 	}
-	response, responseErr := sendRequest(request)
+	response, responseErr := sendRequest(&request)
 	if serverCompactionRequested && compactOptionUnsupported(responseErr) && !streamFailure(responseErr) {
 		state.ServerCompactionFallback = true
 		a.notifyCompaction(ContextCompactionEvent{
@@ -227,7 +218,7 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 			return a.failOrPauseModel(ctx, state, fmt.Errorf("automatic context compaction: %w", err))
 		}
 		serverCompactionRequested = false
-		response, responseErr = sendRequest(request)
+		response, responseErr = sendRequest(&request)
 	}
 	if responseErr != nil {
 		if serverCompactionRequested {

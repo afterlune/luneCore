@@ -10,7 +10,7 @@ import (
 
 func (a *Agent) dispatchTeam(ctx context.Context, state State, call model.OutputFunctionCall, dispatchCallID string) (graph.Transition[State], *model.InputFunctionCallOutput, error) {
 	reject := func(message string) (graph.Transition[State], *model.InputFunctionCallOutput, error) {
-		state.TeamForkBaseInput = nil
+		clearTeamForkBase(&state)
 		output := model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Team request rejected: " + message)}
 		return graph.Transition[State]{}, &output, nil
 	}
@@ -40,6 +40,7 @@ func (a *Agent) dispatchTeam(ctx context.Context, state State, call model.Output
 	}
 
 	state.TeamAssignments = append([]TeamAssignment(nil), assignments...)
+	state.TeamBranchModes = make([]string, len(assignments))
 	state.TeamMinimumSuccesses = quorum
 	state.TeamDispatchMode = mode
 	state.TeamDispatchID = state.RunID + ":" + state.ExecutionID + ":" + dispatchCallID
@@ -53,7 +54,20 @@ func (a *Agent) dispatchTeam(ctx context.Context, state State, call model.Output
 		PlanAuthorization:        state.PlanAuthorization, NoInteractiveDecisions: state.NoInteractiveDecisions,
 	}
 	for _, assignment := range assignments {
-		input, prefixCount, inputErr := teamAssignmentInput(mode, forkPrefix, assignment.Task)
+		profile := a.options.Team.Profiles()[assignment.Model]
+		parentCache := state.TeamForkBaseCache
+		inheritContext := mode == TeamDispatchFork && sameModelIdentity(
+			parentCache.Provider, parentCache.Model,
+			profile.Provider, profile.EffectiveModel(),
+		)
+		branchMode := TeamDispatchTask
+		branchPrefix := []model.InputItem(nil)
+		if inheritContext {
+			branchMode = TeamDispatchFork
+			branchPrefix = forkPrefix
+		}
+		state.TeamBranchModes[len(branches)] = branchMode
+		input, prefixCount, inputErr := teamAssignmentInput(branchMode, branchPrefix, assignment.Task, state.PlanMode)
 		if inputErr != nil {
 			return graph.Transition[State]{}, nil, inputErr
 		}
@@ -68,9 +82,15 @@ func (a *Agent) dispatchTeam(ctx context.Context, state State, call model.Output
 		branch.TeamModel = assignment.Model
 		branch.TeamBranch = true
 		branch.TeamRunID, branch.TeamDispatchID = state.TeamDispatchID, ""
-		branch.TeamDispatchMode = mode
-		branch.TeamForked = mode == TeamDispatchFork
+		branch.TeamDispatchMode = branchMode
+		branch.TeamForked = inheritContext
 		branch.TeamForkPrefixItems = prefixCount
+		if inheritContext {
+			branch.Goal = state.Goal
+			branch.TeamForkSourceCache = parentCache
+			branch.SelectedCategory = state.SelectedCategory
+			branch.SelectedCategories = append([]string(nil), state.SelectedCategories...)
+		}
 		branch.TeamDepth = state.TeamDepth + 1
 		branch.TeamChildrenCreated = 0
 		branch.TaskSettingsVersion = CurrentTaskSettingsVersion
@@ -97,16 +117,30 @@ func (a *Agent) dispatchTeam(ctx context.Context, state State, call model.Output
 		branches = append(branches, graph.Branch[State]{Target: teamModelNode, State: branch, EntryTimeout: a.options.Execution.TeamEntryTimeout})
 	}
 	state.TeamChildrenCreated += len(assignments)
-	state.TeamForkBaseInput = nil
+	clearTeamForkBase(&state)
 	return graph.FanOut(state, branches...), nil, nil
 }
 
-func teamAssignmentInput(mode string, prefix []model.InputItem, task string) (*model.ResponseInput, int, error) {
+func teamAssignmentInput(mode string, prefix []model.InputItem, task string, planMode bool) (*model.ResponseInput, int, error) {
+	message := delegatedTaskMessage(task, planMode)
 	if mode != TeamDispatchFork {
-		input, err := model.NewResponseInput(task)
+		input, err := model.NewResponseInput(message)
 		return input, 0, err
 	}
 	items := append([]model.InputItem(nil), prefix...)
-	items = append(items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(task)})
+	items = append(items, model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(message)})
 	return model.NewResponseInputItems(items...), len(prefix), nil
+}
+
+func delegatedTaskMessage(task string, planMode bool) string {
+	role := "Worker task:\n"
+	if planMode {
+		role = "Worker task (Plan mode):\n"
+	}
+	return role + task
+}
+
+func sameModelIdentity(sourceProvider, sourceModel, targetProvider, targetModel string) bool {
+	return sourceProvider != "" && sourceModel != "" &&
+		sourceProvider == targetProvider && sourceModel == targetModel
 }

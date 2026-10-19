@@ -11,11 +11,17 @@ import (
 
 func (a *Agent) handleModelResponse(ctx context.Context, state State, request model.ModelRequest, response *model.ModelResponse, visibleNames []string, compactionThreshold int64, serverCompactionRequested bool) (graph.Transition[State], error) {
 	var err error
-	state.TeamForkBaseInput = nil
+	clearTeamForkBase(&state)
 	if a.options.Team != nil && request.Input != nil {
 		for _, call := range responseFunctionCalls(response.Output) {
 			if call.Name == teamDispatchToolName {
 				state.TeamForkBaseInput = cloneResponseInput(request.Input)
+				state.TeamForkBaseCache = teamCacheIdentity{
+					Provider: state.Provider, Protocol: state.Protocol, Model: request.Model,
+				}
+				if request.PromptCache != nil {
+					state.TeamForkBaseCache.Key = request.PromptCache.Key
+				}
 				break
 			}
 		}

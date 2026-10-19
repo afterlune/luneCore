@@ -258,7 +258,7 @@ func TestForkDispatchCopiesPreDispatchHistoryAndScopesCacheByModel(t *testing.T)
 	}}
 	agent, err := NewWithOptions(requester, registry, AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderOpenAI,
-		Model: "shared-model", Team: team, Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 3},
+		Protocol: model.ProtocolResponses, Model: "shared-model", Team: team, Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 3},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -280,6 +280,10 @@ func TestForkDispatchCopiesPreDispatchHistoryAndScopesCacheByModel(t *testing.T)
 	if len(requester.requests) < 2 || requester.requests[0].Input == nil {
 		t.Fatalf("lead model requests = %d, want dispatch and synthesis", len(requester.requests))
 	}
+	parentCache := requester.requests[0].PromptCache
+	if parentCache == nil {
+		t.Fatal("delegatable parent request did not receive a cache hint")
+	}
 	prefixCount := len(requester.requests[0].Input.Items)
 	team.mu.Lock()
 	branchRequests := make(map[string]model.ModelRequest, len(team.requests))
@@ -294,7 +298,8 @@ func TestForkDispatchCopiesPreDispatchHistoryAndScopesCacheByModel(t *testing.T)
 	if len(branchRequests) != 3 {
 		t.Fatalf("fork branch requests = %d, want 3", len(branchRequests))
 	}
-	for id, request := range branchRequests {
+	for _, id := range []string{"lead/fork-0", "lead/fork-1"} {
+		request := branchRequests[id]
 		inputCount := -1
 		if request.Input != nil {
 			inputCount = len(request.Input.Items)
@@ -317,8 +322,8 @@ func TestForkDispatchCopiesPreDispatchHistoryAndScopesCacheByModel(t *testing.T)
 				t.Errorf("branch %q copied the pending parent call %q: %s", id, excluded, encoded)
 			}
 		}
-		if request.PromptCache == nil || request.PromptCache.PrefixItems != prefixCount {
-			t.Errorf("branch %q prompt cache hint = %#v, want prefix count %d", id, request.PromptCache, prefixCount)
+		if request.PromptCache == nil || request.PromptCache.Key != parentCache.Key || request.PromptCache.PrefixItems != prefixCount {
+			t.Errorf("branch %q prompt cache hint = %#v, want parent's key and prefix count %d", id, request.PromptCache, prefixCount)
 		}
 		encodedState, err := json.Marshal(branchStates[id])
 		if err != nil {
@@ -328,16 +333,37 @@ func TestForkDispatchCopiesPreDispatchHistoryAndScopesCacheByModel(t *testing.T)
 		if err := json.Unmarshal(encodedState, &restored); err != nil {
 			t.Fatal(err)
 		}
-		if !restored.TeamForked || restored.TeamForkPrefixItems != prefixCount || restored.TeamDispatchMode != TeamDispatchFork || restored.TaskSettingsVersion != CurrentTaskSettingsVersion {
+		if !restored.TeamForked || restored.TeamForkPrefixItems != prefixCount || restored.TeamDispatchMode != TeamDispatchFork || restored.TeamForkSourceCache.Key != parentCache.Key || restored.TaskSettingsVersion != CurrentTaskSettingsVersion {
 			t.Errorf("fork checkpoint state = %#v", restored)
 		}
 	}
-	first, second, different := branchRequests["lead/fork-0"].PromptCache, branchRequests["lead/fork-1"].PromptCache, branchRequests["lead/fork-2"].PromptCache
-	if first != nil && second != nil && first.Key != second.Key {
-		t.Error("same-provider, same-model fork siblings should use the same cache key")
+	differentRequest := branchRequests["lead/fork-2"]
+	differentInput, err := json.Marshal(differentRequest.Input)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if first != nil && different != nil && first.Key == different.Key {
-		t.Error("a different provider/model should use a different cache key")
+	if differentRequest.Input == nil || strings.Contains(string(differentInput), "initial user request") || !strings.Contains(string(differentInput), "task two") {
+		t.Fatalf("different-model member inherited parent history instead of receiving a fresh task: %#v", differentRequest.Input)
+	}
+	if differentRequest.PromptCache == nil || differentRequest.PromptCache.Key == parentCache.Key {
+		t.Errorf("different-model member should have an isolated cache key, got %#v (parent %#v)", differentRequest.PromptCache, parentCache)
+	}
+	differentState := branchStates["lead/fork-2"]
+	if differentState.TeamForked || differentState.TeamDispatchMode != TeamDispatchTask || differentState.TeamForkPrefixItems != 0 {
+		t.Errorf("different-model member should use fresh task context: %#v", differentState)
+	}
+	synthesizedInput, err := json.Marshal(requester.requests[1].Input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"Context: forked", "Context: task-only"} {
+		if !strings.Contains(string(synthesizedInput), expected) {
+			t.Errorf("parent synthesis input is missing context mode %q: %s", expected, synthesizedInput)
+		}
+	}
+	first, second := branchRequests["lead/fork-0"].PromptCache, branchRequests["lead/fork-1"].PromptCache
+	if first != nil && second != nil && first.Key != second.Key {
+		t.Error("same-provider, same-model fork siblings should use the parent's cache key")
 	}
 }
 

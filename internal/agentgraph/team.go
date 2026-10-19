@@ -25,9 +25,13 @@ func (a *Agent) mergeTeam(ctx context.Context, _ graph.CallInfo, parent State, b
 		if index < len(parent.TeamAssignments) {
 			assignment = parent.TeamAssignments[index]
 		}
-		member := TeamMemberResult{ID: assignment.ID, Model: assignment.Model}
+		contextMode := branch.State.TeamDispatchMode
+		if contextMode == "" && index < len(parent.TeamBranchModes) {
+			contextMode = parent.TeamBranchModes[index]
+		}
+		member := TeamMemberResult{ID: assignment.ID, Model: assignment.Model, ContextMode: contextMode}
 		if branch.OK() {
-			member = TeamMemberResult{ID: branch.State.TeamTaskID, Model: branch.State.TeamModel, Provider: branch.State.TeamProvider, Text: branch.State.TeamText, Error: branch.State.TeamError}
+			member = TeamMemberResult{ID: branch.State.TeamTaskID, Model: branch.State.TeamModel, Provider: branch.State.TeamProvider, ContextMode: contextMode, Text: branch.State.TeamText, Error: branch.State.TeamError}
 			if a.options.OnBranchFinished != nil {
 				var branchErr error
 				if member.Error != "" {
@@ -36,7 +40,7 @@ func (a *Agent) mergeTeam(ctx context.Context, _ graph.CallInfo, parent State, b
 				a.options.OnBranchFinished(ctx, branch.State, branchErr)
 			}
 		} else if branch.Pending() {
-			member = TeamMemberResult{ID: assignment.ID, Model: assignment.Model, Error: "cancelled after the minimum success threshold was reached"}
+			member = TeamMemberResult{ID: assignment.ID, Model: assignment.Model, ContextMode: contextMode, Error: "cancelled after the minimum success threshold was reached"}
 			if profile, ok := a.options.Team.Profiles()[assignment.Model]; ok {
 				member.Provider, member.Model = profile.Provider, profile.Model
 			}
@@ -72,6 +76,7 @@ func (a *Agent) mergeTeam(ctx context.Context, _ graph.CallInfo, parent State, b
 	output := model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(formatTeamResults(results))}
 	parent = appendToolOutput(parent, output)
 	parent.TeamAssignments, parent.TeamDispatchID = nil, ""
+	parent.TeamBranchModes = nil
 	parent.TeamMinimumSuccesses = 0
 	parent.TeamDispatchMode = ""
 	parent.TeamForkBaseInput = nil

@@ -25,6 +25,10 @@ func (r *scriptedRequester) CreateResponse(_ context.Context, request model.Resp
 	if err := json.Unmarshal(encoded, &saved); err != nil {
 		return nil, err
 	}
+	if request.PromptCache != nil {
+		hint := *request.PromptCache
+		saved.PromptCache = &hint
+	}
 	r.requests = append(r.requests, saved)
 	if r.next >= len(r.responses) {
 		return nil, errors.New("no scripted response left")

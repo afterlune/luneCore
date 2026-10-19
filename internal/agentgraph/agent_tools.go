@@ -92,7 +92,7 @@ func teamDispatchDefinition(team TeamExecutor, maxChildren int) model.FunctionTo
 		"properties": map[string]any{
 			"mode": map[string]any{
 				"type": "string", "enum": []string{TeamDispatchTask, TeamDispatchFork},
-				"description": "Use task for isolated context; fork to include the parent conversation and completed tool results before this dispatch, followed by each member's task.",
+				"description": "task is isolated. fork inherits context and may reuse cache only for the same provider/model; other profiles receive only their assignment.",
 			},
 			"tasks": map[string]any{
 				"type":     "array",
@@ -122,11 +122,10 @@ func teamDispatchDefinition(team TeamExecutor, maxChildren int) model.FunctionTo
 	})
 	strict := true
 	return model.FunctionTool{
-		Name: teamDispatchToolName,
-		Description: "Delegate two or more worthwhile independent tasks in parallel, with distinct deliverables and listed model profiles; skip trivial or dependent work and obey the task limit. " +
-			"task uses isolated context; fork also includes parent history and completed tool results (cache reuse needs a matching provider/model prefix). Members share the workspace and permissions; synthesize their results. minimum_successes null uses the host default; zero waits for all.",
-		Parameters: parameters,
-		Strict:     &strict,
+		Name:        teamDispatchToolName,
+		Description: "Delegate independent tasks in parallel with distinct deliverables. task gives each member only its assignment. fork inherits parent context and may reuse cache only for the same provider/model; other profiles receive only their assignment and should inspect the workspace. Include needed findings. Members share workspace and permissions. Synthesize results. minimum_successes null uses host default; zero waits for all.",
+		Parameters:  parameters,
+		Strict:      &strict,
 	}
 }
 
@@ -187,6 +186,11 @@ func formatTeamResults(results []TeamMemberResult) string {
 		output.WriteString(" (model ")
 		output.WriteString(result.Model)
 		output.WriteString(")\n")
+		if result.ContextMode == TeamDispatchFork {
+			output.WriteString("Context: forked\n")
+		} else if result.ContextMode == TeamDispatchTask {
+			output.WriteString("Context: task-only\n")
+		}
 		if result.Error != "" {
 			output.WriteString("Failed: ")
 			output.WriteString(result.Error)
