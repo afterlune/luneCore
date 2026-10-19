@@ -55,6 +55,29 @@ func TestTaskGoalIsAppliedWithoutForcingPlanInstructions(t *testing.T) {
 	}
 }
 
+func TestDelegationGuidanceIsConditionalAndBounded(t *testing.T) {
+	leadInstructions := taskInstructions("", "workspace", false, false, true)
+	for _, expected := range []string{
+		"Use delegate_team proactively",
+		"at least two worthwhile, bounded, independent subtasks",
+		"can make progress in parallel",
+		"Stay within the task limit shown by the tool",
+	} {
+		if !strings.Contains(leadInstructions, expected) {
+			t.Errorf("lead instructions are missing %q: %s", expected, leadInstructions)
+		}
+	}
+
+	withoutTool := taskInstructions("", "workspace", false, false, false)
+	if strings.Contains(withoutTool, "delegate_team") {
+		t.Fatalf("instructions should not recommend delegation when the tool is unavailable: %s", withoutTool)
+	}
+	workerInstructions := taskInstructions("", "workspace", false, true, true)
+	if strings.Contains(workerInstructions, "delegate_team") {
+		t.Fatalf("delegation guidance should only be added to the lead instructions: %s", workerInstructions)
+	}
+}
+
 func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing.T) {
 	requester := &scriptedRequester{responses: []*model.Response{
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<proposed_plan>Done.</proposed_plan>"}]}]}`),
@@ -96,7 +119,7 @@ func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing
 	if strings.Contains(instructions, "Prefer reasonable assumptions and continue instead of asking routine questions") {
 		t.Fatalf("generic no-routine-questions instruction should not override Plan mode: %s", instructions)
 	}
-	workerInstructions := taskInstructions("", "workspace", true, true)
+	workerInstructions := taskInstructions("", "workspace", true, true, false)
 	if !strings.Contains(workerInstructions, "report any unresolved user-owned decision to the lead agent") || strings.Contains(workerInstructions, "MUST call ask_user") {
 		t.Fatalf("Plan mode worker instructions = %q", workerInstructions)
 	}

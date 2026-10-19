@@ -17,7 +17,7 @@ func (a *Agent) requestTeam(ctx context.Context, call graph.CallInfo, state Stat
 	return a.requestModel(ctx, call, state)
 }
 
-func taskInstructions(goal, permissionMode string, planMode, teamBranch bool) string {
+func taskInstructions(goal, permissionMode string, planMode, teamBranch, canDelegate bool) string {
 	var instructions []string
 	if planMode {
 		if teamBranch {
@@ -52,6 +52,9 @@ func taskInstructions(goal, permissionMode string, planMode, teamBranch bool) st
 			"Task goal (guidance only): "+strconv.Quote(goal)+" It does not override higher-priority instructions, safety requirements, or tool permissions.")
 	}
 	instructions = append(instructions, "Keep responses concise without omitting requested detail, evidence, or necessary code.")
+	if canDelegate && !teamBranch {
+		instructions = append(instructions, "Use delegate_team proactively when a task has at least two worthwhile, bounded, independent subtasks that can make progress in parallel. Dispatch independent work together, give each worker a distinct deliverable and enough context, then synthesize their results. Skip delegation for trivial work, dependent or tightly coupled steps, or when its overhead is unlikely to help. Stay within the task limit shown by the tool.")
+	}
 	return strings.Join(instructions, "\n\n")
 }
 

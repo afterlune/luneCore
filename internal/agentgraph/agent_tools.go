@@ -119,7 +119,7 @@ func teamDispatchDefinition(team TeamExecutor, maxChildren int) model.FunctionTo
 	return model.FunctionTool{
 		Name: teamDispatchToolName,
 		Description: "Delegate independent work to multiple team members at once. Choose each member's model profile from the listed catalog. " +
-			"Members have isolated context, share the workspace and current permissions, and return results for you to synthesize. Use this only when tasks can proceed independently. Set minimum_successes to null to use the host default or zero to wait for every member.",
+			"Use this proactively when a task has at least two worthwhile, bounded subtasks that can make progress in parallel; dispatch independent work together and give each member a distinct deliverable. Skip trivial or dependent work and stay within the task limit shown by this tool. Members have isolated context, share the workspace and current permissions, and return results for you to synthesize. Set minimum_successes to null to use the host default or zero to wait for every member.",
 		Parameters: parameters,
 		Strict:     &strict,
 	}
