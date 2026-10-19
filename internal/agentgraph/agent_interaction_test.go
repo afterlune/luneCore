@@ -80,7 +80,7 @@ func TestAgentCanAskUserDuringTask(t *testing.T) {
 	if !foundAskUser {
 		t.Fatalf("task tools = %#v, missing %q", requester.requests[0].Tools, askUserToolName)
 	}
-	if !strings.Contains(requester.requests[0].Instructions, "MUST call ask_user before presenting a plan") {
+	if !strings.Contains(requester.requests[0].Instructions, "Ask the user (using the ask_user tool) to clarify") {
 		t.Fatalf("Plan mode user-question instructions = %q", requester.requests[0].Instructions)
 	}
 	encodedInput, err := json.Marshal(requester.requests[1].Input)

@@ -108,11 +108,10 @@ func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing
 	instructions := requester.requests[0].Instructions
 	for _, expected := range []string{
 		"You are in Plan mode.",
-		"decisions that belong to the user and would materially change the plan",
-		"MUST call ask_user before presenting a plan",
-		"do not emit a proposed plan until the user answers",
-		"reasonable defaults for routine implementation details",
-		"host presents the completed plan for review",
+		"Inspect the workspace and produce a concrete, actionable implementation plan.",
+		"Ask the user (using the ask_user tool) to clarify",
+		"Do not make these decisions on the user's behalf.",
+		"Do not modify files or run commands that change the workspace.",
 		"<proposed_plan>",
 	} {
 		if !strings.Contains(instructions, expected) {
@@ -123,7 +122,7 @@ func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing
 		t.Fatalf("generic no-routine-questions instruction should not override Plan mode: %s", instructions)
 	}
 	workerInstructions := taskInstructions("", "workspace", true, false, true)
-	if !strings.Contains(workerInstructions, "report facts and unresolved decisions to the lead") || !strings.Contains(workerInstructions, "MUST call ask_user") {
+	if !strings.Contains(workerInstructions, "report facts and unresolved decisions to the lead") || !strings.Contains(workerInstructions, "do not call ask_user") {
 		t.Fatalf("shared Plan mode instructions = %q", workerInstructions)
 	}
 	workerInput, _, err := teamAssignmentInput(TeamDispatchTask, nil, "inspect the plan risks", true)
