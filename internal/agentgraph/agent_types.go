@@ -19,7 +19,14 @@ const ExecutionBlockerContinuation = "execution_blocker"
 const TokenBudgetContinuation = "token_budget"
 
 // CurrentTaskSettingsVersion identifies the task-settings snapshot stored in checkpoints.
-const CurrentTaskSettingsVersion = 10
+const CurrentTaskSettingsVersion = 11
+
+const (
+	// DefaultMaxTeamChildrenPerAgent is the default cumulative fan-out quota per agent.
+	DefaultMaxTeamChildrenPerAgent = 4
+	// DefaultMaxTeamDepth counts root as depth zero, allowing children and grandchildren.
+	DefaultMaxTeamDepth = 2
+)
 
 // Requester sends one Responses API request without managing history or tools.
 type Requester interface {
@@ -158,6 +165,8 @@ type State struct {
 	TeamDispatchID           string                       `json:"team_dispatch_id,omitempty"`
 	TeamAssignments          []TeamAssignment             `json:"team_assignments,omitempty"`
 	TeamMinimumSuccesses     int                          `json:"team_minimum_successes,omitempty"`
+	TeamDepth                int                          `json:"team_depth,omitempty"`
+	TeamChildrenCreated      int                          `json:"team_children_created,omitempty"`
 	UserQuestions            []model.UserQuestionItem     `json:"user_questions,omitempty"`
 	UserAnswers              []model.UserQuestionResponse `json:"user_answers,omitempty"`
 	UserAnswerReady          bool                         `json:"user_answer_ready,omitempty"`
@@ -187,7 +196,7 @@ type TaskOptions struct {
 }
 
 // ExecutionOptions contains the small set of controls that affect one Agent run.
-// Zero values retain luneGraph's default or unlimited behavior.
+// Zero team limits inherit host defaults or use the built-in defaults.
 type ExecutionOptions struct {
 	// ModelMaxAttempts includes the first request; zero defaults to three, one disables retry.
 	ModelMaxAttempts int           `json:"model_max_attempts,omitempty"`
@@ -199,5 +208,9 @@ type ExecutionOptions struct {
 	JoinTimeout      time.Duration `json:"join_timeout,omitempty"`
 	TeamEntryTimeout time.Duration `json:"team_entry_timeout,omitempty"`
 	TeamQuorum       int           `json:"team_quorum,omitempty"`
-	TokenBudget      int64         `json:"token_budget,omitempty"`
+	// MaxTeamChildrenPerAgent caps cumulative direct children dispatched by one agent.
+	MaxTeamChildrenPerAgent int `json:"max_team_children_per_agent,omitempty"`
+	// MaxTeamDepth counts the root agent as depth zero.
+	MaxTeamDepth int   `json:"max_team_depth,omitempty"`
+	TokenBudget  int64 `json:"token_budget,omitempty"`
 }

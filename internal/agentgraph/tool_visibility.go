@@ -14,8 +14,10 @@ func (a *Agent) visibleTools(state State, category, permissionMode string) ([]mo
 		permissionMode = a.options.CurrentPermissionMode()
 	}
 	addRuntimeTools := func(definitions []model.ResponseTool) []model.ResponseTool {
-		if a.options.Team != nil && len(a.options.Team.Profiles()) > 0 && a.options.Team.MaxParallelAgents() > 0 {
-			definitions = append(definitions, teamDispatchDefinition(a.options.Team))
+		remaining := state.Execution.MaxTeamChildrenPerAgent - state.TeamChildrenCreated
+		canDelegate := state.TeamDepth < state.Execution.MaxTeamDepth && remaining > 0
+		if a.options.Team != nil && len(a.options.Team.Profiles()) > 0 && canDelegate {
+			definitions = append(definitions, teamDispatchDefinition(a.options.Team, remaining))
 		}
 		if a.options.AskUser && !state.NoInteractiveDecisions && !state.TeamBranch {
 			definitions = append(definitions, askUserDefinition())

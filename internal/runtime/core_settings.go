@@ -21,7 +21,8 @@ func agentExecutionOptions(options ExecutionOptions) agentgraph.ExecutionOptions
 	return agentgraph.ExecutionOptions{
 		ModelMaxAttempts: options.ModelMaxAttempts, MaxSteps: options.MaxSteps, MaxInvocations: options.MaxInvocations, MaxConcurrency: options.MaxConcurrency,
 		ModelTimeout: options.ModelTimeout, ToolTimeout: options.ToolTimeout, JoinTimeout: options.JoinTimeout,
-		TeamEntryTimeout: options.TeamEntryTimeout, TeamQuorum: options.TeamQuorum, TokenBudget: options.TokenBudget,
+		TeamEntryTimeout: options.TeamEntryTimeout, TeamQuorum: options.TeamQuorum,
+		MaxTeamChildrenPerAgent: options.MaxTeamChildrenPerAgent, MaxTeamDepth: options.MaxTeamDepth, TokenBudget: options.TokenBudget,
 	}
 }
 
@@ -29,7 +30,8 @@ func coreExecutionOptions(options agentgraph.ExecutionOptions) ExecutionOptions 
 	return ExecutionOptions{
 		ModelMaxAttempts: options.ModelMaxAttempts, MaxSteps: options.MaxSteps, MaxInvocations: options.MaxInvocations, MaxConcurrency: options.MaxConcurrency,
 		ModelTimeout: options.ModelTimeout, ToolTimeout: options.ToolTimeout, JoinTimeout: options.JoinTimeout,
-		TeamEntryTimeout: options.TeamEntryTimeout, TeamQuorum: options.TeamQuorum, TokenBudget: options.TokenBudget,
+		TeamEntryTimeout: options.TeamEntryTimeout, TeamQuorum: options.TeamQuorum,
+		MaxTeamChildrenPerAgent: options.MaxTeamChildrenPerAgent, MaxTeamDepth: options.MaxTeamDepth, TokenBudget: options.TokenBudget,
 	}
 }
 
@@ -233,7 +235,7 @@ func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 }
 
 func validateExecutionOptions(options ExecutionOptions) error {
-	if options.ModelMaxAttempts < 0 || options.MaxSteps < 0 || options.MaxInvocations < 0 || options.MaxConcurrency < 0 || options.TeamQuorum < 0 || options.TokenBudget < 0 {
+	if options.ModelMaxAttempts < 0 || options.MaxSteps < 0 || options.MaxInvocations < 0 || options.MaxConcurrency < 0 || options.TeamQuorum < 0 || options.MaxTeamChildrenPerAgent < 0 || options.MaxTeamDepth < 0 || options.TokenBudget < 0 {
 		return errors.New("execution limits must not be negative")
 	}
 	if options.ModelTimeout < 0 || options.ToolTimeout < 0 || options.JoinTimeout < 0 || options.TeamEntryTimeout < 0 {
@@ -277,10 +279,26 @@ func mergeExecutionOptions(defaults, overrides ExecutionOptions) ExecutionOption
 	if overrides.TeamQuorum != 0 {
 		defaults.TeamQuorum = overrides.TeamQuorum
 	}
+	if overrides.MaxTeamChildrenPerAgent != 0 {
+		defaults.MaxTeamChildrenPerAgent = overrides.MaxTeamChildrenPerAgent
+	}
+	if overrides.MaxTeamDepth != 0 {
+		defaults.MaxTeamDepth = overrides.MaxTeamDepth
+	}
 	if overrides.TokenBudget != 0 {
 		defaults.TokenBudget = overrides.TokenBudget
 	}
 	return defaults
+}
+
+func mergeTeamExecutionDefaults(defaults, options ExecutionOptions) ExecutionOptions {
+	if options.MaxTeamChildrenPerAgent == 0 {
+		options.MaxTeamChildrenPerAgent = defaults.MaxTeamChildrenPerAgent
+	}
+	if options.MaxTeamDepth == 0 {
+		options.MaxTeamDepth = defaults.MaxTeamDepth
+	}
+	return options
 }
 
 func checkpointSettingsVersionError(version int) error {

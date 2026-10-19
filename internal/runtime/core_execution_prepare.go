@@ -90,7 +90,7 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 	if request.resume {
 		taskOptions = taskOptionsFromState(pendingState)
 		if request.executionOverride {
-			taskOptions.Execution = agentExecutionOptions(request.executionOptions)
+			taskOptions.Execution = agentExecutionOptions(mergeTeamExecutionDefaults(c.executionDefaults, request.executionOptions))
 		}
 		request.maxRounds = taskOptions.MaxToolRounds
 	} else {

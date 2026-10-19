@@ -79,7 +79,7 @@ func parseUserQuestion(arguments string) ([]model.UserQuestionItem, error) {
 	return input.Questions, nil
 }
 
-func teamDispatchDefinition(team TeamExecutor) model.FunctionTool {
+func teamDispatchDefinition(team TeamExecutor, maxChildren int) model.FunctionTool {
 	profiles := team.Profiles()
 	profileIDs := make([]string, 0, len(profiles))
 	for profileID := range profiles {
@@ -92,7 +92,7 @@ func teamDispatchDefinition(team TeamExecutor) model.FunctionTool {
 			"tasks": map[string]any{
 				"type":     "array",
 				"minItems": 1,
-				"maxItems": team.MaxParallelAgents(),
+				"maxItems": maxChildren,
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
@@ -125,7 +125,7 @@ func teamDispatchDefinition(team TeamExecutor) model.FunctionTool {
 	}
 }
 
-func parseTeamAssignments(arguments string, team TeamExecutor) ([]TeamAssignment, *int, error) {
+func parseTeamAssignments(arguments string, team TeamExecutor, maxChildren int) ([]TeamAssignment, *int, error) {
 	decoder := json.NewDecoder(strings.NewReader(arguments))
 	decoder.DisallowUnknownFields()
 	var request teamDispatchRequest
@@ -135,9 +135,8 @@ func parseTeamAssignments(arguments string, team TeamExecutor) ([]TeamAssignment
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return nil, nil, errors.New("expected one JSON object")
 	}
-	limit := team.MaxParallelAgents()
-	if len(request.Tasks) == 0 || len(request.Tasks) > limit {
-		return nil, nil, fmt.Errorf("team task count must be between 1 and %d", limit)
+	if maxChildren <= 0 || len(request.Tasks) == 0 || len(request.Tasks) > maxChildren {
+		return nil, nil, fmt.Errorf("team task count must be between 1 and %d", maxChildren)
 	}
 	if request.MinimumSuccesses != nil && (*request.MinimumSuccesses < 0 || *request.MinimumSuccesses > len(request.Tasks)) {
 		return nil, nil, fmt.Errorf("minimum_successes must be between 0 and %d", len(request.Tasks))

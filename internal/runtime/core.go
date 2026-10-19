@@ -224,6 +224,13 @@ func New(config Config) (_ *Core, err error) {
 			_ = sessions.Close()
 		}
 	}()
+	executionDefaults := config.Execution
+	if executionDefaults.MaxTeamChildrenPerAgent == 0 {
+		executionDefaults.MaxTeamChildrenPerAgent = agentgraph.DefaultMaxTeamChildrenPerAgent
+	}
+	if executionDefaults.MaxTeamDepth == 0 {
+		executionDefaults.MaxTeamDepth = agentgraph.DefaultMaxTeamDepth
+	}
 	c := &Core{
 		logger:           logger,
 		workspace:        workspace,
@@ -236,7 +243,7 @@ func New(config Config) (_ *Core, err error) {
 		},
 		checkpoints:          checkpoints,
 		sessions:             sessions,
-		executionDefaults:    config.Execution,
+		executionDefaults:    executionDefaults,
 		callbackLimiter:      callbackLimiter,
 		personalInstructions: config.PersonalInstructions,
 		memoryConfig:         config.Memory,

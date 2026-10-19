@@ -107,6 +107,10 @@ type ExecutionOptions struct {
 	JoinTimeout      time.Duration `json:"join_timeout,omitempty"`
 	TeamEntryTimeout time.Duration `json:"team_entry_timeout,omitempty"`
 	TeamQuorum       int           `json:"team_quorum,omitempty"`
+	// MaxTeamChildrenPerAgent caps all direct children dispatched by one agent; zero inherits the host default.
+	MaxTeamChildrenPerAgent int `json:"max_team_children_per_agent,omitempty"`
+	// MaxTeamDepth counts the root as depth zero; zero inherits the host default.
+	MaxTeamDepth int `json:"max_team_depth,omitempty"`
 	// TokenBudget caps total input and output tokens across the whole execution.
 	// Zero means unlimited when effective; task overrides inherit the host
 	// default at zero. Recovery may raise or replace this absolute total cap.

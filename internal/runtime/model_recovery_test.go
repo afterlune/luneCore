@@ -174,3 +174,28 @@ func TestModelMaxAttemptsSettings(t *testing.T) {
 		t.Fatalf("host token budget default = %d, want 500", got.TokenBudget)
 	}
 }
+
+func TestTeamExecutionLimitDefaultsAndOverrides(t *testing.T) {
+	defaults := ExecutionOptions{MaxTeamChildrenPerAgent: 8, MaxTeamDepth: 3}
+	if got := mergeExecutionOptions(defaults, ExecutionOptions{}); got.MaxTeamChildrenPerAgent != 8 || got.MaxTeamDepth != 3 {
+		t.Fatalf("host team limits = %#v", got)
+	}
+	got := mergeExecutionOptions(defaults, ExecutionOptions{MaxTeamChildrenPerAgent: 2, MaxTeamDepth: 1})
+	if got.MaxTeamChildrenPerAgent != 2 || got.MaxTeamDepth != 1 {
+		t.Fatalf("task team limits = %#v", got)
+	}
+	converted := coreExecutionOptions(agentExecutionOptions(got))
+	if converted.MaxTeamChildrenPerAgent != 2 || converted.MaxTeamDepth != 1 {
+		t.Fatalf("round-tripped task team limits = %#v", converted)
+	}
+	recovery := mergeTeamExecutionDefaults(defaults, ExecutionOptions{MaxSteps: 10})
+	if recovery.MaxSteps != 10 || recovery.MaxTeamChildrenPerAgent != 8 || recovery.MaxTeamDepth != 3 {
+		t.Fatalf("recovery team defaults = %#v", recovery)
+	}
+	if err := validateExecutionOptions(ExecutionOptions{MaxTeamChildrenPerAgent: -1}); err == nil {
+		t.Fatal("negative child limit accepted")
+	}
+	if err := validateExecutionOptions(ExecutionOptions{MaxTeamDepth: -1}); err == nil {
+		t.Fatal("negative depth limit accepted")
+	}
+}

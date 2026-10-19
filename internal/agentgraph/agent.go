@@ -48,6 +48,9 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	if options.Execution.ModelMaxAttempts < 0 {
 		return nil, errors.New("model maximum attempts must not be negative")
 	}
+	if options.Execution.MaxTeamChildrenPerAgent < 0 || options.Execution.MaxTeamDepth < 0 {
+		return nil, errors.New("team delegation limits must not be negative")
+	}
 	if requester == nil {
 		return nil, errors.New("requester is required")
 	}
@@ -174,6 +177,9 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	if taskOptions.MaxToolRounds < 0 {
 		return nil, graph.Result[State]{Status: graph.StatusFailed}, errors.New("MaxToolRounds must not be negative")
 	}
+	if taskOptions.Execution.MaxTeamChildrenPerAgent < 0 || taskOptions.Execution.MaxTeamDepth < 0 {
+		return nil, graph.Result[State]{Status: graph.StatusFailed}, errors.New("team delegation limits must not be negative")
+	}
 	state, err := initialState(history, transcript, input)
 	if err != nil {
 		return nil, graph.Result[State]{Status: graph.StatusFailed}, err
@@ -203,7 +209,7 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.ReserveOutputTokens = taskOptions.ReserveOutputTokens
 	state.AutoCompact = taskOptions.AutoCompact
 	state.AutoCompactThreshold = taskOptions.AutoCompactThreshold
-	state.Execution = taskOptions.Execution
+	state.Execution = effectiveTeamExecution(a.options.Execution, taskOptions.Execution)
 	state.PermissionOverride = taskOptions.PermissionOverride
 	state.PlanMode = taskOptions.PlanMode
 	state.PlanAuthorization = taskOptions.PlanAuthorization
@@ -215,6 +221,22 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 		}
 	}
 	return a.runner.Start(ctx, runID, state, store, options)
+}
+
+func effectiveTeamExecution(defaults, options ExecutionOptions) ExecutionOptions {
+	if options.MaxTeamChildrenPerAgent == 0 {
+		options.MaxTeamChildrenPerAgent = defaults.MaxTeamChildrenPerAgent
+	}
+	if options.MaxTeamDepth == 0 {
+		options.MaxTeamDepth = defaults.MaxTeamDepth
+	}
+	if options.MaxTeamChildrenPerAgent <= 0 {
+		options.MaxTeamChildrenPerAgent = DefaultMaxTeamChildrenPerAgent
+	}
+	if options.MaxTeamDepth <= 0 {
+		options.MaxTeamDepth = DefaultMaxTeamDepth
+	}
+	return options
 }
 
 func (a *Agent) Resume(ctx context.Context, checkpoint graph.Checkpoint[State], inputs []graph.ResumeInput, store graph.Store[State], options graph.Options) (*graph.Execution[State], graph.Result[State], error) {

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -212,17 +213,303 @@ func TestParseTeamAssignmentsAcceptsPerDispatchQuorum(t *testing.T) {
 		"worker": {Provider: model.ProviderDeepSeek, Model: "worker-model"},
 	}}
 	assignments := `"tasks":[{"id":"one","model":"worker","task":"work"}]`
-	_, inherited, err := parseTeamAssignments("{"+assignments+"}", team)
+	_, inherited, err := parseTeamAssignments("{"+assignments+"}", team, 2)
 	if err != nil || inherited != nil {
 		t.Fatalf("inherited quorum = %v, error=%v", inherited, err)
 	}
-	_, waitAll, err := parseTeamAssignments("{"+assignments+`,"minimum_successes":0}`, team)
+	_, waitAll, err := parseTeamAssignments("{"+assignments+`,"minimum_successes":0}`, team, 2)
 	if err != nil || waitAll == nil || *waitAll != 0 {
 		t.Fatalf("zero quorum override = %v, error=%v", waitAll, err)
 	}
-	if _, _, err := parseTeamAssignments("{"+assignments+`,"minimum_successes":2}`, team); err == nil {
+	if _, _, err := parseTeamAssignments("{"+assignments+`,"minimum_successes":2}`, team, 2); err == nil {
 		t.Fatal("quorum larger than assignment count should be rejected")
 	}
+	if _, _, err := parseTeamAssignments("{"+assignments+"}", team, 0); err == nil {
+		t.Fatal("delegation with no remaining quota should be rejected")
+	}
+}
+
+func TestAgentTeamTreeDefaultsToFourChildrenAndTwoLevels(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	team := &treeTeamExecutor{
+		profiles: map[string]model.ModelProfile{"worker": {Provider: model.ProviderDeepSeek, Model: "worker-model"}},
+		calls:    make(map[string]int),
+		requests: make(map[string][]model.ModelRequest),
+	}
+	root := &scriptedRequester{responses: []*model.Response{
+		teamDispatchResponse("root-dispatch", "outer", 4),
+		teamTextResponse("root synthesized all results"),
+	}}
+	agent, err := NewWithOptions(root, registry, AgentOptions{
+		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek,
+		Model: "lead-model", Team: team,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("delegate four subtasks with one recursive level")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "default-team-tree", nil, input, TaskOptions{}, store, graph.Options{MaxConcurrency: 4})
+	if err != nil || result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("team tree = status %q, error %v", result.Status, err)
+	}
+	if result.Final.TeamDepth != 0 || result.Final.TeamChildrenCreated != 4 {
+		t.Fatalf("root quota state = depth %d, children %d; want 0 and 4", result.Final.TeamDepth, result.Final.TeamChildrenCreated)
+	}
+	team.mu.Lock()
+	prepared := append([]State(nil), team.prepared...)
+	requests := make(map[string][]model.ModelRequest, len(team.requests))
+	for id, values := range team.requests {
+		requests[id] = append([]model.ModelRequest(nil), values...)
+	}
+	team.mu.Unlock()
+	if len(prepared) != 20 {
+		t.Fatalf("prepared branches = %d, want 20 (4 children plus 16 grandchildren)", len(prepared))
+	}
+	depthCounts := map[int]int{}
+	for _, state := range prepared {
+		depthCounts[state.TeamDepth]++
+		if state.TeamDepth == 1 && state.TeamChildrenCreated != 0 {
+			t.Errorf("new depth-one branch inherited child count %d", state.TeamChildrenCreated)
+		}
+	}
+	if depthCounts[1] != 4 || depthCounts[2] != 16 {
+		t.Fatalf("branch depths = %#v, want 4 at depth one and 16 at depth two", depthCounts)
+	}
+	if got := teamToolMaxItems(t, root.requests[0].Tools); got != 4 {
+		t.Errorf("root delegate_team maxItems = %d, want 4", got)
+	}
+	for id, agentRequests := range requests {
+		if len(agentRequests) == 0 {
+			t.Errorf("branch %q made no model request", id)
+			continue
+		}
+		depth := strings.Count(id, "/")
+		if depth == 1 {
+			if got := teamToolMaxItems(t, agentRequests[0].Tools); got != 4 {
+				t.Errorf("depth-one agent %q maxItems = %d, want 4", id, got)
+			}
+		} else if hasTeamTool(agentRequests[0].Tools) {
+			t.Errorf("depth-two agent %q still sees delegate_team", id)
+		}
+	}
+	encoded, err := json.Marshal(result.Final)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var restored State
+	if err := json.Unmarshal(encoded, &restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.TeamDepth != 0 || restored.TeamChildrenCreated != 4 || restored.Execution.MaxTeamDepth != 2 || restored.Execution.MaxTeamChildrenPerAgent != 4 {
+		t.Fatalf("team checkpoint fields did not round-trip: %#v", restored)
+	}
+}
+
+func TestAgentTeamChildQuotaIsCumulativeAcrossDispatches(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	team := &scriptedTeamExecutor{limit: 2, profiles: map[string]model.ModelProfile{
+		"worker": {Provider: model.ProviderDeepSeek, Model: "worker-model"},
+	}}
+	root := &scriptedRequester{responses: []*model.Response{
+		teamDispatchResponse("first-dispatch", "first", 3),
+		teamDispatchResponse("second-dispatch", "second", 1),
+		teamDispatchResponse("stale-dispatch", "stale", 1),
+		teamTextResponse("finished after the quota was reached"),
+	}}
+	agent, err := NewWithOptions(root, registry, AgentOptions{
+		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek,
+		Model: "lead-model", Team: team,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("use the full per-agent child quota")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "cumulative-team-quota", nil, input, TaskOptions{}, store, graph.Options{MaxConcurrency: 4})
+	if err != nil || result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("cumulative quota run = status %q, error %v", result.Status, err)
+	}
+	if len(team.assignments) != 4 || result.Final.TeamChildrenCreated != 4 {
+		t.Fatalf("accepted children = %d, checkpoint count = %d; want 4 and 4", len(team.assignments), result.Final.TeamChildrenCreated)
+	}
+	if got := teamToolMaxItems(t, root.requests[0].Tools); got != 4 {
+		t.Fatalf("initial quota = %d, want 4", got)
+	}
+	if got := teamToolMaxItems(t, root.requests[1].Tools); got != 1 {
+		t.Fatalf("remaining quota after first dispatch = %d, want 1", got)
+	}
+	if hasTeamTool(root.requests[2].Tools) {
+		t.Fatal("delegate_team remained visible after the cumulative quota was exhausted")
+	}
+	if history := teamResponseHistoryText(root.requests[3].Input); !strings.Contains(history, "not available in this request") {
+		t.Fatalf("stale delegation call was not rejected: %s", history)
+	}
+}
+
+func TestAgentTaskTeamLimitsOverrideHostDefaults(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	team := &scriptedTeamExecutor{limit: 2, profiles: map[string]model.ModelProfile{
+		"worker": {Provider: model.ProviderDeepSeek, Model: "worker-model"},
+	}}
+	root := &scriptedRequester{responses: []*model.Response{teamDispatchResponse("override-dispatch", "child", 2), teamTextResponse("done")}}
+	agent, err := NewWithOptions(root, registry, AgentOptions{
+		ID: "lead", Name: "Lead", Profile: "lead", Provider: model.ProviderDeepSeek,
+		Model: "lead-model", Team: team,
+		Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 8, MaxTeamDepth: 5},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("use this task's team limits")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "task-team-overrides", nil, input, TaskOptions{
+		Execution: ExecutionOptions{MaxTeamChildrenPerAgent: 2, MaxTeamDepth: 1},
+	}, store, graph.Options{MaxConcurrency: 2})
+	if err != nil || result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("task override run = status %q, error %v", result.Status, err)
+	}
+	if result.Final.Execution.MaxTeamChildrenPerAgent != 2 || result.Final.Execution.MaxTeamDepth != 1 {
+		t.Fatalf("effective task limits = %#v, want 2 children and depth 1", result.Final.Execution)
+	}
+	if got := teamToolMaxItems(t, root.requests[0].Tools); got != 2 {
+		t.Fatalf("task override schema maxItems = %d, want 2", got)
+	}
+	childDefinitions, _, err := agent.visibleTools(State{Execution: result.Final.Execution, TeamDepth: 1}, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hasTeamTool(childDefinitions) {
+		t.Fatal("task depth override did not hide delegate_team from a depth-one agent")
+	}
+}
+
+type treeTeamExecutor struct {
+	profiles map[string]model.ModelProfile
+	mu       sync.Mutex
+	calls    map[string]int
+	requests map[string][]model.ModelRequest
+	prepared []State
+}
+
+func (t *treeTeamExecutor) Profiles() map[string]model.ModelProfile { return t.profiles }
+
+func (t *treeTeamExecutor) MaxParallelAgents() int { return 4 }
+
+func (t *treeTeamExecutor) PrepareBranch(_ context.Context, state State, assignment TeamAssignment, _ TaskOptions) (State, error) {
+	t.mu.Lock()
+	t.prepared = append(t.prepared, state)
+	t.mu.Unlock()
+	profile := t.profiles[assignment.Model]
+	state.ModelProfile, state.Model, state.Provider = assignment.Model, profile.Model, profile.Provider
+	state.Protocol = model.ProtocolResponses
+	state.TeamModel, state.TeamProvider = profile.Model, profile.Provider
+	return state, nil
+}
+
+func (t *treeTeamExecutor) Requester(_ context.Context, state State) (Requester, error) {
+	t.mu.Lock()
+	call := t.calls[state.AgentID]
+	t.calls[state.AgentID]++
+	t.mu.Unlock()
+	return treeTeamRequester{team: t, agentID: state.AgentID, depth: state.TeamDepth, call: call}, nil
+}
+
+type treeTeamRequester struct {
+	team    *treeTeamExecutor
+	agentID string
+	depth   int
+	call    int
+}
+
+func (r treeTeamRequester) CreateResponse(_ context.Context, request model.ModelRequest) (*model.ModelResponse, error) {
+	r.team.mu.Lock()
+	r.team.requests[r.agentID] = append(r.team.requests[r.agentID], request)
+	r.team.mu.Unlock()
+	if r.depth == 1 && r.call == 0 {
+		return teamDispatchResponse("tree-"+strings.ReplaceAll(r.agentID, "/", "-"), "leaf", 4), nil
+	}
+	return teamTextResponse("branch completed"), nil
+}
+
+func teamDispatchResponse(callID, prefix string, count int) *model.Response {
+	if count < 1 {
+		panic("team dispatch test response requires at least one task")
+	}
+	tasks := make([]TeamAssignment, count)
+	for index := range tasks {
+		tasks[index] = TeamAssignment{ID: fmt.Sprintf("%s-%d", prefix, index), Model: "worker", Task: fmt.Sprintf("%s task %d", prefix, index)}
+	}
+	arguments, err := json.Marshal(map[string]any{"tasks": tasks, "minimum_successes": nil})
+	if err != nil {
+		panic(err)
+	}
+	return &model.Response{Status: "completed", Output: []model.ResponseOutputItem{
+		model.OutputFunctionCall{CallID: callID, Name: teamDispatchToolName, Arguments: string(arguments)},
+	}}
+}
+
+func teamTextResponse(text string) *model.Response {
+	return &model.Response{Status: "completed", Output: []model.ResponseOutputItem{
+		model.OutputMessage{Role: model.RoleAssistant, Content: []model.OutputContentPart{model.OutputText{Text: text}}},
+	}}
+}
+
+func teamToolMaxItems(t *testing.T, definitions []model.ResponseTool) int {
+	t.Helper()
+	for _, definition := range definitions {
+		function, ok := definition.(model.FunctionTool)
+		if !ok || function.Name != teamDispatchToolName {
+			continue
+		}
+		var schema struct {
+			Properties map[string]struct {
+				MaxItems int `json:"maxItems"`
+			} `json:"properties"`
+		}
+		if err := json.Unmarshal(function.Parameters, &schema); err != nil {
+			t.Fatal(err)
+		}
+		return schema.Properties["tasks"].MaxItems
+	}
+	t.Fatal("delegate_team not found")
+	return 0
+}
+
+func hasTeamTool(definitions []model.ResponseTool) bool {
+	for _, definition := range definitions {
+		if function, ok := definition.(model.FunctionTool); ok && function.Name == teamDispatchToolName {
+			return true
+		}
+	}
+	return false
 }
 
 func TestAgentGraphJoinsNestedTeamBranches(t *testing.T) {

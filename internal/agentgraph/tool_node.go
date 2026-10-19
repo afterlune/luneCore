@@ -103,7 +103,12 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 			return graph.Wait(state, UserQuestionContinuation, toolNode), nil
 		}
 	case call.Name == teamDispatchToolName && a.options.Team != nil:
-		assignments, minimumSuccesses, err := parseTeamAssignments(call.Arguments, a.options.Team)
+		remaining := state.Execution.MaxTeamChildrenPerAgent - state.TeamChildrenCreated
+		if state.TeamDepth >= state.Execution.MaxTeamDepth || remaining <= 0 {
+			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Team request rejected: this agent has reached its delegation limit")}
+			break
+		}
+		assignments, minimumSuccesses, err := parseTeamAssignments(call.Arguments, a.options.Team, remaining)
 		if err != nil {
 			output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText("Team request rejected: " + err.Error())}
 		} else {
@@ -142,6 +147,8 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 				branch.TeamModel = assignment.Model
 				branch.TeamBranch = true
 				branch.TeamRunID, branch.TeamDispatchID = state.TeamDispatchID, ""
+				branch.TeamDepth = state.TeamDepth + 1
+				branch.TeamChildrenCreated = 0
 				branch.TaskSettingsVersion = CurrentTaskSettingsVersion
 				branch.MaxToolRounds = state.MaxToolRounds
 				branch.Execution = state.Execution
@@ -158,11 +165,14 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 					return graph.Transition[State]{}, branchErr
 				}
 				branch.PermissionOverride = state.PermissionOverride
+				branch.TeamDepth = state.TeamDepth + 1
+				branch.TeamChildrenCreated = 0
 				branch.PlanMode = state.PlanMode
 				branch.PlanAuthorization = state.PlanAuthorization
 				branch.NoInteractiveDecisions = state.NoInteractiveDecisions
 				branches = append(branches, graph.Branch[State]{Target: teamModelNode, State: branch, EntryTimeout: a.options.Execution.TeamEntryTimeout})
 			}
+			state.TeamChildrenCreated += len(assignments)
 			return graph.FanOut(state, branches...), nil
 		}
 	case a.categorized != nil && call.Name == model.CategorySelectorName:

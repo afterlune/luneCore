@@ -62,6 +62,15 @@ func openSettingsCore(t *testing.T, workspace, stateDir string) *Core {
 	return client
 }
 
+func TestCoreDefaultsTeamTreeLimits(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	writeSettingsConfig(t, workspace, "http://127.0.0.1:1")
+	client := openSettingsCore(t, workspace, stateDir)
+	if client.executionDefaults.MaxTeamChildrenPerAgent != agentgraph.DefaultMaxTeamChildrenPerAgent || client.executionDefaults.MaxTeamDepth != agentgraph.DefaultMaxTeamDepth {
+		t.Fatalf("default team execution limits = %#v", client.executionDefaults)
+	}
+}
+
 func TestSessionModelSettingsPersistAndDefault(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
