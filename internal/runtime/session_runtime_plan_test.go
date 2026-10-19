@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
@@ -151,8 +152,159 @@ func TestPlanModeHandoffImplementsInSameContextWithScopedPermission(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(encodedInput), "Plan a workspace change") || !strings.Contains(string(encodedInput), "Implement the plan.") {
+	if !strings.Contains(string(encodedInput), "Plan a workspace change") || !strings.Contains(string(encodedInput), "Implement the plan under the active permission mode.") {
 		t.Fatalf("same-context implementation input = %s", encodedInput)
+	}
+}
+
+func TestPlanImplementationUsesNormalApprovalFlow(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		allow     bool
+		wantCalls int
+	}{
+		{name: "approved", allow: true, wantCalls: 1},
+		{name: "denied", allow: false, wantCalls: 0},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
+				hostTextResponse("<proposed_plan>Run the requested command.</proposed_plan>"),
+				hostToolCallResponse("select-host", "select_tool_category", `{"category":"host"}`),
+				hostToolCallResponse("command-call", "host_echo", `{}`),
+				hostTextResponse("Plan implementation finished."),
+			}}
+			tool := &hostEchoTool{}
+			client := newProgrammaticCore(t, provider, publictool.Registration{
+				Tool: tool,
+				Metadata: publictool.Metadata{
+					Category:        publictool.Category{Name: "host", Description: "Host supplied tools."},
+					PermissionClass: publictool.PermissionCommand,
+				},
+			})
+			if err := client.SetPermissionMode(PermissionWorkspace); err != nil {
+				t.Fatal(err)
+			}
+			saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			planInput, err := NewTaskInput("Run a command")
+			if err != nil {
+				t.Fatal(err)
+			}
+			planned, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: planInput, PlanMode: true}, StartIfIdle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result, err := runtime.WaitTurn(context.Background(), planned.ExecutionID); err != nil || result.ProposedPlan == nil {
+				t.Fatalf("plan result = %#v, error=%v", result, err)
+			}
+			events := subscribeTestEvents(t, client, saved.ID)
+			implementation, err := runtime.ImplementPlan(context.Background(), planned.ExecutionID, PlanImplementationOptions{
+				Mode: PlanImplementSameContext, PermissionMode: PermissionWorkspace,
+			})
+			if err != nil {
+				t.Fatalf("ImplementPlan: %v", err)
+			}
+			var approval *ApprovalRequest
+			deadline := time.After(5 * time.Second)
+			for approval == nil {
+				select {
+				case event := <-events:
+					if event.Kind == EventApprovalRequired {
+						approval = event.Approval
+					}
+				case <-deadline:
+					t.Fatal("plan command did not request normal approval")
+				}
+			}
+			if err := runtime.ResolveApproval(approval.ID, test.allow); err != nil {
+				t.Fatalf("ResolveApproval: %v", err)
+			}
+			result, err := runtime.WaitTurn(context.Background(), implementation.Submission.ExecutionID)
+			if err != nil || result.Status != TaskCompleted {
+				t.Fatalf("implementation result = %#v, error=%v", result, err)
+			}
+			tool.mu.Lock()
+			calls := tool.calls
+			tool.mu.Unlock()
+			if calls != test.wantCalls {
+				t.Fatalf("tool calls = %d, want %d", calls, test.wantCalls)
+			}
+			if client.PermissionMode() != PermissionWorkspace {
+				t.Fatalf("global permission mode = %q, want workspace preserved", client.PermissionMode())
+			}
+		})
+	}
+}
+
+func TestPlanImplementationDoesNotPromoteReadOnlyPermission(t *testing.T) {
+	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
+		hostTextResponse("<proposed_plan>Write the requested workspace file.</proposed_plan>"),
+		hostToolCallResponse("select-host", "select_tool_category", `{"category":"host"}`),
+		hostToolCallResponse("write-call", "host_echo", `{}`),
+		hostTextResponse("The write was unavailable under the active permission mode."),
+	}}
+	tool := &hostEchoTool{}
+	client := newProgrammaticCore(t, provider, publictool.Registration{
+		Tool: tool,
+		Metadata: publictool.Metadata{
+			Category:        publictool.Category{Name: "host", Description: "Host supplied tools."},
+			PermissionClass: publictool.PermissionWorkspaceWrite,
+		},
+	})
+	if err := client.SetPermissionMode(PermissionReadOnly); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	planInput, err := NewTaskInput("Write a file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	planned, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: planInput, PlanMode: true}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result, err := runtime.WaitTurn(context.Background(), planned.ExecutionID); err != nil || result.ProposedPlan == nil {
+		t.Fatalf("plan result = %#v, error=%v", result, err)
+	}
+	implementation, err := runtime.ImplementPlan(context.Background(), planned.ExecutionID, PlanImplementationOptions{
+		Mode: PlanImplementSameContext, PermissionMode: PermissionReadOnly,
+	})
+	if err != nil {
+		t.Fatalf("ImplementPlan: %v", err)
+	}
+	result, err := runtime.WaitTurn(context.Background(), implementation.Submission.ExecutionID)
+	if err != nil || result.Status != TaskCompleted {
+		t.Fatalf("implementation result = %#v, error=%v", result, err)
+	}
+	tool.mu.Lock()
+	calls := tool.calls
+	tool.mu.Unlock()
+	if calls != 0 {
+		t.Fatalf("workspace write tool calls = %d, want 0 in read-only mode", calls)
+	}
+	if client.PermissionMode() != PermissionReadOnly {
+		t.Fatalf("global permission mode = %q, want read-only preserved", client.PermissionMode())
+	}
+	provider.mu.Lock()
+	request := provider.seenRequests[2]
+	provider.mu.Unlock()
+	for _, definition := range request.Tools {
+		if function, ok := definition.(publicmodel.FunctionTool); ok && function.Name == "host_echo" {
+			t.Fatal("workspace write tool was exposed during read-only plan implementation")
+		}
 	}
 }
 

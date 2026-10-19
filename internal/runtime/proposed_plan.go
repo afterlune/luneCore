@@ -118,8 +118,8 @@ func extractProposedPlan(raw json.RawMessage) *ProposedPlan {
 	return &ProposedPlan{Text: plan}
 }
 
-// ImplementPlan starts one approved plan with workspace permission scoped to
-// that turn. The Core's global permission mode is left unchanged.
+// ImplementPlan starts one approved plan using the selected permission mode.
+// The Core's global permission mode is left unchanged.
 func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID string, options PlanImplementationOptions) (PlanImplementation, error) {
 	if r == nil || r.core == nil || ctx == nil || sourceExecutionID == "" {
 		return PlanImplementation{}, errors.New("session runtime, context, and source execution id are required")
@@ -140,17 +140,14 @@ func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID st
 	if executionPermission == "" {
 		executionPermission = r.core.PermissionMode()
 	}
-	if executionPermission == PermissionReadOnly {
-		executionPermission = PermissionWorkspace
-	}
 	if err := validatePermissionOverride(string(executionPermission)); err != nil {
 		return PlanImplementation{}, err
 	}
 
 	targetSessionID := r.sessionID
-	inputText := "Implement the plan. Use the approved authorization. Do not ask the user questions or request permissions. If an unapproved action becomes necessary, stop and report the blocker."
+	inputText := "Implement the plan under the active permission mode. Use the normal approval flow whenever an action requires permission."
 	if mode == PlanImplementNewContext {
-		inputText = "Implement the following plan using the approved authorization. Treat it as the complete task context; do not assume access to the previous conversation. Do not ask the user questions or request permissions. If an unapproved action becomes necessary, stop and report the blocker.\n\n" + plan.Text
+		inputText = "Implement the following plan under the active permission mode. Treat it as the complete task context; do not assume access to the previous conversation. Use the normal approval flow whenever an action requires permission.\n\n" + plan.Text
 	}
 	input, err := NewTaskInput(inputText)
 	if err != nil {
@@ -164,7 +161,7 @@ func (r *SessionRuntime) ImplementPlan(ctx context.Context, sourceExecutionID st
 		targetSessionID = target.ID
 	}
 	submission, _, err := r.core.submitTurn(ctx, targetSessionID, TurnRequest{
-		Input: input, PermissionMode: executionPermission, PlanAuthorization: authorization, NoInteractiveDecisions: true,
+		Input: input, PermissionMode: executionPermission, PlanAuthorization: authorization,
 	}, StartIfIdle, false)
 	if err != nil {
 		if targetSessionID != r.sessionID {
