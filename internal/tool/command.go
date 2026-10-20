@@ -96,13 +96,15 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 			return Result{Err: err}
 		}
 	}
-	authorization := publictool.PlanAuthorizationFromContext(ctx)
-	if reason := highRiskCommandReason(args.Command); reason != "" && !commandApproved(args.Command, authorization.ApprovedHighRiskCommands) {
-		return Result{Err: &publictool.ExecutionBlockerError{Tool: "command", Reason: "high-risk command is not individually approved in the plan: " + reason}}
-	}
 	mode := PermissionModeFromContext(ctx)
 	if mode == "" {
 		mode = PermissionModeWorkspace
+	}
+	authorization := publictool.PlanAuthorizationFromContext(ctx)
+	if mode != PermissionModeFullAccess {
+		if reason := highRiskCommandReason(args.Command); reason != "" && !commandApproved(args.Command, authorization.ApprovedHighRiskCommands) {
+			return Result{Err: &publictool.ExecutionBlockerError{Tool: "command", Reason: "high-risk command is not individually approved in the plan: " + reason}}
+		}
 	}
 	sandboxMode := mode
 	if sandboxMode == PermissionModeAsk {
@@ -117,7 +119,7 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	sandbox := publictool.SandboxPolicy{
 		PermissionMode: string(sandboxMode), Workspace: workspace, Grants: grants,
 		CommandToolchainPaths: append([]string(nil), t.CommandToolchainPaths...),
-		Network:               mode == PermissionModeFullAccess || authorization.AllowNetwork,
+		Network:               true,
 	}
 	if mode == PermissionModeFullAccess {
 		sandbox.HomeDir, _ = os.UserHomeDir()
@@ -138,7 +140,11 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	defer cancel()
 	executor := t.Executor
 	if executor == nil {
-		executor = SandboxedCommandExecutor{HelperPath: t.SandboxHelperPath}
+		if IsSandboxDisabled(t.AllowLocalCommand) {
+			executor = DirectCommandExecutor{}
+		} else {
+			executor = SandboxedCommandExecutor{HelperPath: t.SandboxHelperPath}
+		}
 	}
 	result, err := executor.Execute(commandCtx, request)
 	status := publictool.CommandSucceeded

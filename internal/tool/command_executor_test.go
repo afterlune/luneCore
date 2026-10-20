@@ -300,6 +300,12 @@ func TestHighRiskAndOpaqueCommandsNeedExactPlanApproval(t *testing.T) {
 			if result.Err != nil || calls != 1 {
 				t.Fatalf("approved command result = %#v, executor calls = %d", result, calls)
 			}
+
+			fullAccessCtx := WithPermissionMode(context.Background(), string(PermissionModeFullAccess))
+			result = tool.Run(fullAccessCtx, arguments)
+			if result.Err != nil || calls != 2 {
+				t.Fatalf("full-access command result = %#v, executor calls = %d", result, calls)
+			}
 		})
 	}
 }

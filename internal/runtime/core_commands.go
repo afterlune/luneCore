@@ -33,7 +33,11 @@ const (
 func (c *Core) configureCommands(config Config) error {
 	executor := config.CommandExecutor
 	if executor == nil {
-		executor = tool.SandboxedCommandExecutor{HelperPath: config.SandboxHelperPath}
+		if tool.IsSandboxDisabled(config.AllowLocalCommand) {
+			executor = tool.DirectCommandExecutor{}
+		} else {
+			executor = tool.SandboxedCommandExecutor{HelperPath: config.SandboxHelperPath}
+		}
 	}
 	manager, err := commandruntime.New(context.Background(), c.sessions, executor, config.Commands, func(info publictool.CommandInfo) {
 		kind := EventCommandStarted

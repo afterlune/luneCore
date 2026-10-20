@@ -46,12 +46,15 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 		return nil, err
 	}
 	if name == "command" {
-		var request struct {
-			Command string `json:"command"`
-		}
-		if json.Unmarshal(arguments, &request) == nil {
-			if reason := highRiskCommandReason(request.Command); reason != "" && !commandApproved(request.Command, publictool.PlanAuthorizationFromContext(ctx).ApprovedHighRiskCommands) {
-				return nil, &publictool.ExecutionBlockerError{Tool: name, Reason: "high-risk command is not individually approved in the plan: " + reason}
+		mode := permissionModeFromRegistry(ctx, permissions, metadata)
+		if mode != PermissionModeFullAccess {
+			var request struct {
+				Command string `json:"command"`
+			}
+			if json.Unmarshal(arguments, &request) == nil {
+				if reason := highRiskCommandReason(request.Command); reason != "" && !commandApproved(request.Command, publictool.PlanAuthorizationFromContext(ctx).ApprovedHighRiskCommands) {
+					return nil, &publictool.ExecutionBlockerError{Tool: name, Reason: "high-risk command is not individually approved in the plan: " + reason}
+				}
 			}
 		}
 	}

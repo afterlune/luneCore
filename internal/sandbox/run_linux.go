@@ -104,9 +104,6 @@ func runChild(request publictool.CommandRequest) error {
 }
 
 func applyLandlock(policy publictool.SandboxPolicy, workspace, tempDir string) error {
-	if policy.PermissionMode == "full-access" && os.Geteuid() == 0 {
-		return errors.New("full-access commands cannot run from a root-owned Core process")
-	}
 	abi, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, 0, 0, landlockCreateRulesetVersion)
 	if errno != 0 {
 		return fmt.Errorf("Landlock is unavailable: %w", errno)
@@ -134,6 +131,13 @@ func applyLandlock(policy publictool.SandboxPolicy, workspace, tempDir string) e
 		paths[tempDir] = readWrite
 		for _, path := range linuxRuntimeReadPaths() {
 			paths[path] = readOnly
+			if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != path {
+				paths[resolved] = readOnly
+			}
+		}
+		if resolvedResolv, err := filepath.EvalSymlinks("/etc/resolv.conf"); err == nil {
+			paths[resolvedResolv] = readOnly
+			paths[filepath.Dir(resolvedResolv)] = readOnly
 		}
 		paths["/dev/null"] = readWrite
 	} else {
@@ -228,9 +232,8 @@ func addLandlockPathRule(ruleset int, path string, access uint64) error {
 
 func linuxRuntimeReadPaths() []string {
 	return []string{
-		"/usr", "/usr/local", "/bin", "/sbin", "/lib", "/lib64",
-		"/etc/ld.so.cache", "/etc/passwd", "/etc/group", "/etc/nsswitch.conf",
-		"/etc/hosts", "/etc/resolv.conf", "/etc/ssl/certs", "/etc/ca-certificates",
+		"/usr", "/usr/local", "/bin", "/sbin", "/lib", "/lib64", "/opt",
+		"/etc", "/run", "/var/run", "/mnt/wsl", "/var/lib/apt", "/var/cache",
 		"/dev/null", "/dev/zero", "/dev/random", "/dev/urandom",
 	}
 }
