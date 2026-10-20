@@ -221,6 +221,12 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 		response, responseErr = sendRequest(&request)
 	}
 	if responseErr != nil {
+		a.options.Logger.ErrorContext(ctx, "agent model request failed",
+			"agent_id", state.AgentID,
+			"provider", state.Provider,
+			"model", request.Model,
+			"error", responseErr,
+		)
 		if serverCompactionRequested {
 			a.notifyCompaction(ContextCompactionEvent{Stage: "failed", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold, Error: responseErr})
 		}
