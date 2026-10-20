@@ -91,19 +91,29 @@ func runChild(request publictool.CommandRequest) error {
 			return fmt.Errorf("resolve full-access home directory: %w", err)
 		}
 	}
-	if err := applyLandlock(request.Sandbox, workspace, tempDir); err != nil {
+	cacheDir := tempDir
+	if request.Sandbox.CacheDir != "" {
+		cacheDir, err = filepath.EvalSymlinks(request.Sandbox.CacheDir)
+		if err != nil {
+			return fmt.Errorf("resolve sandbox cache directory: %w", err)
+		}
+	}
+	if err := prepareSandboxDirectories(tempDir, cacheDir); err != nil {
+		return fmt.Errorf("prepare sandbox cache directories: %w", err)
+	}
+	if err := applyLandlock(request.Sandbox, workspace, tempDir, cacheDir); err != nil {
 		return fmt.Errorf("install Landlock policy: %w", err)
 	}
 	if err := installSeccomp(request.Sandbox.Network); err != nil {
 		return fmt.Errorf("install seccomp policy: %w", err)
 	}
-	if err := unix.Exec("/bin/sh", []string{"/bin/sh", "-c", request.Command}, sandboxEnvironment(tempDir, homeDir, request.Sandbox.CommandToolchainPaths)); err != nil {
+	if err := unix.Exec("/bin/sh", []string{"/bin/sh", "-c", request.Command}, sandboxEnvironment(tempDir, cacheDir, homeDir, request.Sandbox.CommandToolchainPaths)); err != nil {
 		return fmt.Errorf("execute sandbox command: %w", err)
 	}
 	return nil
 }
 
-func applyLandlock(policy publictool.SandboxPolicy, workspace, tempDir string) error {
+func applyLandlock(policy publictool.SandboxPolicy, workspace, tempDir, cacheDir string) error {
 	abi, _, errno := unix.Syscall(unix.SYS_LANDLOCK_CREATE_RULESET, 0, 0, landlockCreateRulesetVersion)
 	if errno != 0 {
 		return fmt.Errorf("Landlock is unavailable: %w", errno)
@@ -129,6 +139,9 @@ func applyLandlock(policy publictool.SandboxPolicy, workspace, tempDir string) e
 	} else if policy.PermissionMode == "workspace" {
 		paths[workspace] = readWrite
 		paths[tempDir] = readWrite
+		if cacheDir != "" {
+			paths[cacheDir] = readWrite
+		}
 		for _, path := range linuxRuntimeReadPaths() {
 			paths[path] = readOnly
 			if resolved, err := filepath.EvalSymlinks(path); err == nil && resolved != path {
@@ -238,13 +251,30 @@ func linuxRuntimeReadPaths() []string {
 	}
 }
 
-func sandboxEnvironment(tempDir, homeDir string, toolchainRoots []string) []string {
+func sandboxEnvironment(tempDir, cacheDir, homeDir string, toolchainRoots []string) []string {
+	if cacheDir == "" {
+		cacheDir = tempDir
+	}
 	path := appendSearchPaths("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin", commandToolchainSearchPaths(toolchainRoots), ":")
 	return []string{
 		"PATH=" + path, "HOME=" + homeDir, "TMPDIR=" + tempDir, "TEMP=" + tempDir,
-		"GOCACHE=" + filepath.Join(tempDir, "go-cache"), "GOTMPDIR=" + filepath.Join(tempDir, "go-tmp"), "GOMODCACHE=" + filepath.Join(tempDir, "go-mod-cache"),
-		"XDG_CACHE_HOME=" + filepath.Join(tempDir, "cache"), "LANG=C.UTF-8",
+		"GOCACHE=" + filepath.Join(cacheDir, "go-build"), "GOTMPDIR=" + filepath.Join(tempDir, "go-tmp"), "GOMODCACHE=" + filepath.Join(cacheDir, "go-mod"),
+		"XDG_CACHE_HOME=" + filepath.Join(cacheDir, "xdg"), "LANG=C.UTF-8",
 	}
+}
+
+func prepareSandboxDirectories(tempDir, cacheDir string) error {
+	for _, directory := range []string{
+		filepath.Join(tempDir, "go-tmp"),
+		filepath.Join(cacheDir, "go-build"),
+		filepath.Join(cacheDir, "go-mod"),
+		filepath.Join(cacheDir, "xdg"),
+	} {
+		if err := os.MkdirAll(directory, 0700); err != nil {
+			return fmt.Errorf("create %q: %w", directory, err)
+		}
+	}
+	return nil
 }
 
 func installSeccomp(network bool) error {

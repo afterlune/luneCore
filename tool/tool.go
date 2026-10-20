@@ -123,7 +123,10 @@ type CommandRequest struct {
 	Command      string
 	Workspace    string
 	InvocationID string
-	Sandbox      SandboxPolicy
+	// Background keeps the command alive after its agent task ends. The host
+	// still owns it and stops it when the session or Core closes.
+	Background bool `json:"background,omitempty"`
+	Sandbox    SandboxPolicy
 }
 
 // PathAccess describes one path scope explicitly approved for a plan.
@@ -161,6 +164,9 @@ type SandboxPolicy struct {
 	CommandToolchainPaths []string `json:"command_toolchain_paths,omitempty"`
 	Network               bool     `json:"network,omitempty"`
 	TempDir               string   `json:"temp_dir,omitempty"`
+	// CacheDir is a host-selected, workspace-scoped persistent cache directory.
+	// The Linux sandbox grants write access only to this directory.
+	CacheDir string `json:"cache_dir,omitempty"`
 }
 
 type planAuthorizationContextKey struct{}

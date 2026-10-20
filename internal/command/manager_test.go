@@ -195,6 +195,117 @@ func TestCommandSurvivesToolContextAndStopsIdempotently(t *testing.T) {
 	}
 }
 
+func TestBackgroundCommandSurvivesTaskAndCanBeStoppedInLaterTask(t *testing.T) {
+	started := make(chan struct{})
+	manager, _ := managerForTest(t, executorFunc(func(ctx context.Context, request publictool.CommandRequest) (publictool.CommandResult, error) {
+		if !request.Background {
+			t.Error("background request flag was lost before execution")
+		}
+		if _, hasDeadline := ctx.Deadline(); hasDeadline {
+			t.Error("background command received an implicit timeout")
+		}
+		close(started)
+		<-ctx.Done()
+		return publictool.CommandResult{}, ctx.Err()
+	}), publictool.CommandOptions{})
+
+	request := publictool.CommandRequest{Command: "service", Background: true}
+	startedCommand, err := manager.Start(identityContext(), request, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background command did not start")
+	}
+	if !startedCommand.Command.Background {
+		t.Fatal("background command metadata was not returned")
+	}
+
+	if err := manager.StopScope(context.Background(), "execution", ""); err != nil {
+		t.Fatal(err)
+	}
+	if manager.Active("execution", "lead") {
+		t.Fatal("session background service was counted as a task-blocking command")
+	}
+
+	if err := manager.OpenScope("next-execution", context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	identity := publictool.CallIdentityFromContext(identityContext())
+	identity.ExecutionID = "next-execution"
+	identity.InvocationID = "next-invocation"
+	nextTask := publictool.WithCallIdentity(context.Background(), identity)
+	status, err := manager.Read(nextTask, "session", startedCommand.Command.ID, identity.ExecutionID, identity.AgentID, publictool.CommandReadOptions{})
+	if err != nil || status.Command.Status != publictool.CommandRunning {
+		t.Fatalf("cross-task status = %+v, error = %v", status, err)
+	}
+	stopped, err := manager.Stop(nextTask, "session", startedCommand.Command.ID, identity.ExecutionID, identity.AgentID)
+	if err != nil || stopped.Command.Status != publictool.CommandCancelled {
+		t.Fatalf("cross-task stop = %+v, error = %v", stopped, err)
+	}
+}
+
+func TestStopSessionStopsBackgroundCommands(t *testing.T) {
+	started := make(chan struct{})
+	manager, _ := managerForTest(t, executorFunc(func(ctx context.Context, _ publictool.CommandRequest) (publictool.CommandResult, error) {
+		close(started)
+		<-ctx.Done()
+		return publictool.CommandResult{}, ctx.Err()
+	}), publictool.CommandOptions{})
+	command, err := manager.Start(identityContext(), publictool.CommandRequest{Command: "service", Background: true}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background command did not start")
+	}
+	if err := manager.StopSession(context.Background(), "session"); err != nil {
+		t.Fatal(err)
+	}
+	status, err := manager.Read(context.Background(), "session", command.Command.ID, "", "", publictool.CommandReadOptions{})
+	if err != nil || status.Command.Status != publictool.CommandCancelled {
+		t.Fatalf("session-stop status = %+v, error = %v", status, err)
+	}
+}
+
+func TestManagerCloseStopsBackgroundCommands(t *testing.T) {
+	started := make(chan struct{})
+	ended := make(chan struct{})
+	manager, _ := managerForTest(t, executorFunc(func(ctx context.Context, _ publictool.CommandRequest) (publictool.CommandResult, error) {
+		close(started)
+		<-ctx.Done()
+		close(ended)
+		return publictool.CommandResult{}, ctx.Err()
+	}), publictool.CommandOptions{})
+	command, err := manager.Start(identityContext(), publictool.CommandRequest{Command: "service", Background: true}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("background command did not start")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := manager.Close(ctx); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-ended:
+	case <-time.After(time.Second):
+		t.Fatal("Core-style manager close did not terminate the service")
+	}
+	status, err := manager.Read(context.Background(), "session", command.Command.ID, "", "", publictool.CommandReadOptions{})
+	if err != nil || status.Command.Status != publictool.CommandCancelled {
+		t.Fatalf("closed service status = %#v, error = %v", status, err)
+	}
+}
+
 func TestCommandOutputCursorAndTruncation(t *testing.T) {
 	text := strings.Repeat("a", OutputLimit) + "tail"
 	m, _ := managerForTest(t, executorFunc(func(context.Context, publictool.CommandRequest) (publictool.CommandResult, error) {

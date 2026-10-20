@@ -2,7 +2,8 @@ package tool
 
 import "time"
 
-// CommandOptions bounds non-interactive commands owned by a Core task.
+// CommandOptions bounds Core-managed commands. Timeout is the default for
+// task-scoped commands and the maximum for explicit command timeouts.
 type CommandOptions struct {
 	Timeout       time.Duration
 	MaxConcurrent int
@@ -30,6 +31,7 @@ type CommandInfo struct {
 	AgentID      string        `json:"agent_id"`
 	InvocationID string        `json:"invocation_id"`
 	TaskID       string        `json:"task_id,omitempty"`
+	Background   bool          `json:"background,omitempty"`
 	Status       CommandStatus `json:"status"`
 	StartedAt    time.Time     `json:"started_at"`
 	FinishedAt   time.Time     `json:"finished_at,omitempty"`

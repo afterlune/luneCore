@@ -19,7 +19,7 @@ func (m *Manager) Start(ctx context.Context, request publictool.CommandRequest, 
 	if timeout < 0 || timeout > m.options.Timeout || yield < 0 || yield > MaxWait {
 		return publictool.CommandOutput{}, errors.New("command timeout or yield exceeds its limit")
 	}
-	if timeout == 0 {
+	if timeout == 0 && !request.Background {
 		timeout = m.options.Timeout
 	}
 	identity := publictool.CallIdentityFromContext(ctx)
@@ -33,7 +33,7 @@ func (m *Manager) Start(ctx context.Context, request publictool.CommandRequest, 
 	id := hex.EncodeToString(random[:])
 	m.mu.Lock()
 	s, exists := m.scopes[identity.ExecutionID]
-	if !exists || s.ctx.Err() != nil || ctx.Err() != nil {
+	if m.closing || !exists || s.ctx.Err() != nil || ctx.Err() != nil {
 		m.mu.Unlock()
 		return publictool.CommandOutput{}, errors.New("command task is not running")
 	}
@@ -56,8 +56,21 @@ func (m *Manager) Start(ctx context.Context, request publictool.CommandRequest, 
 		m.mu.Unlock()
 		return publictool.CommandOutput{}, errors.New("concurrent command limit reached")
 	}
-	commandCtx, cancel := context.WithTimeout(publictool.WithCallIdentity(s.ctx, identity), timeout)
-	info := publictool.CommandInfo{Command: request.Command, ID: id, SessionID: identity.SessionID, ExecutionID: identity.ExecutionID, AgentID: identity.AgentID, InvocationID: identity.InvocationID, TaskID: identity.TaskID, Status: publictool.CommandRunning, StartedAt: time.Now()}
+	var commandCtx context.Context
+	var cancel context.CancelFunc
+	if request.Background {
+		// Detach only from task cancellation. The manager keeps the process handle
+		// and stops it on explicit request, session deletion, or Core shutdown.
+		parent := context.WithoutCancel(ctx)
+		if timeout > 0 {
+			commandCtx, cancel = context.WithTimeout(parent, timeout)
+		} else {
+			commandCtx, cancel = context.WithCancel(parent)
+		}
+	} else {
+		commandCtx, cancel = context.WithTimeout(publictool.WithCallIdentity(s.ctx, identity), timeout)
+	}
+	info := publictool.CommandInfo{Command: request.Command, ID: id, SessionID: identity.SessionID, ExecutionID: identity.ExecutionID, AgentID: identity.AgentID, InvocationID: identity.InvocationID, TaskID: identity.TaskID, Background: request.Background, Status: publictool.CommandRunning, StartedAt: time.Now()}
 	request.OnOutput = nil
 	j := &job{
 		record: Record{Info: info, Request: request}, cancel: cancel,

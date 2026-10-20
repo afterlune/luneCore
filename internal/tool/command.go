@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	commandSchema    = `{"type":"object","properties":{"command":{"type":"string","description":"Non-interactive shell command to run in the workspace"},"yield_time_ms":{"type":"integer","minimum":0,"maximum":5000,"description":"Initial wait; defaults to 1000 ms. Query command_status if still running."},"timeout_ms":{"type":"integer","minimum":1,"description":"Optional shorter timeout, bounded by the host command limit."}},"required":["command"],"additionalProperties":false}`
+	commandSchema    = `{"type":"object","properties":{"command":{"type":"string","description":"Non-interactive shell command to run in the workspace"},"background":{"type":"boolean","description":"Keep a requested long-running service alive across task turns. Keep the service in the foreground; do not use shell detachment such as & or nohup. The session owns and can stop it."},"yield_time_ms":{"type":"integer","minimum":0,"maximum":5000,"description":"Initial wait; defaults to 1000 ms. Query command_status if still running."},"timeout_ms":{"type":"integer","minimum":1,"description":"Optional timeout; bounded by the host command limit. Background commands have no default timeout."}},"required":["command"],"additionalProperties":false}`
 	maxCommandOutput = 1 << 20
 )
 
@@ -53,14 +53,15 @@ var highRiskCommandPatterns = []*regexp.Regexp{
 }
 
 func (CommandTool) Definition() model.FunctionTool {
-	return functionDefinition("command", "Run a non-interactive shell command with bounded output. Poll with command_status until it finishes, or stop it with command_stop.", commandSchema)
+	return functionDefinition("command", "Run a non-interactive workspace command with bounded output. For a service the user wants to keep running, set background=true and keep the process in the foreground; it remains managed by this session after the task ends. Poll command_status for readiness, or stop it with command_stop.", commandSchema)
 }
 
 func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	var args struct {
-		Command string `json:"command"`
-		Yield   *int64 `json:"yield_time_ms"`
-		Timeout *int64 `json:"timeout_ms"`
+		Command    string `json:"command"`
+		Background bool   `json:"background"`
+		Yield      *int64 `json:"yield_time_ms"`
+		Timeout    *int64 `json:"timeout_ms"`
 	}
 	if err := decodeArguments(raw, &args); err != nil {
 		return Result{Err: fmt.Errorf("invalid command arguments: %w", err)}
@@ -76,6 +77,10 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		yield = time.Duration(*args.Yield) * time.Millisecond
 	}
 	timeout := t.Timeout
+	if args.Background && args.Timeout == nil {
+		// A managed service lives until explicitly stopped or its session ends.
+		timeout = 0
+	}
 	if args.Timeout != nil {
 		if *args.Timeout <= 0 || *args.Timeout > int64((time.Duration(1<<63-1))/time.Millisecond) {
 			return Result{Err: errors.New("invalid timeout_ms")}
@@ -124,7 +129,7 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if mode == PermissionModeFullAccess {
 		sandbox.HomeDir, _ = os.UserHomeDir()
 	}
-	request := publictool.CommandRequest{Command: args.Command, Workspace: workspace, InvocationID: publictool.InvocationID(ctx), Sandbox: sandbox}
+	request := publictool.CommandRequest{Command: args.Command, Workspace: workspace, InvocationID: publictool.InvocationID(ctx), Background: args.Background, Sandbox: sandbox}
 	if t.Manager != nil {
 		output, err := t.Manager.Start(ctx, request, timeout, yield)
 		if err != nil {
@@ -132,6 +137,9 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		}
 		data, err := json.Marshal(output)
 		return Result{Output: string(data), Err: err, Details: &publictool.ExecutionDetails{Command: &output}}
+	}
+	if args.Background {
+		return Result{Err: errors.New("managed background commands require an active Core command manager")}
 	}
 	if timeout <= 0 {
 		timeout = 30 * time.Second

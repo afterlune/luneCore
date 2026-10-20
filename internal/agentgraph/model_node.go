@@ -32,6 +32,9 @@ func taskInstructions(goal, permissionMode string, planMode, canDelegate, teamEn
 		}
 	} else {
 		instructions = append(instructions, "Prefer reasonable assumptions and continue instead of asking routine questions. Inspect the workspace and use available tools to resolve discoverable facts first. Use ask_user only when a user-owned decision or material ambiguity cannot be resolved from available context and blocks a safe or correct result. If the user has not requested a concrete task (such as a greeting or casual chat), reply naturally directly without calling tools or inspecting the workspace.")
+		if permissionMode != "read-only" {
+			instructions = append(instructions, "When the user asks to keep a workspace service running after the task, start it with command background=true and keep the service process in the foreground; do not use shell detachment such as & or nohup. The session manages it after the task ends. Check command_status output before claiming it is ready, and stop it with command_stop when it is no longer needed. On Linux, command sandboxing restricts filesystem access but does not create a separate network namespace. Sandbox environment variables are constructed per command and do not inherit host-shell exports; set a needed variable in that command invocation, and use host-approved command toolchain paths for binaries outside the standard PATH.")
+		}
 		if teamEnabled {
 			instructions = append(instructions, "For a user message beginning 'Worker task', complete only the assignment, verify facts, and report to the lead; do not call ask_user.")
 		}

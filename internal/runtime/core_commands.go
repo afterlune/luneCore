@@ -84,27 +84,6 @@ func (c *Core) commandHooks() (func(agentgraph.State) bool, func(agentgraph.Stat
 	return func(state agentgraph.State) bool { return c.commands.Active(state.ExecutionID, state.AgentID) }, func(state agentgraph.State) error { return c.stopCommands(state.ExecutionID, state.AgentID) }
 }
 
-func (c *Core) commandSummary(ctx context.Context, state agentgraph.State) (string, error) {
-	infos, err := c.commands.List(ctx, publictool.CallIdentityFromContext(ctx).SessionID, state.ExecutionID)
-	if err != nil {
-		return "", err
-	}
-	var owned []CommandInfo
-	for _, info := range infos {
-		if info.AgentID == state.AgentID {
-			owned = append(owned, info)
-		}
-	}
-	if len(owned) == 0 {
-		return "", nil
-	}
-	if len(owned) > 16 {
-		owned = owned[len(owned)-16:]
-	}
-	data, err := json.Marshal(owned)
-	return "Runtime command states (start receipts do not prove successful completion; use command_status for saved output): " + string(data), err
-}
-
 func (c *Core) admitCommandCompletionRecovery(ctx context.Context, sessionID string) error {
 	cp, err := c.runtime.CheckpointForSession(ctx, sessionID)
 	if err != nil {

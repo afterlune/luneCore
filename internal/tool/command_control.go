@@ -23,9 +23,9 @@ type commandControlArgs struct {
 
 func (t CommandControlTool) Definition() model.FunctionTool {
 	if t.Stop {
-		return functionDefinition("command_stop", "Stop a command owned by this agent. Stopping does not mean it succeeded.", `{"type":"object","properties":{"command_id":{"type":"string"}},"required":["command_id"],"additionalProperties":false}`)
+		return functionDefinition("command_stop", "Stop a command owned by this agent, or a managed background service in this session. Stopping does not mean it succeeded.", `{"type":"object","properties":{"command_id":{"type":"string"}},"required":["command_id"],"additionalProperties":false}`)
 	}
-	return functionDefinition("command_status", "Read this agent's command state and output from a byte cursor; wait up to 5 seconds. A start receipt is not completion.", `{"type":"object","properties":{"command_id":{"type":"string"},"cursor":{"type":"integer","minimum":0,"description":"Byte offset into saved output; defaults to 0"},"wait_ms":{"type":"integer","minimum":0,"maximum":5000,"description":"Maximum wait; defaults to 1000 ms"}},"required":["command_id"],"additionalProperties":false}`)
+	return functionDefinition("command_status", "Read this agent's command, or a managed background service in this session, from a byte cursor; wait up to 5 seconds. A start receipt is not completion.", `{"type":"object","properties":{"command_id":{"type":"string"},"cursor":{"type":"integer","minimum":0,"description":"Byte offset into saved output; defaults to 0"},"wait_ms":{"type":"integer","minimum":0,"maximum":5000,"description":"Maximum wait; defaults to 1000 ms"}},"required":["command_id"],"additionalProperties":false}`)
 }
 
 func (t CommandControlTool) authorizeCommand(ctx context.Context, raw json.RawMessage) error {
@@ -76,7 +76,8 @@ func (t CommandControlTool) Run(ctx context.Context, raw json.RawMessage) Result
 }
 
 // Control is a capability over an already-authorized process, never a fresh
-// command approval. Each operation verifies the execution and agent owner.
+// command approval. Task commands are limited to their owner; session-managed
+// background commands are limited to their originating session.
 func (r *Registry) SetCommandManager(manager *command.Manager) error {
 	r.mu.Lock()
 	existing, ok := r.tools["command"].(CommandTool)

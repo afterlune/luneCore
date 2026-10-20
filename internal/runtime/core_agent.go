@@ -42,7 +42,7 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 	activeCommands, stopCommands := c.commandHooks()
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
-		Logger: c.logger, ActiveCommands: activeCommands, StopCommands: stopCommands, CommandSummary: c.commandSummary,
+		Logger: c.logger, ActiveCommands: activeCommands, StopCommands: stopCommands,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		SupportsInputAudio: profile.SupportsInputAudio, Execution: agentExecutionOptions(taskState.Execution),
 		Team:    c.team,

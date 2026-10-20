@@ -18,7 +18,13 @@ func cloneInfo(info publictool.CommandInfo) publictool.CommandInfo {
 }
 
 func owned(record Record, sessionID, executionID, agentID string) bool {
-	return record.Info.SessionID == sessionID && (executionID == "" || record.Info.ExecutionID == executionID) && (agentID == "" || record.Info.AgentID == agentID)
+	if record.Info.SessionID != sessionID {
+		return false
+	}
+	if record.Info.Background {
+		return true
+	}
+	return (executionID == "" || record.Info.ExecutionID == executionID) && (agentID == "" || record.Info.AgentID == agentID)
 }
 
 func (m *Manager) Read(ctx context.Context, sessionID, id, executionID, agentID string, options publictool.CommandReadOptions) (publictool.CommandOutput, error) {

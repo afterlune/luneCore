@@ -109,15 +109,6 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 	if state.NoInteractiveDecisions {
 		request.Instructions += "\n\nHost approved this plan. Do not ask the user or seek new permission. Stop and report if an unapproved action is required."
 	}
-	if a.options.CommandSummary != nil {
-		summary, err := a.options.CommandSummary(ctx, state)
-		if err != nil {
-			return a.failTask(state, err)
-		}
-		if summary != "" {
-			request.Instructions += "\n\n" + summary
-		}
-	}
 	compactionThreshold := int64(0)
 	serverCompactionRequested := false
 	forkCachePrefixValid := true

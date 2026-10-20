@@ -66,7 +66,11 @@ func (p *commandFlowProvider) CreateResponse(ctx context.Context, request public
 	case 0:
 		return hostToolCallResponse("select-command", "select_tool_category", `{"category":"command"}`), nil
 	case 1:
-		return hostToolCallResponse("start-command", "command", `{"command":"private-command-text","yield_time_ms":0}`), nil
+		arguments := `{"command":"private-command-text","yield_time_ms":0}`
+		if p.mode == "background" {
+			arguments = `{"command":"private-command-text","background":true,"yield_time_ms":0}`
+		}
+		return hostToolCallResponse("start-command", "command", arguments), nil
 	case 2:
 		select {
 		case <-ctx.Done():
@@ -83,6 +87,12 @@ func (p *commandFlowProvider) CreateResponse(ctx context.Context, request public
 		}
 		if p.mode == "question" {
 			return askUserToolCallResponse("Continue after stopping the command?", []string{"yes"}), nil
+		}
+		if p.mode == "background" {
+			if !output.Command.Background || !output.Command.Status.Active() || p.probe.ended.Load() {
+				return nil, errors.New("managed service did not survive its start call")
+			}
+			return hostTextResponse("Service started and remains available."), nil
 		}
 		args, _ := json.Marshal(map[string]any{"command_id": p.id, "wait_ms": 0})
 		return hostToolCallResponse("poll-command", "command_status", string(args)), nil
@@ -192,6 +202,41 @@ func TestLongCommandRuntimeOutputAndTermination(t *testing.T) {
 	}
 	if _, err := runtime.ReadCommand(context.Background(), infos[0].ID, CommandReadOptions{}); err == nil {
 		t.Fatal("deleted session command remains")
+	}
+}
+
+func TestBackgroundCommandSurvivesTaskAndCanBeStoppedBySession(t *testing.T) {
+	probe := newCommandProbe()
+	provider := &commandFlowProvider{probe: probe, mode: "background"}
+	config := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
+	config.CommandExecutor = probe
+	client, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := client.SetPermissionMode(PermissionFullAccess); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.RunTask(context.Background(), TaskRequest{SessionID: saved.ID, Input: mustSettingsTaskInput(t, "Start the local service and leave it running")})
+	if err != nil || result.Status != TaskCompleted || probe.calls.Load() != 1 || probe.ended.Load() {
+		t.Fatalf("task result=%+v calls=%d ended=%v error=%v", result, probe.calls.Load(), probe.ended.Load(), err)
+	}
+	sessionRuntime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commands, err := sessionRuntime.ListCommands(context.Background())
+	if err != nil || len(commands) != 1 || !commands[0].Background || commands[0].Status != CommandRunning {
+		t.Fatalf("commands=%+v error=%v", commands, err)
+	}
+	stopped, err := sessionRuntime.StopCommand(context.Background(), commands[0].ID)
+	if err != nil || stopped.Command.Status != CommandCancelled || !probe.ended.Load() {
+		t.Fatalf("stop=%+v ended=%v error=%v", stopped, probe.ended.Load(), err)
 	}
 }
 

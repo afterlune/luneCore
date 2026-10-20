@@ -196,6 +196,8 @@ Each `delegate_team` call may choose `mode: "task"` or `mode: "fork"`. `task` is
 
 Commands run through the `lune-sandbox` companion executable. Windows workspace mode uses AppContainer; Windows full access uses a restricted current-user token with privileges removed; Linux uses Landlock and seccomp. Build the helper with `go build ./cmd/lune-sandbox` and place it beside the host executable, on `PATH`, or set `Config.SandboxHelperPath`. If the helper or kernel feature is unavailable, commands fail closed. `Config.CommandExecutor` remains an explicit trusted host override and must enforce `CommandRequest.Sandbox` itself. `AllowLocalCommand` is deprecated and no longer enables an unsandboxed fallback.
 
+On Linux, the built-in sandbox keeps Go build, module, and XDG caches in a per-workspace directory under the current user's cache root. `TMPDIR` and `GOTMPDIR` remain command-scoped; the helper creates the Go temporary directory before starting the shell. Host-shell exports are not inherited by sandbox commands; set command-specific environment variables in that invocation and configure extra binary directories through `CommandToolchainPaths`.
+
 Workspace mode allows sandboxed commands in the workspace; network and extra command paths must be approved in `PlanAuthorization`. Full access allows the broadest current-user resources the host OS can expose while dropping elevation: Linux keeps normal filesystem permissions and refuses full access when Core runs as root; Windows removes token privileges, disables the Administrators group, and lowers elevated tokens to medium integrity. Common destructive and opaque command forms require an exact entry in `ApprovedHighRiskCommands`. `SessionRuntime.ImplementPlan` accepts the host-confirmed authorization snapshot and disables execution-time questions; a permission blocker pauses the turn for re-planning instead of opening an execution-time approval popup.
 
 ## Concurrent sessions and tool recovery
@@ -248,7 +250,7 @@ session histories and completed results remain readable.
 
 ### Long-running commands
 
-Rebuild `lune-sandbox` alongside Core. Helper protocol version 1 is required;
+Rebuild `lune-sandbox` alongside Core. Helper protocol version 2 is required;
 older binaries fail closed rather than running without process supervision.
 
 `command` runs non-interactive commands in the existing kernel sandbox. It waits
@@ -256,18 +258,27 @@ up to one second by default, then returns JSON containing the command ID, state,
 and bounded output. Use `command_status` with `command_id`, a byte `cursor`, and
 optional `wait_ms` (0–5000) to read more output; use `command_stop` to stop it.
 `yield_time_ms` (0–5000) controls the initial wait. An optional `timeout_ms` can
-shorten the host limit. A start receipt does not prove successful completion.
+set a bounded timeout. A start receipt does not prove successful completion.
+Set `background: true` for a workspace service the user wants to keep running
+after the task. Keep the service in the foreground rather than shell-detaching
+it with `&` or `nohup`; Core retains and supervises the process, and its status
+and output remain available by command ID. Background services have no default
+timeout and stop when explicitly stopped, their session is deleted, or Core
+closes.
 
-`Config.Commands.Timeout` defaults to ten minutes, and
-`Config.Commands.MaxConcurrent` defaults to four running commands across Core.
-Commands belong to the current execution and agent. Model tools cannot inspect
-another agent's commands; controlling an already-authorized command requires no
-additional approval. Existing high-risk command approval and sandbox policies
-apply to every new launch. Windows workspace commands use a PowerShell filesystem
+`Config.Commands.Timeout` defaults to ten minutes for ordinary commands and
+bounds any explicit background timeout. `Config.Commands.MaxConcurrent`
+defaults to four running commands across Core.
+Ordinary commands belong to the current execution and agent and stop when the
+task ends. Background services belong to their session and can be inspected or
+stopped by later turns in that session; they cannot be controlled from another
+session. Controlling an already-authorized command requires no additional
+approval. Existing high-risk command approval and sandbox policies apply to
+every new launch. Windows workspace commands use a PowerShell filesystem
 drive rooted at the workspace; native programs use its actual directory. Commands
-continue across model requests, but stop when
-the task pauses, ends, is interrupted, or is discarded. Team branches also clean
-up their processes when they finish or are cancelled by an early join.
+continue across model requests. Ordinary commands stop when the task pauses,
+ends, is interrupted, or is discarded. Team branches also clean up their
+ordinary commands when they finish or are cancelled by an early join.
 
 If an agent submits a final answer while its commands still run, Core first
 reminds it to inspect or stop them. A second consecutive submission pauses the

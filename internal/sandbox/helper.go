@@ -14,7 +14,7 @@ type ExitError struct{ Code int }
 
 func (e *ExitError) Error() string { return fmt.Sprintf("sandbox command exited with code %d", e.Code) }
 
-const HelperProtocolVersion = 1
+const HelperProtocolVersion = 2
 
 // HelperRequest fails closed with old helpers that reject unknown JSON fields.
 type HelperRequest struct {

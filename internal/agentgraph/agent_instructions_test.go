@@ -81,6 +81,61 @@ func TestDelegationGuidanceIsConditionalAndBounded(t *testing.T) {
 	}
 }
 
+func TestWorkspaceServiceGuidanceUsesManagedBackgroundMode(t *testing.T) {
+	instructions := taskInstructions("", "workspace", false, false, false)
+	for _, expected := range []string{
+		"command background=true",
+		"keep the service process in the foreground",
+		"do not use shell detachment such as & or nohup",
+		"does not create a separate network namespace",
+		"do not inherit host-shell exports",
+	} {
+		if !strings.Contains(instructions, expected) {
+			t.Errorf("service guidance is missing %q: %s", expected, instructions)
+		}
+	}
+	readOnly := taskInstructions("", "read-only", false, false, false)
+	if strings.Contains(readOnly, "command background=true") {
+		t.Fatalf("read-only instructions advertise command execution: %s", readOnly)
+	}
+}
+
+func TestInstructionsStayStableAcrossToolRounds(t *testing.T) {
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"read-1","name":"inspect","arguments":"{}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
+	}}
+	registered := &namedRecordingTool{name: "inspect"}
+	registry, err := tool.NewRegistry(toolRegistration(registered, model.ToolCategory{}, model.ToolPermissionWorkspaceRead, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent, err := New(requester, registry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("inspect the project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "stable-prefix", nil, input, TaskOptions{
+		Goal: "Keep the configured session goal stable.",
+	}, store, graph.Options{})
+	if err != nil || result.Status != graph.StatusCompleted {
+		t.Fatalf("Start status=%q error=%v", result.Status, err)
+	}
+	if len(requester.requests) != 2 {
+		t.Fatalf("model requests = %d, want 2", len(requester.requests))
+	}
+	if requester.requests[0].Instructions != requester.requests[1].Instructions {
+		t.Fatalf("instructions changed across tool round:\nfirst: %s\nsecond: %s", requester.requests[0].Instructions, requester.requests[1].Instructions)
+	}
+}
+
 func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing.T) {
 	requester := &scriptedRequester{responses: []*model.Response{
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<proposed_plan>Done.</proposed_plan>"}]}]}`),

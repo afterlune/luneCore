@@ -153,6 +153,21 @@ func TestCommandToolDelegatesToHostExecutorWithStableInvocationID(t *testing.T) 
 	}
 }
 
+func TestCommandToolRejectsUnmanagedBackgroundExecution(t *testing.T) {
+	calls := 0
+	tool := CommandTool{Workspace: t.TempDir(), Executor: commandExecutorFunc(func(context.Context, publictool.CommandRequest) (publictool.CommandResult, error) {
+		calls++
+		return publictool.CommandResult{}, nil
+	})}
+	result := tool.Run(context.Background(), json.RawMessage(`{"command":"server","background":true}`))
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "managed background commands require") {
+		t.Fatalf("background result = %#v, want managed-runtime error", result)
+	}
+	if calls != 0 {
+		t.Fatalf("unmanaged executor ran %d commands", calls)
+	}
+}
+
 func TestCommandToolFailsClosedWithoutSandboxHelper(t *testing.T) {
 	result := (CommandTool{Workspace: t.TempDir(), SandboxHelperPath: filepath.Join(t.TempDir(), "missing-helper")}).Run(context.Background(), json.RawMessage(`{"command":"echo test"}`))
 	if result.Err == nil || !strings.Contains(result.Err.Error(), "sandbox helper") {

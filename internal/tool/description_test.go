@@ -28,7 +28,7 @@ func TestBuiltInDescriptionsRetainKeyConstraints(t *testing.T) {
 		"list_dir":   {"sorted", "offset and limit"},
 		"glob":       {"** matches recursively", "offset and limit"},
 		"grep":       {"recursively", "case-sensitive regex", ".git", ".map", "offset and limit"},
-		"command":    {"non-interactive", "bounded output", "command_status", "command_stop"},
+		"command":    {"workspace command", "background=true", "session", "command_status", "command_stop"},
 		"status":     {"this agent's command", "byte cursor", "wait up to 5 seconds", "start receipt"},
 		"stop":       {"command owned by this agent", "does not mean it succeeded"},
 		"web_search": {"titles", "URLs", "snippets"},

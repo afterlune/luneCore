@@ -72,7 +72,6 @@ type TeamExecutor interface {
 type AgentOptions struct {
 	ActiveCommands             func(State) bool
 	StopCommands               func(State) error
-	CommandSummary             func(context.Context, State) (string, error)
 	ID                         string
 	Name                       string
 	Logger                     *slog.Logger

@@ -1,4 +1,4 @@
-// Package command owns non-interactive processes within an agent task.
+// Package command owns task-scoped commands and session-managed services.
 package command
 
 import (
@@ -54,6 +54,7 @@ type Manager struct {
 	scopes   map[string]*scope
 	jobs     map[string]*job
 	observer func(publictool.CommandInfo)
+	closing  bool
 }
 
 func New(ctx context.Context, store Store, executor publictool.CommandExecutor, options publictool.CommandOptions, observer func(publictool.CommandInfo)) (*Manager, error) {
@@ -81,6 +82,9 @@ func (m *Manager) OpenScope(executionID string, ctx context.Context) error {
 	if executionID == "" || ctx == nil {
 		return errors.New("command execution scope is required")
 	}
+	if m.closing {
+		return errors.New("command manager is closing")
+	}
 	if _, exists := m.scopes[executionID]; exists {
 		return errors.New("command scope already exists")
 	}
@@ -93,7 +97,7 @@ func (m *Manager) Active(executionID, agentID string) bool {
 	defer m.mu.Unlock()
 	for _, j := range m.jobs {
 		j.mu.Lock()
-		active := j.record.Info.ExecutionID == executionID && j.record.Info.AgentID == agentID && j.record.Info.Status.Active()
+		active := !j.record.Info.Background && j.record.Info.ExecutionID == executionID && j.record.Info.AgentID == agentID && j.record.Info.Status.Active()
 		j.mu.Unlock()
 		if active {
 			return true
@@ -102,9 +106,13 @@ func (m *Manager) Active(executionID, agentID string) bool {
 	return false
 }
 
-// StopScope closes admission before cancelling every process, then waits for
-// durable termination. The caller must not advance its queue on cleanup errors.
+// StopScope closes admission before cancelling task-scoped processes, then
+// waits for durable termination. Session-managed background services survive.
+// The caller must not advance its queue on cleanup errors.
 func (m *Manager) StopScope(ctx context.Context, executionID, agentID string) error {
+	if ctx == nil {
+		return errors.New("command cleanup context is required")
+	}
 	m.mu.Lock()
 	if s := m.scopes[executionID]; s != nil {
 		s.closed[agentID] = true
@@ -112,10 +120,22 @@ func (m *Manager) StopScope(ctx context.Context, executionID, agentID string) er
 			delete(m.scopes, executionID)
 		}
 	}
+	m.mu.Unlock()
+	return m.stopMatching(ctx, func(info publictool.CommandInfo) bool {
+		return !info.Background && info.ExecutionID == executionID &&
+			(agentID == "" || info.AgentID == agentID || strings.HasPrefix(info.AgentID, agentID+"/"))
+	})
+}
+
+func (m *Manager) stopMatching(ctx context.Context, matches func(publictool.CommandInfo) bool) error {
+	if ctx == nil {
+		return errors.New("command cleanup context is required")
+	}
+	m.mu.Lock()
 	var jobs []*job
 	for _, j := range m.jobs {
 		j.mu.Lock()
-		match := j.record.Info.ExecutionID == executionID && (agentID == "" || j.record.Info.AgentID == agentID || strings.HasPrefix(j.record.Info.AgentID, agentID+"/"))
+		match := matches(j.record.Info)
 		if match && j.record.Info.Status.Active() {
 			j.record.Info.Status = publictool.CommandStopping
 			j.cancel()
@@ -159,20 +179,18 @@ func (m *Manager) OpenAgent(executionID, agentID string) {
 
 func (m *Manager) Close(ctx context.Context) error {
 	m.mu.Lock()
-	ids := map[string]bool{}
-	for id := range m.scopes {
-		ids[id] = true
+	if m.closing {
+		m.mu.Unlock()
+		return errors.New("command manager is already closing")
 	}
-	for _, j := range m.jobs {
-		ids[j.record.Info.ExecutionID] = true
-	}
+	m.closing = true
+	m.scopes = map[string]*scope{}
 	m.mu.Unlock()
-	for id := range ids {
-		if err := m.StopScope(ctx, id, ""); err != nil {
-			return err
-		}
-	}
-	return nil
+	err := m.stopMatching(ctx, func(publictool.CommandInfo) bool { return true })
+	m.mu.Lock()
+	m.closing = false
+	m.mu.Unlock()
+	return err
 }
 
 func (m *Manager) observe(info publictool.CommandInfo) {
@@ -202,18 +220,8 @@ func (m *Manager) observeTerminal(ctx context.Context, j *job, info publictool.C
 }
 
 func (m *Manager) StopSession(ctx context.Context, sessionID string) error {
-	m.mu.Lock()
-	ids := map[string]bool{}
-	for _, j := range m.jobs {
-		if j.record.Info.SessionID == sessionID {
-			ids[j.record.Info.ExecutionID] = true
-		}
+	if sessionID == "" {
+		return errors.New("command session id is required")
 	}
-	m.mu.Unlock()
-	for id := range ids {
-		if err := m.StopScope(ctx, id, ""); err != nil {
-			return err
-		}
-	}
-	return nil
+	return m.stopMatching(ctx, func(info publictool.CommandInfo) bool { return info.SessionID == sessionID })
 }

@@ -36,6 +36,13 @@ func (e SandboxedCommandExecutor) Execute(ctx context.Context, request publictoo
 	if err != nil {
 		return publictool.CommandResult{}, err
 	}
+	if runtime.GOOS == "linux" {
+		cacheDir, cacheErr := workspaceSandboxCacheDir(request.Workspace)
+		if cacheErr != nil {
+			return publictool.CommandResult{}, cacheErr
+		}
+		request.Sandbox.CacheDir = cacheDir
+	}
 	tempDir, err := os.MkdirTemp("", "lune-sandbox-")
 	if err != nil {
 		return publictool.CommandResult{}, fmt.Errorf("create sandbox temporary directory: %w", err)
