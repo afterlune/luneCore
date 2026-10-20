@@ -32,7 +32,10 @@ func askUserDefinition() model.FunctionTool {
 				"type": "object", "properties": map[string]any{
 					"id":       map[string]any{"type": "string", "description": "Unique stable ID within this batch."},
 					"question": map[string]any{"type": "string", "description": "One concise user-owned decision."},
-					"options":  map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{"label": map[string]any{"type": "string"}, "description": map[string]any{"type": "string"}}, "required": []string{"label", "description"}, "additionalProperties": false}},
+					"options": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
+						"label":       map[string]any{"type": "string"},
+						"description": map[string]any{"type": "string", "description": "A brief phrase that distinguishes this option; avoid full sentences and repeating the label."},
+					}, "required": []string{"label", "description"}, "additionalProperties": false}},
 				}, "required": []string{"id", "question", "options"}, "additionalProperties": false}},
 		}, "required": []string{"questions"}, "additionalProperties": false,
 	})
@@ -40,7 +43,7 @@ func askUserDefinition() model.FunctionTool {
 	return model.FunctionTool{
 		Name: askUserToolName,
 		Description: "Ask only about a user-owned decision or material ambiguity that blocks safe, correct progress. " +
-			"In Plan mode, ask before presenting the plan; inspect available facts first and use defaults for routine details. Group related decisions, use concise questions with unique IDs, and offer answer choices when helpful; free text is accepted.",
+			"In Plan mode, ask before presenting the plan; inspect available facts first and use defaults for routine details. Group related decisions, use concise questions with unique IDs, and offer answer choices when helpful. Keep each option label short and each description to one brief, distinguishing phrase; avoid redundant explanations. Free text is accepted.",
 		Parameters: parameters,
 		Strict:     &strict,
 	}

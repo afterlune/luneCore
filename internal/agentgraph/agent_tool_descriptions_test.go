@@ -1,6 +1,7 @@
 package agentgraph
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,7 @@ func TestRuntimeToolDescriptionsRetainDecisionAndDispatchConstraints(t *testing.
 		"ask_user": {
 			"user-owned decision", "blocks safe, correct progress", "plan mode", "inspect available facts",
 			"defaults for routine details", "unique IDs", "answer choices", "free text",
+			"each description to one brief, distinguishing phrase", "avoid redundant explanations",
 		},
 		"delegate_team": {
 			"independent tasks", "distinct deliverables", "task gives each member only its assignment",
@@ -29,5 +31,23 @@ func TestRuntimeToolDescriptionsRetainDecisionAndDispatchConstraints(t *testing.
 				t.Errorf("%s description %q is missing %q", name, description, term)
 			}
 		}
+	}
+}
+
+func TestAskUserOptionDescriptionSchemaRequestsBriefText(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal(askUserDefinition().Parameters, &schema); err != nil {
+		t.Fatalf("decode ask_user schema: %v", err)
+	}
+	properties := schema["properties"].(map[string]any)
+	questions := properties["questions"].(map[string]any)
+	questionItem := questions["items"].(map[string]any)
+	questionProperties := questionItem["properties"].(map[string]any)
+	options := questionProperties["options"].(map[string]any)
+	optionItem := options["items"].(map[string]any)
+	optionProperties := optionItem["properties"].(map[string]any)
+	description := optionProperties["description"].(map[string]any)["description"].(string)
+	if !strings.Contains(strings.ToLower(description), "brief phrase") || !strings.Contains(strings.ToLower(description), "repeating the label") {
+		t.Fatalf("ask_user option description schema should request concise, non-redundant text, got %q", description)
 	}
 }
