@@ -11,6 +11,18 @@ import (
 	"github.com/afterlune/luneCore/internal/model"
 )
 
+func attachmentImageLimit(limits projectconfig.AttachmentLimits) int64 {
+	maxFileBytes := limits.MaxFileBytes
+	if maxFileBytes <= 0 {
+		maxFileBytes = projectconfig.DefaultAttachmentMaxFileBytes
+	}
+	maxTotalBytes := limits.MaxTotalBytes
+	if maxTotalBytes <= 0 {
+		maxTotalBytes = projectconfig.DefaultAttachmentMaxTotalBytes
+	}
+	return min(maxFileBytes, maxTotalBytes)
+}
+
 func validateTaskInputAttachments(input *model.ResponseInput, limits projectconfig.AttachmentLimits) error {
 	images := taskInputImages(input)
 	maxFiles := limits.MaxFiles

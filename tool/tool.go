@@ -141,7 +141,8 @@ const (
 	PathReadWrite PathAccess = "read_write"
 )
 
-// PathGrant adds a path outside the workspace to a single planned execution.
+// PathGrant adds an absolute directory to a permission snapshot. The snapshot
+// owner determines whether the grant is session-wide or plan-scoped.
 type PathGrant struct {
 	Path   string     `json:"path"`
 	Access PathAccess `json:"access"`

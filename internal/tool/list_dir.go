@@ -9,9 +9,10 @@ import (
 	"sort"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
-const listDirSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative directory; use . for the workspace root"},"offset":{"type":"integer","minimum":0,"description":"Zero-based entry offset; defaults to 0"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum entries to return; defaults to 100"}},"additionalProperties":false}`
+const listDirSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative or absolute directory; use . for the workspace root. Outside directories require a session read grant"},"offset":{"type":"integer","minimum":0,"description":"Zero-based entry offset; defaults to 0"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum entries to return; defaults to 100"}},"additionalProperties":false}`
 
 // ListDirTool lists a page of sorted direct children of a workspace directory.
 type ListDirTool struct {
@@ -20,7 +21,7 @@ type ListDirTool struct {
 }
 
 func (ListDirTool) Definition() model.FunctionTool {
-	return optionalPathDefinition("list_dir", "List sorted workspace directory entries; use offset and limit to page.", listDirSchema)
+	return optionalPathDefinition("list_dir", "List sorted workspace or session-granted external directory entries; use offset and limit to page.", listDirSchema)
 }
 
 func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -39,22 +40,20 @@ func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if err != nil {
 		return Result{Err: fmt.Errorf("invalid list_dir pagination: %w", err)}
 	}
-	root, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
+	workspaceRoot, closeWorkspace, err := workspaceRootForTool(t.Workspace, t.workspace)
+	if err != nil {
+		return Result{Err: err}
+	}
+	defer closeWorkspace()
+	resolved, err := resolveToolPath(workspaceRoot.Name(), args.Path, pathDirectory, true)
+	if err != nil {
+		return Result{Err: err}
+	}
+	root, closeRoot, relative, err := openResolvedToolPath(ctx, workspaceRoot, resolved, publictool.PathRead)
 	if err != nil {
 		return Result{Err: err}
 	}
 	defer closeRoot()
-	directory, info, err := resolveWorkspaceEntryAtRoot(root.Name(), args.Path)
-	if err != nil {
-		return Result{Err: err}
-	}
-	if !info.IsDir() {
-		return Result{Err: errors.New("path is not a directory")}
-	}
-	relative, err := rootRelativePath(root, directory)
-	if err != nil {
-		return Result{Err: err}
-	}
 	if err := ctx.Err(); err != nil {
 		return Result{Err: fmt.Errorf("list_dir stopped: %w", err)}
 	}

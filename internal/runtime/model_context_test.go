@@ -12,7 +12,7 @@ import (
 	"github.com/afterlune/luneCore/internal/session"
 )
 
-func TestMigrateSessionDataV2ToV3KeepsTranscriptAndDropsUnkeyedContext(t *testing.T) {
+func TestMigrateSessionDataV2ToV4KeepsTranscriptAndDropsUnkeyedContext(t *testing.T) {
 	history := json.RawMessage(`[{"type":"message","role":"user","content":"continue"}]`)
 	saved, changed, err := migrateSessionData(Session{
 		ID: "session", UpdatedAt: time.Unix(10, 0), DataVersion: 2,
@@ -22,7 +22,7 @@ func TestMigrateSessionDataV2ToV3KeepsTranscriptAndDropsUnkeyedContext(t *testin
 	if err != nil {
 		t.Fatalf("migrateSessionData: %v", err)
 	}
-	if !changed || saved.DataVersion != 3 || string(saved.History) != string(history) {
+	if !changed || saved.DataVersion != CurrentSessionDataVersion || string(saved.History) != string(history) {
 		t.Fatalf("migrated session = %#v, changed=%v", saved, changed)
 	}
 	if len(saved.ModelContext) != 0 || saved.ModelContextKey != "" {

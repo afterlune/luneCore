@@ -193,6 +193,10 @@ func mustMarshalEvent(event Event) json.RawMessage {
 
 func cloneApproval(request ApprovalRequest) ApprovalRequest {
 	request.Arguments = append(json.RawMessage(nil), request.Arguments...)
+	if request.PathGrant != nil {
+		grant := *request.PathGrant
+		request.PathGrant = &grant
+	}
 	return request
 }
 

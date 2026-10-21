@@ -69,6 +69,13 @@ type ToolRegistration struct {
 	Metadata model.ToolMetadata
 }
 
+// PathAccessTool declares the directory scope a filesystem operation will
+// access. The registry authorizes it before Run and passes the granted root in
+// the call context.
+type PathAccessTool interface {
+	PathAccessRequest(context.Context, json.RawMessage) (*publictool.PathGrant, error)
+}
+
 // RegistryOptions supplies host extensions and command execution policy to the
 // default workspace registry.
 type RegistryOptions struct {
@@ -77,6 +84,7 @@ type RegistryOptions struct {
 	SandboxHelperPath     string
 	CommandToolchainPaths []string
 	AllowLocalCommands    bool
+	ImageMaxBytes         int64
 	Logger                *slog.Logger
 }
 

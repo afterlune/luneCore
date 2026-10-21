@@ -11,10 +11,11 @@ import (
 	"strings"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 const (
-	globSchema = `{"type":"object","properties":{"pattern":{"type":"string","description":"Workspace-relative glob pattern; supports ** for recursive matching"},"offset":{"type":["integer","null"],"minimum":0,"description":"Zero-based match offset; defaults to 0"},"limit":{"type":["integer","null"],"minimum":1,"maximum":500,"description":"Maximum matches to return; defaults to 100"}},"required":["pattern","offset","limit"],"additionalProperties":false}`
+	globSchema = `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to path; supports ** for recursive matching"},"path":{"type":"string","description":"Workspace-relative or absolute directory to search; outside directories require a session read grant. Defaults to the workspace root"},"offset":{"type":["integer","null"],"minimum":0,"description":"Zero-based match offset; defaults to 0"},"limit":{"type":["integer","null"],"minimum":1,"maximum":500,"description":"Maximum matches to return; defaults to 100"}},"required":["pattern","offset","limit"],"additionalProperties":false}`
 )
 
 // GlobTool returns workspace-relative paths matching a glob pattern.
@@ -24,7 +25,7 @@ type GlobTool struct {
 }
 
 func (GlobTool) Definition() model.FunctionTool {
-	return functionDefinition("glob", "Find workspace paths matching a pattern; ** matches recursively. Use offset and limit to page.", globSchema)
+	return functionDefinition("glob", "Find paths matching a pattern under a workspace or session-granted external directory; ** matches recursively. Use offset and limit to page.", globSchema)
 }
 
 func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -33,6 +34,7 @@ func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 	var args struct {
 		Pattern string `json:"pattern"`
+		Path    string `json:"path"`
 		Offset  *int   `json:"offset"`
 		Limit   *int   `json:"limit"`
 	}
@@ -48,22 +50,39 @@ func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: err}
 	}
 	matcher := newGlobMatcher(pattern)
-	root, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
+	workspaceRoot, closeWorkspace, err := workspaceRootForTool(t.Workspace, t.workspace)
+	if err != nil {
+		return Result{Err: err}
+	}
+	defer closeWorkspace()
+	resolved, err := resolveToolPath(workspaceRoot.Name(), args.Path, pathDirectory, true)
+	if err != nil {
+		return Result{Err: err}
+	}
+	root, closeRoot, baseRelative, err := openResolvedToolPath(ctx, workspaceRoot, resolved, publictool.PathRead)
 	if err != nil {
 		return Result{Err: err}
 	}
 	defer closeRoot()
+	baseWalk := filepath.ToSlash(baseRelative)
+	if baseWalk == "" {
+		baseWalk = "."
+	}
 
 	var output pageText
 	matches := 0
 	nextOffset := page.offset
 	more := false
 	scanLimited := false
-	err = walkWorkspace(ctx, root, func(name string, entry fs.DirEntry) error {
-		if name == "." {
+	err = walkWorkspaceFrom(ctx, root.FS(), baseWalk, func(name string, entry fs.DirEntry) error {
+		if name == baseWalk {
 			return nil
 		}
-		if !matcher.matches(filepath.ToSlash(name)) {
+		relativeToBase := strings.TrimPrefix(filepath.ToSlash(name), strings.TrimSuffix(baseWalk, "/")+"/")
+		if baseWalk == "." {
+			relativeToBase = filepath.ToSlash(name)
+		}
+		if !matcher.matches(relativeToBase) {
 			return nil
 		}
 		if matches == maxSearchMatches {
@@ -81,7 +100,14 @@ func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {
 			more = true
 			return errStopWalk
 		}
-		record := fmt.Sprintf("%s\t%s\n", entryKind(entry), name)
+		outputName := filepath.ToSlash(filepath.Join(filepath.FromSlash(baseWalk), filepath.FromSlash(relativeToBase)))
+		if baseWalk == "." {
+			outputName = relativeToBase
+		}
+		if !resolved.internal {
+			outputName = filepath.Join(resolved.absolute, filepath.FromSlash(relativeToBase))
+		}
+		record := fmt.Sprintf("%s\t%s\n", entryKind(entry), outputName)
 		if !output.Add(record) {
 			if output.Empty() && output.AddClipped(record, "\n[match truncated]") {
 				matches++

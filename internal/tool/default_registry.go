@@ -29,6 +29,7 @@ func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry
 		ToolRegistration{Tool: GlobTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
 		ToolRegistration{Tool: GrepTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
 		ToolRegistration{Tool: ReadFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
+		ToolRegistration{Tool: ReadImageTool{Workspace: workspacePath, workspace: workspaceID, MaxFileBytes: registryOptions.ImageMaxBytes}, Metadata: workspaceRead},
 		ToolRegistration{Tool: WriteFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
 		ToolRegistration{Tool: EditFileTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceWrite},
 		ToolRegistration{Tool: CommandTool{Workspace: workspacePath, workspace: workspaceID, Executor: registryOptions.CommandExecutor, SandboxHelperPath: registryOptions.SandboxHelperPath, CommandToolchainPaths: append([]string(nil), registryOptions.CommandToolchainPaths...), AllowLocalCommand: registryOptions.AllowLocalCommands}, Metadata: command},

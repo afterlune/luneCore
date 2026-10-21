@@ -36,13 +36,13 @@ func PermissionModes() []PermissionMode {
 func PermissionModeDescription(mode PermissionMode) string {
 	switch mode {
 	case PermissionModeReadOnly:
-		return "Read workspace files; ask before network; block writes and commands"
+		return "Read workspace files; ask before external directories and web; block writes and commands"
 	case PermissionModeWorkspace:
-		return "Workspace file operations; approve each command and network access"
+		return "Read and write workspace files; ask before external directories, commands, and web"
 	case PermissionModeAsk:
-		return "Read workspace files; approve every other tool operation"
+		return "Read workspace files; ask before every other operation and external directory"
 	case PermissionModeFullAccess:
-		return "Allow current-user files and network inside the OS sandbox; remove elevation and require plan approval for high-risk commands"
+		return "Allow registered tools and current-user files without prompts; extremely dangerous commands remain blocked"
 	default:
 		return ""
 	}
@@ -54,6 +54,7 @@ type PermissionRequest struct {
 	AgentID   string
 	Arguments json.RawMessage
 	Metadata  model.ToolMetadata
+	PathGrant *publictool.PathGrant
 }
 
 // PermissionApprovalHandler asks the user to allow one tool call.
@@ -143,18 +144,7 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 		mode = override
 		disposition = permissionPolicy(mode, request.Metadata.PermissionClass)
 	}
-	switch disposition {
-	case permissionAllowed:
-		return ctx.Err()
-	case permissionNeedsApproval:
-		if planAuthorizes(ctx, request) {
-			return ctx.Err()
-		}
-		if publictool.NoInteractiveDecisions(ctx) {
-			return &publictool.ExecutionBlockerError{Tool: request.Tool, Reason: fmt.Sprintf("%s requires approval that was not included in the execution plan", request.Tool)}
-		}
-		return requestApproval(ctx, approve, request)
-	case permissionDenied:
+	if disposition == permissionDenied {
 		if publictool.NoInteractiveDecisions(ctx) {
 			return &publictool.ExecutionBlockerError{Tool: request.Tool, Reason: fmt.Sprintf("%s is outside the permissions approved for this plan", request.Tool)}
 		}
@@ -166,7 +156,30 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 		}
 		return fmt.Errorf("unknown permission mode %q", mode)
 	}
-	return fmt.Errorf("unknown permission mode %q", mode)
+
+	operationNeedsApproval := disposition == permissionNeedsApproval && !planAuthorizes(ctx, request)
+	pathNeedsApproval := request.PathGrant != nil && mode != PermissionModeFullAccess &&
+		!PathGrantAllows(publictool.PlanAuthorizationFromContext(ctx).Paths, *request.PathGrant) &&
+		!SessionPathGrantStoreFromContext(ctx).Allows(*request.PathGrant)
+	if !operationNeedsApproval && !pathNeedsApproval {
+		return ctx.Err()
+	}
+	if publictool.NoInteractiveDecisions(ctx) {
+		reason := fmt.Sprintf("%s requires approval that was not included in the execution plan", request.Tool)
+		if pathNeedsApproval {
+			access := "read"
+			if request.PathGrant.Access == publictool.PathReadWrite {
+				access = "read/write"
+			}
+			reason = fmt.Sprintf("%s access to %q was not included in the execution plan", access, request.PathGrant.Path)
+		}
+		return &publictool.ExecutionBlockerError{Tool: request.Tool, Reason: reason}
+	}
+	approvalRequest := request
+	if !pathNeedsApproval {
+		approvalRequest.PathGrant = nil
+	}
+	return requestApproval(ctx, approve, approvalRequest)
 }
 
 func planAuthorizes(ctx context.Context, request PermissionRequest) bool {

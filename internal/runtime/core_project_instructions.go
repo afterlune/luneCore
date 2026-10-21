@@ -41,7 +41,7 @@ func (c *Core) projectInstructionDirectoriesForTool(ctx context.Context, call mo
 		Pattern string `json:"pattern"`
 	}
 	switch call.Name {
-	case "read_file", "write_file", "edit_file", "list_dir", "grep":
+	case "read_file", "read_image", "write_file", "edit_file", "list_dir", "grep":
 		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
 			return nil, true, fmt.Errorf("decode %s arguments for project instruction lookup: %w", call.Name, err)
 		}
@@ -49,7 +49,25 @@ func (c *Core) projectInstructionDirectoriesForTool(ctx context.Context, call mo
 		if err := json.Unmarshal([]byte(call.Arguments), &args); err != nil {
 			return nil, true, fmt.Errorf("decode glob arguments for project instruction lookup: %w", err)
 		}
-		directories, err := c.registry.WorkspaceGlobDirectories(ctx, args.Pattern)
+		base, inWorkspace, err := c.projectInstructionPath(args.Path, true)
+		if err != nil || !inWorkspace {
+			return nil, true, err
+		}
+		if base != "." {
+			resolved, isDirectory, resolveErr := c.registry.WorkspaceResolvedEntryPath(ctx, base)
+			if resolveErr != nil {
+				return nil, true, resolveErr
+			}
+			if !isDirectory {
+				return nil, true, errors.New("glob path is not a directory")
+			}
+			base = resolved
+		}
+		pattern := args.Pattern
+		if base != "." {
+			pattern = filepath.ToSlash(filepath.Join(filepath.FromSlash(base), filepath.FromSlash(pattern)))
+		}
+		directories, err := c.registry.WorkspaceGlobDirectories(ctx, pattern)
 		return directories, true, err
 	default:
 		return nil, false, nil
@@ -60,7 +78,14 @@ func (c *Core) projectInstructionDirectoriesForTool(ctx context.Context, call mo
 		if strings.TrimSpace(requested) == "" {
 			requested = "."
 		}
-		clean, err := cleanProjectInstructionPath(requested, true)
+		clean, inWorkspace, err := c.projectInstructionPath(requested, true)
+		if err != nil {
+			return nil, true, err
+		}
+		if !inWorkspace {
+			return nil, true, nil
+		}
+		clean, err = cleanProjectInstructionPath(clean, true)
 		if err != nil {
 			return nil, true, err
 		}
@@ -81,7 +106,14 @@ func (c *Core) projectInstructionDirectoriesForTool(ctx context.Context, call mo
 		return c.fileInstructionDirectories(ctx, clean, resolved)
 	}
 
-	clean, err := cleanProjectInstructionPath(args.Path, false)
+	clean, inWorkspace, err := c.projectInstructionPath(args.Path, false)
+	if err != nil {
+		return nil, true, err
+	}
+	if !inWorkspace {
+		return nil, true, nil
+	}
+	clean, err = cleanProjectInstructionPath(clean, false)
 	if err != nil {
 		return nil, true, err
 	}
@@ -90,6 +122,34 @@ func (c *Core) projectInstructionDirectoriesForTool(ctx context.Context, call mo
 		return nil, true, err
 	}
 	return c.fileInstructionDirectories(ctx, clean, resolved)
+}
+
+// projectInstructionPath resolves absolute targets to workspace-relative
+// paths. External targets receive only the workspace-root guidance; their
+// directory contents are not inspected before file-tool authorization.
+func (c *Core) projectInstructionPath(requested string, allowDot bool) (string, bool, error) {
+	if strings.TrimSpace(requested) == "" && allowDot {
+		return ".", true, nil
+	}
+	if filepath.IsAbs(requested) {
+		absolute := filepath.Clean(requested)
+		relative, err := filepath.Rel(c.workspace, absolute)
+		if err != nil {
+			return "", false, fmt.Errorf("resolve workspace instruction path: %w", err)
+		}
+		if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+			return "", false, nil
+		}
+		if relative == "." && !allowDot {
+			return "", false, errors.New("path refers to a directory; use list_dir to inspect it")
+		}
+		return filepath.ToSlash(relative), true, nil
+	}
+	clean, err := cleanProjectInstructionPath(requested, allowDot)
+	if err != nil {
+		return "", false, err
+	}
+	return clean, true, nil
 }
 
 func (c *Core) fileInstructionDirectories(ctx context.Context, requested, resolved string) ([]string, bool, error) {

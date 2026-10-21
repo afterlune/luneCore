@@ -3,6 +3,8 @@ package runtime
 import (
 	"encoding/json"
 	"time"
+
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 // SessionSettings contains per-session overrides. Nil context settings inherit
@@ -74,6 +76,8 @@ type Session struct {
 	Title       string          `json:"title"`
 	Archived    bool            `json:"archived"`
 	Settings    SessionSettings `json:"settings"`
+	// PathGrants are explicit, session-scoped grants for built-in filesystem tools.
+	PathGrants []publictool.PathGrant `json:"path_grants,omitempty"`
 	// History is the complete provider-neutral conversation shown to clients.
 	History json.RawMessage `json:"history,omitempty"`
 	// ModelContext is a cached provider-specific request context when it differs

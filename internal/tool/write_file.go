@@ -9,9 +9,10 @@ import (
 	"io/fs"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
-const writeFileSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace"},"content":{"type":"string","description":"Complete file contents to write"}},"required":["path","content"],"additionalProperties":false}`
+const writeFileSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative path, or an absolute path outside the workspace (which requires a session read-write directory grant)"},"content":{"type":"string","description":"Complete file contents to write"}},"required":["path","content"],"additionalProperties":false}`
 
 // WriteFileTool creates or replaces a file inside the workspace.
 type WriteFileTool struct {
@@ -20,7 +21,7 @@ type WriteFileTool struct {
 }
 
 func (WriteFileTool) Definition() model.FunctionTool {
-	return functionDefinition("write_file", "Create or replace a workspace file with complete contents.", writeFileSchema)
+	return functionDefinition("write_file", "Create or replace a workspace or session-granted external file with complete contents.", writeFileSchema)
 }
 
 func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -34,19 +35,20 @@ func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if err := decodeArguments(raw, &args); err != nil {
 		return Result{Err: fmt.Errorf("invalid write_file arguments: %w", err)}
 	}
-	root, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
+	workspaceRoot, closeWorkspace, err := workspaceRootForTool(t.Workspace, t.workspace)
+	if err != nil {
+		return Result{Err: err}
+	}
+	defer closeWorkspace()
+	resolved, err := resolveToolPath(workspaceRoot.Name(), args.Path, pathFile, false)
+	if err != nil {
+		return Result{Err: err}
+	}
+	root, closeRoot, relative, err := openResolvedToolPath(ctx, workspaceRoot, resolved, publictool.PathReadWrite)
 	if err != nil {
 		return Result{Err: err}
 	}
 	defer closeRoot()
-	path, err := resolveWorkspacePathAtRoot(root.Name(), args.Path, false)
-	if err != nil {
-		return Result{Err: err}
-	}
-	relative, err := rootRelativePath(root, path)
-	if err != nil {
-		return Result{Err: err}
-	}
 	if err := ctx.Err(); err != nil {
 		return Result{Err: fmt.Errorf("write stopped: %w", err)}
 	}
@@ -80,7 +82,7 @@ func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 	result := Result{Output: fmt.Sprintf("Wrote %d bytes to %s", len(args.Content), args.Path)}
 	if captured {
-		result.Details = fileChange(path, string(before), args.Content)
+		result.Details = fileChange(resolved.absolute, string(before), args.Content)
 	}
 	return result
 }

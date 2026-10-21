@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/afterlune/luneCore/internal/agentruntime"
+	runtimepermission "github.com/afterlune/luneCore/internal/tool"
 	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
 )
@@ -163,6 +164,7 @@ type ApprovalRequest struct {
 	AgentID   string
 	Tool      string
 	Arguments json.RawMessage
+	PathGrant *publictool.PathGrant
 }
 
 // UserInteractionRequest is a transient server request that needs a human
@@ -207,6 +209,7 @@ type userInteractionResult struct {
 type pendingApproval struct {
 	response    chan bool
 	request     ApprovalRequest
+	pathGrants  *runtimepermission.SessionPathGrantStore
 	sessionID   string
 	taskID      string
 	executionID string

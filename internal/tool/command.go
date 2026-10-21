@@ -52,6 +52,19 @@ var highRiskCommandPatterns = []*regexp.Regexp{
 	regexp.MustCompile(`(?i)\b(?:python(?:\d+(?:\.\d+)*)?|perl|ruby|node|php)\b[^;&|]*\s-(?:c|e|r)(?:\s|$)`),
 }
 
+var extremeDangerCommandPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`(?i)\b(?:mkfs(?:\.[a-z0-9]+)?|wipefs|format-volume|clear-disk|initialize-disk|pvremove|vgremove|lvremove|zpool\s+destroy)\b`),
+	regexp.MustCompile(`(?i)(?:^|[;&|]\s*)format(?:\.com)?\s+[^;&|]*(?:\b[a-z]:\\?|/fs:|/q\b)`),
+	regexp.MustCompile(`(?i)\b(?:dd|shred|srm)\b[^;&|]*(?:\bof=)?\s*/dev/(?:sd[a-z]+\d*|nvme\d+n\d+(?:p\d+)?|vd[a-z]+\d*|xvd[a-z]+\d*|mmcblk\d+(?:p\d+)?|loop\d+)\b`),
+	regexp.MustCompile(`(?i)\b(?:fdisk|sfdisk|parted|diskpart)\b[^;&|]*(?:\b(?:clean|format|delete\s+partition|remove\s+partition|mklabel|mkpart)\b)`),
+	regexp.MustCompile(`(?i)\b(?:grub-install|update-grub)\b|\befibootmgr\b[^;&|]*\s-(?:B|b\s+\d+\s+-[Bb])\b|\bbcdedit\b[^;&|]*\s/(?:delete|set|deletevalue|import|store)\b`),
+	regexp.MustCompile(`(?i)\b(?:set-mppreference|iptables(?:-nft|-legacy)?\s+-F|nft\s+flush\s+ruleset|ufw\s+disable|netsh\s+advfirewall\s+(?:reset|set\s+[^;&|]*state\s+off)|set-executionpolicy)\b`),
+	regexp.MustCompile(`(?i)(?:^|\s)(?:sudo|doas|su|pkexec|runas|start-process\s+[^;&|]*-verb\s+runas)(?:\s|$)`),
+	regexp.MustCompile(`(?i)\bsystemctl\s+(?:stop|disable|mask)\s+(?:firewalld|ufw|apparmor|selinux)(?:\s|$)`),
+	regexp.MustCompile(`(?i)\b(?:rm|rmdir)\b[^;&|]*-(?:[a-z]*r[a-z]*|recursive)\b[^;&|]*(?:^|\s)(?:/|/(?:etc|boot|usr|bin|sbin|lib|lib64|var|root|proc|sys|dev)(?:/|\s|$))`),
+	regexp.MustCompile(`(?i)\b(?:remove-item|del|erase|rmdir|rd)\b[^;&|]*(?:-recurse|/s\b|--recursive)[^;&|]*(?:^|\s)(?:[a-z]:\\(?:\s|$)|[a-z]:\\(?:windows|program files(?: \(x86\))?)(?:\\|\s|$))`),
+}
+
 func (CommandTool) Definition() model.FunctionTool {
 	return functionDefinition("command", "Run a non-interactive workspace command with bounded output. For a service the user wants to keep running, set background=true and keep the process in the foreground; it remains managed by this session after the task ends. Poll command_status for readiness, or stop it with command_stop.", commandSchema)
 }
@@ -106,10 +119,11 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		mode = PermissionModeWorkspace
 	}
 	authorization := publictool.PlanAuthorizationFromContext(ctx)
-	if mode != PermissionModeFullAccess {
-		if reason := highRiskCommandReason(args.Command); reason != "" && !commandApproved(args.Command, authorization.ApprovedHighRiskCommands) {
-			return Result{Err: &publictool.ExecutionBlockerError{Tool: "command", Reason: "high-risk command is not individually approved in the plan: " + reason}}
-		}
+	if reason := extremeDangerCommandReason(args.Command); reason != "" {
+		return Result{Err: &publictool.ExecutionBlockerError{Tool: "command", Reason: "command is permanently blocked as extremely dangerous: " + reason}}
+	}
+	if publictool.NoInteractiveDecisions(ctx) && highRiskCommandReason(args.Command) != "" && !commandApproved(args.Command, authorization.ApprovedHighRiskCommands) {
+		return Result{Err: &publictool.ExecutionBlockerError{Tool: "command", Reason: "high-risk command is not individually approved in the plan"}}
 	}
 	sandboxMode := mode
 	if sandboxMode == PermissionModeAsk {
@@ -177,6 +191,15 @@ func highRiskCommandReason(command string) string {
 	for _, pattern := range highRiskCommandPatterns {
 		if pattern.MatchString(command) {
 			return "the command may destroy data or modify sensitive system settings"
+		}
+	}
+	return ""
+}
+
+func extremeDangerCommandReason(command string) string {
+	for _, pattern := range extremeDangerCommandPatterns {
+		if pattern.MatchString(command) {
+			return "the command can irreversibly damage system storage, startup, security controls, or operating-system directories"
 		}
 	}
 	return ""

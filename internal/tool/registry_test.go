@@ -141,6 +141,7 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 	want := map[string]model.ToolMetadata{
 		"command":    {Category: model.ToolCategory{Name: "command", Description: "Run workspace commands."}, PermissionClass: model.ToolPermissionCommand, AlwaysVisible: true},
 		"read_file":  {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true, AlwaysVisible: true},
+		"read_image": {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true, AlwaysVisible: true},
 		"write_file": {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite, AlwaysVisible: true},
 		"edit_file":  {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite, AlwaysVisible: true},
 		"web_search": {Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch pages."}, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
@@ -373,7 +374,7 @@ func TestDefaultRegistryCategorizesBuiltInTools(t *testing.T) {
 	}
 	defer registry.Close()
 	want := map[string][]string{
-		"files":   {"list_dir", "glob", "grep", "read_file", "write_file", "edit_file"},
+		"files":   {"list_dir", "glob", "grep", "read_file", "read_image", "write_file", "edit_file"},
 		"command": {"command"},
 		"web":     {"web_search", "web_fetch"},
 	}

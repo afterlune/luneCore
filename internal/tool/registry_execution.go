@@ -15,16 +15,16 @@ import (
 // Run executes a named tool with its JSON arguments.
 func (r *Registry) Run(ctx context.Context, name string, arguments json.RawMessage) Result {
 	ctx = r.contextWithPermissionMode(ctx, name)
-	registeredTool, err := r.authorizedTool(ctx, name, arguments)
+	registeredTool, ctx, err := r.authorizedTool(ctx, name, arguments)
 	if err != nil {
 		return Result{Err: err}
 	}
 	return registeredTool.Run(ctx, arguments)
 }
 
-func (r *Registry) authorizedTool(ctx context.Context, name string, arguments json.RawMessage) (Tool, error) {
+func (r *Registry) authorizedTool(ctx context.Context, name string, arguments json.RawMessage) (Tool, context.Context, error) {
 	if r == nil {
-		return nil, errors.New("tool registry is nil")
+		return nil, ctx, errors.New("tool registry is nil")
 	}
 	r.mu.RLock()
 	registeredTool, exists := r.tools[name]
@@ -32,33 +32,60 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 	permissions := r.permissions
 	r.mu.RUnlock()
 	if !exists {
-		return nil, errors.New("unknown tool: " + name)
+		return nil, ctx, errors.New("unknown tool: " + name)
+	}
+	if name == "command" {
+		var commandRequest struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(arguments, &commandRequest) == nil {
+			if reason := extremeDangerCommandReason(commandRequest.Command); reason != "" {
+				return nil, ctx, &publictool.ExecutionBlockerError{Tool: name, Reason: "command is permanently blocked as extremely dangerous: " + reason}
+			}
+		}
 	}
 	if control, ok := registeredTool.(CommandControlTool); ok {
 		if err := control.authorizeCommand(ctx, arguments); err != nil {
-			return nil, err
+			return nil, ctx, err
 		}
-		return registeredTool, nil
+		return registeredTool, ctx, nil
 	}
-	if err := permissions.authorize(ctx, PermissionRequest{
+	mode := permissionModeFromRegistry(ctx, permissions, metadata)
+	if permissionPolicy(mode, metadata.PermissionClass) == permissionDenied {
+		request := PermissionRequest{Tool: name, AgentID: model.AgentIDFromContext(ctx), Arguments: append(json.RawMessage(nil), arguments...), Metadata: metadata}
+		if err := permissions.authorize(ctx, request); err != nil {
+			return nil, ctx, err
+		}
+	}
+	var pathGrant *publictool.PathGrant
+	if pathTool, ok := registeredTool.(PathAccessTool); ok {
+		grant, err := pathTool.PathAccessRequest(ctx, arguments)
+		if err != nil {
+			return nil, ctx, err
+		}
+		pathGrant = grant
+	}
+	permissionRequest := PermissionRequest{
 		Tool: name, AgentID: model.AgentIDFromContext(ctx), Arguments: append(json.RawMessage(nil), arguments...), Metadata: metadata,
-	}); err != nil {
-		return nil, err
+		PathGrant: pathGrant,
 	}
-	if name == "command" {
-		mode := permissionModeFromRegistry(ctx, permissions, metadata)
-		if mode != PermissionModeFullAccess {
-			var request struct {
-				Command string `json:"command"`
-			}
-			if json.Unmarshal(arguments, &request) == nil {
-				if reason := highRiskCommandReason(request.Command); reason != "" && !commandApproved(request.Command, publictool.PlanAuthorizationFromContext(ctx).ApprovedHighRiskCommands) {
-					return nil, &publictool.ExecutionBlockerError{Tool: name, Reason: "high-risk command is not individually approved in the plan: " + reason}
-				}
+	if err := permissions.authorize(ctx, permissionRequest); err != nil {
+		return nil, ctx, err
+	}
+	if pathGrant != nil {
+		ctx = WithApprovedPathGrant(ctx, *pathGrant)
+	}
+	if name == "command" && publictool.NoInteractiveDecisions(ctx) {
+		var request struct {
+			Command string `json:"command"`
+		}
+		if json.Unmarshal(arguments, &request) == nil {
+			if highRiskCommandReason(request.Command) != "" && !commandApproved(request.Command, publictool.PlanAuthorizationFromContext(ctx).ApprovedHighRiskCommands) {
+				return nil, ctx, &publictool.ExecutionBlockerError{Tool: name, Reason: "high-risk command is not individually approved in the plan"}
 			}
 		}
 	}
-	return registeredTool, nil
+	return registeredTool, ctx, nil
 }
 
 func (r *Registry) contextWithPermissionMode(ctx context.Context, name string) context.Context {
@@ -100,7 +127,7 @@ func (r *Registry) ExecuteCallRecoverable(ctx context.Context, call model.Output
 	ctx = publictool.WithCallIdentity(ctx, identity)
 	started := time.Now()
 	arguments := json.RawMessage(call.Arguments)
-	registeredTool, permissionErr := r.authorizedTool(ctx, call.Name, arguments)
+	registeredTool, ctx, permissionErr := r.authorizedTool(ctx, call.Name, arguments)
 	if permissionErr != nil {
 		var blocker *publictool.ExecutionBlockerError
 		if errors.As(permissionErr, &blocker) {

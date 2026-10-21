@@ -10,9 +10,10 @@ import (
 	"strings"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
-const readFileSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Path relative to the workspace"},"start_line":{"type":["integer","null"],"minimum":1,"description":"One-based first line to read; defaults to 1"},"limit":{"type":["integer","null"],"minimum":1,"maximum":500,"description":"Maximum lines to return; defaults to 200"}},"required":["path","start_line","limit"],"additionalProperties":false}`
+const readFileSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative path, or an absolute path outside the workspace (which requires a session directory grant)"},"start_line":{"type":["integer","null"],"minimum":1,"description":"One-based first line to read; defaults to 1"},"limit":{"type":["integer","null"],"minimum":1,"maximum":500,"description":"Maximum lines to return; defaults to 200"}},"required":["path","start_line","limit"],"additionalProperties":false}`
 
 // ReadFileTool reads a bounded line range from a UTF-8 or plain-text file.
 type ReadFileTool struct {
@@ -21,7 +22,7 @@ type ReadFileTool struct {
 }
 
 func (ReadFileTool) Definition() model.FunctionTool {
-	return functionDefinition("read_file", "Read a workspace file by line range; output includes line numbers and the next start_line when more content remains.", readFileSchema)
+	return functionDefinition("read_file", "Read a workspace or session-granted external file by line range; output includes line numbers and the next start_line when more content remains.", readFileSchema)
 }
 
 func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -50,19 +51,20 @@ func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		}
 		lineLimit = *args.Limit
 	}
-	root, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
+	workspaceRoot, closeWorkspace, err := workspaceRootForTool(t.Workspace, t.workspace)
+	if err != nil {
+		return Result{Err: err}
+	}
+	defer closeWorkspace()
+	resolved, err := resolveToolPath(workspaceRoot.Name(), args.Path, pathFile, true)
+	if err != nil {
+		return Result{Err: err}
+	}
+	root, closeRoot, relative, err := openResolvedToolPath(ctx, workspaceRoot, resolved, publictool.PathRead)
 	if err != nil {
 		return Result{Err: err}
 	}
 	defer closeRoot()
-	path, err := resolveWorkspacePathAtRoot(root.Name(), args.Path, true)
-	if err != nil {
-		return Result{Err: err}
-	}
-	relative, err := rootRelativePath(root, path)
-	if err != nil {
-		return Result{Err: err}
-	}
 	file, err := root.Open(relative)
 	if err != nil {
 		return Result{Err: fmt.Errorf("read %q: %w", args.Path, err)}

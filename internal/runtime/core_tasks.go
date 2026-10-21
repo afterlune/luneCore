@@ -85,6 +85,13 @@ func (c *Core) resolveApproval(sessionID, id string, allowed bool) error {
 	if !ok {
 		return fmt.Errorf("approval request %q is no longer pending in this session", id)
 	}
+	if allowed && pending.request.PathGrant != nil {
+		if err := c.addSessionPathGrant(context.Background(), sessionID, *pending.request.PathGrant); err != nil {
+			pending.response <- false
+			return fmt.Errorf("save session path grant: %w", err)
+		}
+		pending.pathGrants.Add(*pending.request.PathGrant)
+	}
 	pending.response <- allowed
 	return nil
 }
@@ -297,8 +304,13 @@ func (c *Core) requestApproval(ctx context.Context, request tool.PermissionReque
 		c.mu.Unlock()
 		return false
 	}
-	approval := ApprovalRequest{ID: id, AgentID: request.AgentID, Tool: request.Tool, Arguments: append(json.RawMessage(nil), request.Arguments...)}
-	c.approvals[id] = pendingApproval{response: response, request: approval, sessionID: identity.SessionID, taskID: identity.TaskID, executionID: identity.ExecutionID}
+	var pathGrant *publictool.PathGrant
+	if request.PathGrant != nil {
+		grant := *request.PathGrant
+		pathGrant = &grant
+	}
+	approval := ApprovalRequest{ID: id, AgentID: request.AgentID, Tool: request.Tool, Arguments: append(json.RawMessage(nil), request.Arguments...), PathGrant: pathGrant}
+	c.approvals[id] = pendingApproval{response: response, request: approval, pathGrants: tool.SessionPathGrantStoreFromContext(ctx), sessionID: identity.SessionID, taskID: identity.TaskID, executionID: identity.ExecutionID}
 	c.mu.Unlock()
 	c.emit(Event{Kind: EventApprovalRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 		AgentID: request.AgentID, Approval: &approval})

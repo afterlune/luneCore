@@ -16,10 +16,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 const (
-	grepSchema      = `{"type":"object","properties":{"pattern":{"type":"string","description":"Case-sensitive regular expression matched against each text line"},"path":{"type":"string","description":"Workspace-relative file or directory; defaults to the workspace root"},"offset":{"type":"integer","minimum":0,"description":"Zero-based match offset; defaults to 0"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum matches to return; defaults to 100"}},"required":["pattern"],"additionalProperties":false}`
+	grepSchema      = `{"type":"object","properties":{"pattern":{"type":"string","description":"Case-sensitive regular expression matched against each text line"},"path":{"type":"string","description":"Workspace-relative or absolute file or directory; outside paths require a session read grant. Defaults to the workspace root"},"offset":{"type":"integer","minimum":0,"description":"Zero-based match offset; defaults to 0"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum matches to return; defaults to 100"}},"required":["pattern"],"additionalProperties":false}`
 	maxGrepLineSize = 1 << 20
 )
 
@@ -30,7 +31,7 @@ type GrepTool struct {
 }
 
 func (GrepTool) Definition() model.FunctionTool {
-	return optionalPathDefinition("grep", "Recursively search workspace files with a case-sensitive regex; skips .git and .map. Use offset and limit to page.", grepSchema)
+	return optionalPathDefinition("grep", "Recursively search workspace or session-granted external files with a case-sensitive regex; skips .git and .map. Use offset and limit to page.", grepSchema)
 }
 
 func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
@@ -57,20 +58,21 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	if err != nil {
 		return Result{Err: fmt.Errorf("invalid grep pattern: %w", err)}
 	}
-	workspaceRoot, closeRoot, err := workspaceRootForTool(t.Workspace, t.workspace)
+	workspaceRoot, closeWorkspace, err := workspaceRootForTool(t.Workspace, t.workspace)
+	if err != nil {
+		return Result{Err: err}
+	}
+	defer closeWorkspace()
+	resolved, err := resolveToolPath(workspaceRoot.Name(), args.Path, pathEntry, true)
+	if err != nil {
+		return Result{Err: err}
+	}
+	root, closeRoot, rootRelative, err := openResolvedToolPath(ctx, workspaceRoot, resolved, publictool.PathRead)
 	if err != nil {
 		return Result{Err: err}
 	}
 	defer closeRoot()
-	rootPath, rootInfo, err := resolveWorkspaceEntryAtRoot(workspaceRoot.Name(), args.Path)
-	if err != nil {
-		return Result{Err: err}
-	}
-	rootRelative, err := rootRelativePath(workspaceRoot, rootPath)
-	if err != nil {
-		return Result{Err: err}
-	}
-	if isInsideGitDirectory(workspaceRoot.Name(), rootPath) {
+	if resolved.internal && isInsideGitDirectory(workspaceRoot.Name(), resolved.absolute) || containsGitSegment(resolved.absolute) {
 		return Result{Output: "Search skipped: .git is excluded."}
 	}
 
@@ -89,7 +91,7 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		if strings.HasSuffix(strings.ToLower(relative), ".map") {
 			return nil
 		}
-		file, err := workspaceRoot.Open(relative)
+		file, err := root.Open(relative)
 		if err != nil {
 			return err
 		}
@@ -118,7 +120,11 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 				more = true
 				return errStopWalk
 			}
-			record := fmt.Sprintf("%s:%d:%s\n", filepath.ToSlash(relative), lineNumber, line)
+			outputPath := filepath.ToSlash(relative)
+			if !resolved.internal {
+				outputPath = filepath.Join(resolved.scope, filepath.FromSlash(relative))
+			}
+			record := fmt.Sprintf("%s:%d:%s\n", outputPath, lineNumber, line)
 			if !output.Add(record) {
 				if output.Empty() && output.AddClipped(record, "\n[match line truncated]") {
 					matches++
@@ -136,10 +142,10 @@ func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return err
 	}
 
-	if !rootInfo.IsDir() {
-		err = matchFile(rootRelative, rootInfo)
+	if resolved.info == nil || !resolved.info.IsDir() {
+		err = matchFile(rootRelative, resolved.info)
 	} else {
-		err = walkWorkspaceFrom(ctx, workspaceRoot.FS(), filepath.ToSlash(rootRelative), func(relative string, entry fs.DirEntry) error {
+		err = walkWorkspaceFrom(ctx, root.FS(), filepath.ToSlash(rootRelative), func(relative string, entry fs.DirEntry) error {
 			if entry.Type()&os.ModeSymlink != 0 || entry.IsDir() {
 				return nil
 			}
@@ -175,6 +181,15 @@ func isInsideGitDirectory(root, candidate string) bool {
 		return false
 	}
 	for _, segment := range strings.Split(filepath.ToSlash(relative), "/") {
+		if segment == ".git" {
+			return true
+		}
+	}
+	return false
+}
+
+func containsGitSegment(candidate string) bool {
+	for _, segment := range strings.Split(filepath.ToSlash(filepath.Clean(candidate)), "/") {
 		if segment == ".git" {
 			return true
 		}

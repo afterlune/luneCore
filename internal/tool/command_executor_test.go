@@ -275,8 +275,6 @@ func TestHighRiskAndOpaqueCommandsNeedExactPlanApproval(t *testing.T) {
 		"rm -rf ./build",
 		"find . -delete",
 		"rsync --delete source/ target/",
-		"mkfs.ext4 /dev/sdb",
-		"Set-MpPreference -DisableRealtimeMonitoring $true",
 		"erase /s /q .\\*",
 		"ErAsE /q /S *.log",
 		`cmd.exe /c erase /s /q .\*`,
@@ -299,7 +297,8 @@ func TestHighRiskAndOpaqueCommandsNeedExactPlanApproval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			result := tool.Run(context.Background(), arguments)
+			planContext := publictool.WithNoInteractiveDecisions(context.Background(), true)
+			result := tool.Run(planContext, arguments)
 			var blocker *publictool.ExecutionBlockerError
 			if !errors.As(result.Err, &blocker) {
 				t.Fatalf("unapproved command error = %v, want an execution blocker", result.Err)
@@ -308,7 +307,7 @@ func TestHighRiskAndOpaqueCommandsNeedExactPlanApproval(t *testing.T) {
 				t.Fatalf("unapproved command reached executor %d times", calls)
 			}
 
-			ctx := publictool.WithPlanAuthorization(context.Background(), publictool.PlanAuthorization{
+			ctx := publictool.WithPlanAuthorization(planContext, publictool.PlanAuthorization{
 				ApprovedHighRiskCommands: []string{command},
 			})
 			result = tool.Run(ctx, arguments)
@@ -325,22 +324,99 @@ func TestHighRiskAndOpaqueCommandsNeedExactPlanApproval(t *testing.T) {
 	}
 }
 
+func TestExtremeDangerCommandsAreAlwaysBlocked(t *testing.T) {
+	commands := []string{
+		"mkfs.ext4 /dev/sdb", "diskpart clean", "Set-MpPreference -DisableRealtimeMonitoring $true",
+		"iptables -F", `bcdedit /delete {current}`, "dd if=/dev/zero of=/dev/sdb", "format C:",
+		"efibootmgr -B", "systemctl disable firewalld", "sudo id", "su -", "rm -rf /", "rm -rf /etc", `Remove-Item -Recurse C:\Windows`,
+	}
+	for _, command := range commands {
+		t.Run(command, func(t *testing.T) {
+			calls := 0
+			tool := CommandTool{Workspace: t.TempDir(), Executor: commandExecutorFunc(func(context.Context, publictool.CommandRequest) (publictool.CommandResult, error) {
+				calls++
+				return publictool.CommandResult{Output: "ran"}, nil
+			})}
+			arguments, _ := json.Marshal(struct {
+				Command string `json:"command"`
+			}{Command: command})
+			contexts := map[string]context.Context{
+				"ordinary":    context.Background(),
+				"full-access": WithPermissionMode(context.Background(), string(PermissionModeFullAccess)),
+				"exact plan":  publictool.WithPlanAuthorization(publictool.WithNoInteractiveDecisions(context.Background(), true), publictool.PlanAuthorization{ApprovedHighRiskCommands: []string{command}}),
+			}
+			for name, ctx := range contexts {
+				if result := tool.Run(ctx, arguments); result.Err == nil {
+					t.Errorf("%s mode allowed extreme command", name)
+				}
+			}
+			if calls != 0 {
+				t.Fatalf("extreme command reached executor %d times", calls)
+			}
+		})
+	}
+}
+
+func TestInteractiveApprovalAllowsHighRiskButRejectsExtremeCommandBeforePrompt(t *testing.T) {
+	calls, approvals := 0, 0
+	registered := CommandTool{Workspace: t.TempDir(), Executor: commandExecutorFunc(func(context.Context, publictool.CommandRequest) (publictool.CommandResult, error) {
+		calls++
+		return publictool.CommandResult{Output: "ran"}, nil
+	})}
+	registry, err := NewRegistry(ToolRegistration{Tool: registered, Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionCommand}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(PermissionModeWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	registry.SetPermissionApprovalHandler(func(context.Context, PermissionRequest) bool {
+		approvals++
+		return true
+	})
+	if result := registry.Run(context.Background(), "command", json.RawMessage(`{"command":"rm -rf ./build"}`)); result.Err != nil {
+		t.Fatalf("approved high-risk command: %v", result.Err)
+	}
+	if calls != 1 || approvals != 1 {
+		t.Fatalf("high-risk calls = %d, approvals = %d; want one each", calls, approvals)
+	}
+	if result := registry.Run(context.Background(), "command", json.RawMessage(`{"command":"mkfs.ext4 /dev/sdb"}`)); result.Err == nil {
+		t.Fatal("extreme command was allowed")
+	}
+	if calls != 1 || approvals != 1 {
+		t.Fatalf("extreme command reached execution or approval: calls=%d approvals=%d", calls, approvals)
+	}
+}
+
 func sandboxHelperForTest(t *testing.T) string {
 	t.Helper()
 	if helper := os.Getenv("LUNE_SANDBOX_TEST_HELPER"); helper != "" {
 		return helper
 	}
-	_, file, _, ok := runtime.Caller(0)
-	if !ok {
-		t.Fatal("locate command test source")
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("locate command test working directory: %v", err)
 	}
-	moduleRoot := filepath.Clean(filepath.Join(filepath.Dir(file), "..", ".."))
+	moduleRoot := ""
+	for directory := filepath.Clean(workingDirectory); ; directory = filepath.Dir(directory) {
+		if _, err := os.Stat(filepath.Join(directory, "go.mod")); err == nil {
+			moduleRoot = directory
+			break
+		}
+		parent := filepath.Dir(directory)
+		if parent == directory {
+			break
+		}
+	}
+	if moduleRoot == "" {
+		t.Fatalf("could not find luneCore go.mod above %q", workingDirectory)
+	}
 	name := "lune-sandbox"
 	if runtime.GOOS == "windows" {
 		name += ".exe"
 	}
 	path := filepath.Join(t.TempDir(), name)
-	command := exec.Command("go", "build", "-o", path, "./cmd/lune-sandbox")
+	command := exec.Command("go", "build", "-trimpath", "-o", path, "./cmd/lune-sandbox")
 	command.Dir = moduleRoot
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build sandbox helper: %v\n%s", err, output)
