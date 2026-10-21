@@ -35,7 +35,8 @@ func askUserDefinition() model.FunctionTool {
 					"options": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
 						"label":       map[string]any{"type": "string"},
 						"description": map[string]any{"type": "string", "description": "A brief phrase that distinguishes this option; avoid full sentences and repeating the label."},
-					}, "required": []string{"label", "description"}, "additionalProperties": false}},
+						"recommended": map[string]any{"type": "boolean", "description": "Whether this is the single best default choice for the user; mark at most one option."},
+					}, "required": []string{"label", "description", "recommended"}, "additionalProperties": false}},
 				}, "required": []string{"id", "question", "options"}, "additionalProperties": false}},
 		}, "required": []string{"questions"}, "additionalProperties": false,
 	})
@@ -43,7 +44,7 @@ func askUserDefinition() model.FunctionTool {
 	return model.FunctionTool{
 		Name: askUserToolName,
 		Description: "Ask only about a user-owned decision or material ambiguity that blocks safe, correct progress. " +
-			"In Plan mode, ask before presenting the plan; inspect available facts first and use defaults for routine details. Group related decisions, use concise questions with unique IDs, and offer answer choices when helpful. Keep each option label short and each description to one brief, distinguishing phrase; avoid redundant explanations. Free text is accepted.",
+			"In Plan mode, ask before presenting the plan; inspect available facts first and use defaults for routine details. Group related decisions, use concise questions with unique IDs, and offer answer choices when helpful. Keep each option label short and each description to one brief, distinguishing phrase; avoid redundant explanations. Mark at most one option as recommended when a clear default exists; otherwise mark none. Free text is accepted.",
 		Parameters: parameters,
 		Strict:     &strict,
 	}
@@ -78,6 +79,15 @@ func parseUserQuestion(arguments string) ([]model.UserQuestionItem, error) {
 			if o.Label == "" {
 				return nil, errors.New("answer options must not be empty")
 			}
+		}
+		recommended := 0
+		for _, option := range q.Options {
+			if option.Recommended {
+				recommended++
+			}
+		}
+		if recommended > 1 {
+			return nil, errors.New("answer options may have at most one recommendation")
 		}
 	}
 	return input.Questions, nil

@@ -137,6 +137,8 @@ Hosts can pass `Config.PersonalInstructions` to provide user-level preferences s
 
 Multiple Core instances may share a `StateDir` and its SQLite stores. Each opened session is exclusively owned across process boundaries: opening the same session in another Core returns an error matching `core.ErrSessionInUse`. Close a `SessionRuntime` when leaving a session; `Core.Close` releases any remaining session locks.
 
+Question options may include `recommended: true` on at most one option per question. Clients should display that option as the suggested default and may preselect it, while submitting the original `label` unchanged. A question with no recommendation remains valid.
+
 ## Host extensions
 
 Hosts can provide a model catalog through `core.Config.ModelConfig`, custom implementations through `core.Config.ModelProviders`, and custom tools through `core.Config.Tools`. These are programmatic equivalents of the corresponding `config.json` model fields; explicit Go entries override file entries with the same provider or profile name, and the file supplies entries not given in Go. A programmatic model config can be used without a `config.json` file.

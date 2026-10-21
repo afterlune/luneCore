@@ -45,10 +45,12 @@ type ModelStreamEvent struct {
 	Raw         json.RawMessage      `json:"raw,omitempty"`
 }
 
-// UserQuestionOption is one suggested answer and its explanation.
+// UserQuestionOption is one suggested answer and its explanation. At most one
+// option in a question may be recommended.
 type UserQuestionOption struct {
 	Label       string `json:"label"`
 	Description string `json:"description"`
+	Recommended bool   `json:"recommended"`
 }
 
 // UserQuestionItem is one decision within a clarification batch.

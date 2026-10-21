@@ -50,4 +50,21 @@ func TestAskUserOptionDescriptionSchemaRequestsBriefText(t *testing.T) {
 	if !strings.Contains(strings.ToLower(description), "brief phrase") || !strings.Contains(strings.ToLower(description), "repeating the label") {
 		t.Fatalf("ask_user option description schema should request concise, non-redundant text, got %q", description)
 	}
+	recommended, ok := optionProperties["recommended"].(map[string]any)
+	if !ok || recommended["type"] != "boolean" {
+		t.Fatalf("ask_user option schema should include a boolean recommendation flag: %#v", optionProperties["recommended"])
+	}
+	required, ok := optionItem["required"].([]any)
+	if !ok || !containsAny(required, "recommended") {
+		t.Fatalf("ask_user option schema should require recommended: %#v", optionItem["required"])
+	}
+}
+
+func containsAny(values []any, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
