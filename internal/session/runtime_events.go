@@ -20,17 +20,13 @@ func (s *Store) AppendRuntimeEvent(ctx context.Context, sessionID string, payloa
 	if s == nil || s.db == nil || sessionID == "" || !json.Valid(payload) {
 		return 0, errors.New("session store, session id, and valid event JSON are required")
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO runtime_events(session_id, payload, created_at) VALUES(?, ?, ?)`, sessionID, []byte(payload), time.Now().UnixNano())
 	if err != nil {
-		return 0, fmt.Errorf("begin runtime event append: %w", err)
+		return 0, fmt.Errorf("append runtime event: %w", err)
 	}
-	defer tx.Rollback()
-	cursor, err := appendRuntimeEventTx(ctx, tx, sessionID, payload, time.Now())
+	cursor, err := result.LastInsertId()
 	if err != nil {
-		return 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, fmt.Errorf("commit runtime event: %w", err)
+		return 0, fmt.Errorf("read runtime event cursor: %w", err)
 	}
 	return cursor, nil
 }
