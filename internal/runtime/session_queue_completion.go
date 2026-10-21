@@ -11,7 +11,7 @@ import (
 )
 
 func (c *Core) completeQueuedTurnFromRuntime(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response json.RawMessage, runtime *agentruntime.Responder) error {
-	var history, modelContext json.RawMessage
+	var history, modelContext, agentContext json.RawMessage
 	contextKey := ""
 	var err error
 	if runtime != nil {
@@ -31,21 +31,22 @@ func (c *Core) completeQueuedTurnFromRuntime(ctx context.Context, queued session
 			}
 		}
 		contextKey = runtime.ContextKey()
+		agentContext = runtime.ConversationState()
 	}
 	if status != TaskCompleted {
 		response = nil
 	}
-	return c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey)
+	return c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey, agentContext)
 }
 
-func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response, history, modelContext json.RawMessage, contextKey string) error {
+func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response, history, modelContext json.RawMessage, contextKey string, agentContext json.RawMessage) error {
 	taskState, ok := c.StateForSession(queued.SessionID)
 	var taskID string
 	if ok && taskState.ExecutionID == queued.ExecutionID {
 		taskID = taskState.TaskID
 	}
 	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, TaskID: taskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: status}
-	if _, err := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(status), response, history, modelContext, contextKey, mustMarshalEvent(event)); err != nil {
+	if _, err := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(status), response, history, modelContext, contextKey, mustMarshalEvent(event), agentContext); err != nil {
 		return err
 	}
 	c.rememberQueuedTaskStatus(queued.SessionID, queued.ExecutionID, queued.QueueID, status)

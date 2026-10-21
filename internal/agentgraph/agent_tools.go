@@ -83,7 +83,7 @@ func parseUserQuestion(arguments string) ([]model.UserQuestionItem, error) {
 	return input.Questions, nil
 }
 
-func teamDispatchDefinition(team TeamExecutor, maxChildren int) model.FunctionTool {
+func teamDispatchDefinition(team TeamExecutor) model.FunctionTool {
 	profiles := team.Profiles()
 	profileIDs := make([]string, 0, len(profiles))
 	for profileID := range profiles {
@@ -100,7 +100,6 @@ func teamDispatchDefinition(team TeamExecutor, maxChildren int) model.FunctionTo
 			"tasks": map[string]any{
 				"type":     "array",
 				"minItems": 1,
-				"maxItems": maxChildren,
 				"items": map[string]any{
 					"type": "object",
 					"properties": map[string]any{

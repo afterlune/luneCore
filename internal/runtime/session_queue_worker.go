@@ -202,7 +202,7 @@ func (c *Core) drainQueue(sessionID string) {
 
 func (c *Core) failQueuedTurn(ctx context.Context, queued session.QueuedTurn, err error) {
 	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskFailed, Err: errorString(err)}
-	if _, persistErr := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(TaskFailed), nil, nil, nil, "", mustMarshalEvent(event)); persistErr != nil {
+	if _, persistErr := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(TaskFailed), nil, nil, nil, "", mustMarshalEvent(event), nil); persistErr != nil {
 		c.logger.Warn("finish rejected queued turn", "error", persistErr)
 	} else {
 		c.notifyEventHub(queued.SessionID)

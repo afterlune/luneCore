@@ -287,7 +287,7 @@ func TestUpdateConversationAtomicallySavesTranscriptAndProviderContext(t *testin
 	}
 	transcript := json.RawMessage(`[{"type":"message","role":"user","content":"visible"}]`)
 	modelContext := json.RawMessage(`[{"type":"compaction","encrypted_content":"opaque"}]`)
-	if err := store.UpdateConversation(ctx, "session", "workspace", transcript, modelContext, "responses:openai:gpt-test"); err != nil {
+	if err := store.UpdateConversation(ctx, "session", "workspace", transcript, modelContext, "responses:openai:gpt-test", json.RawMessage(`{"categories":["files"],"host_context":"private-context"}`)); err != nil {
 		t.Fatalf("UpdateConversation: %v", err)
 	}
 	snapshot, err := store.Get(ctx, "session", "workspace")
@@ -298,12 +298,13 @@ func TestUpdateConversationAtomicallySavesTranscriptAndProviderContext(t *testin
 		History         json.RawMessage `json:"history"`
 		ModelContext    json.RawMessage `json:"model_context"`
 		ModelContextKey string          `json:"model_context_key"`
+		AgentContext    json.RawMessage `json:"agent_context"`
 		Title           string          `json:"title"`
 	}
 	if err := json.Unmarshal(snapshot.Data, &saved); err != nil {
 		t.Fatal(err)
 	}
-	if string(saved.History) != string(transcript) || string(saved.ModelContext) != string(modelContext) || saved.ModelContextKey != "responses:openai:gpt-test" || saved.Title != "keep" {
+	if string(saved.History) != string(transcript) || string(saved.ModelContext) != string(modelContext) || saved.ModelContextKey != "responses:openai:gpt-test" || saved.Title != "keep" || !strings.Contains(string(saved.AgentContext), "private-context") {
 		t.Fatalf("saved conversation = %#v", saved)
 	}
 	if err := store.UpdateHistory(ctx, "session", "workspace", json.RawMessage(`[]`)); err != nil {
@@ -313,7 +314,7 @@ func TestUpdateConversationAtomicallySavesTranscriptAndProviderContext(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(snapshot.Data), "opaque") || strings.Contains(string(snapshot.Data), "responses:openai") {
+	if strings.Contains(string(snapshot.Data), "opaque") || strings.Contains(string(snapshot.Data), "responses:openai") || strings.Contains(string(snapshot.Data), "private-context") {
 		t.Fatalf("replacing canonical history retained stale provider context: %s", snapshot.Data)
 	}
 }
@@ -341,7 +342,7 @@ func TestCompleteQueuedTurnAtomicallyPersistsConversationResultAndEvent(t *testi
 	history := json.RawMessage(`{"items":[{"role":"assistant","text":"done"}]}`)
 	response := json.RawMessage(`{"id":"response-1","output":[]}`)
 	event := json.RawMessage(`{"kind":"task_finished","status":"completed"}`)
-	if _, err := store.CompleteQueuedTurn(ctx, "session", "queue", "execution", "completed", response, history, history, "context-key", event); err == nil {
+	if _, err := store.CompleteQueuedTurn(ctx, "session", "queue", "execution", "completed", response, history, history, "context-key", event, json.RawMessage(`{"categories":["files"]}`)); err == nil {
 		t.Fatal("CompleteQueuedTurn succeeded despite a rejected terminal event")
 	}
 	snapshot, err := store.Get(ctx, "session", "workspace")
@@ -361,7 +362,7 @@ func TestCompleteQueuedTurnAtomicallyPersistsConversationResultAndEvent(t *testi
 	if _, err := store.db.Exec(`DROP TRIGGER reject_terminal_event`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.CompleteQueuedTurn(ctx, "session", "queue", "execution", "completed", response, history, history, "context-key", event); err != nil {
+	if _, err := store.CompleteQueuedTurn(ctx, "session", "queue", "execution", "completed", response, history, history, "context-key", event, json.RawMessage(`{"categories":["files"]}`)); err != nil {
 		t.Fatalf("CompleteQueuedTurn: %v", err)
 	}
 	stored, found, err := store.TurnResult(ctx, "session", "execution")

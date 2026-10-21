@@ -184,6 +184,12 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	if err != nil {
 		return nil, graph.Result[State]{Status: graph.StatusFailed}, err
 	}
+	state.SelectedCategories = append([]string(nil), taskOptions.Conversation.Categories...)
+	state.HostContext = taskOptions.Conversation.HostContext
+	state.LastRequest = taskOptions.Conversation.LastRequest
+	state.ContextAtTaskStart = true
+	inputItems, _ := responseInputItems(input)
+	state.ContextInsertIndex = len(state.History.Items) - len(inputItems)
 	state.RunID = runID
 	state.ExecutionID = taskOptions.ExecutionID
 	if state.ExecutionID == "" {

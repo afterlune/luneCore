@@ -10,7 +10,7 @@ func TestRuntimeToolDescriptionsRetainDecisionAndDispatchConstraints(t *testing.
 	team := benchmarkTeamExecutor{}
 	definitions := map[string]string{
 		"ask_user":      askUserDefinition().Description,
-		"delegate_team": teamDispatchDefinition(team, 4).Description,
+		"delegate_team": teamDispatchDefinition(team).Description,
 	}
 	want := map[string][]string{
 		"ask_user": {

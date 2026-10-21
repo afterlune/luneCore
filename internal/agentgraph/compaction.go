@@ -114,6 +114,9 @@ func (a *Agent) compactLocalHistory(ctx context.Context, history model.ResponseI
 			Role:    model.RoleAssistant,
 			Content: model.NewMessageText("Earlier conversation summary:\n" + summary),
 		})
+		if state.HostContext != "" && !hasHostContext(*model.NewResponseInputItems(suffix...), state.HostContext) {
+			candidate = append(candidate, hostContextMessage(state.HostContext))
+		}
 		candidate = append(candidate, suffix...)
 		current.Input = model.NewResponseInputItems(candidate...)
 		after := model.EstimateInputTokens(current)
@@ -188,7 +191,7 @@ func latestUserMessage(items []model.InputItem) int {
 	index := -1
 	for current, item := range items {
 		message, ok := item.(model.InputMessage)
-		if ok && message.Role == model.RoleUser {
+		if ok && message.Role == model.RoleUser && !IsHostContextMessage(message) {
 			index = current
 		}
 	}

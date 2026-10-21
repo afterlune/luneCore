@@ -238,14 +238,14 @@ func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
 	if result.Status != graph.StatusCompleted || len(requester.requests) != 4 {
 		t.Fatalf("result status=%q requests=%d, want completed with four requests", result.Status, len(requester.requests))
 	}
-	if readFile.calls != 0 || webSearch.calls != 1 {
+	if readFile.calls != 0 || webSearch.calls != 2 {
 		t.Fatalf("tool calls = read_file:%d web_search:%d, want only visible web_search", readFile.calls, webSearch.calls)
 	}
 	for requestIndex, want := range []string{
 		model.CategorySelectorName,
-		model.CategorySelectorName + ",read_file",
-		model.CategorySelectorName + ",web_search",
-		model.CategorySelectorName + ",web_search",
+		model.CategorySelectorName + ",read_file,web_search",
+		model.CategorySelectorName + ",read_file,web_search",
+		model.CategorySelectorName + ",read_file,web_search",
 	} {
 		got := strings.Join(toolNames(requester.requests[requestIndex].Tools), ",")
 		if got != want {
@@ -256,7 +256,7 @@ func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, expected := range []string{"web_search", `category \"web\"`, model.CategorySelectorName, "next request", "imaginary_tool", "not registered in a discoverable category"} {
+	for _, expected := range []string{"web_search", model.CategorySelectorName, "next request", "imaginary_tool", "not registered in a discoverable category"} {
 		if !strings.Contains(string(encodedHistory), expected) {
 			t.Errorf("hidden tool history is missing %q: %s", expected, encodedHistory)
 		}
@@ -266,12 +266,12 @@ func TestAgentGraphGuidesHiddenToolCategoryAndLogsMismatch(t *testing.T) {
 		"request=2",
 		"reasoning_effort=high",
 		"selected_category=files",
-		`visible_tools="[select_tool_category read_file]"`,
+		`visible_tools="[select_tool_category read_file web_search]"`,
 		"tool category selected",
 		"tool call is not in the visible tool set",
 		"tool=web_search",
 		"visible_tools",
-		"expected_category=web",
+		"tool category automatically discovered",
 	} {
 		if !strings.Contains(logBuffer.String(), expected) {
 			t.Errorf("logs %q missing %q", logBuffer.String(), expected)

@@ -138,8 +138,8 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 	}
 	taskRuntime.SetSessionState(sessionID, transcript, modelContext, contextKey)
 	taskRuntime.SetTaskOptions(taskOptions)
-	taskRuntime.SetHistorySaver(func(id string, transcript, modelContext *model.ResponseInput, key string) error {
-		return c.setSessionConversation(context.Background(), id, transcript, modelContext, key)
+	taskRuntime.SetHistorySaver(func(id string, transcript, modelContext *model.ResponseInput, key string, agentContext json.RawMessage) error {
+		return c.setSessionConversation(context.Background(), id, transcript, modelContext, key, agentContext)
 	})
 	defer taskRuntime.SetHistorySaver(nil)
 	taskRuntime.DeferCompletedCleanup(queueID != "")

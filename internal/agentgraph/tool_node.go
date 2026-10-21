@@ -43,18 +43,6 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 	if state.PendingIndex < 0 || state.PendingIndex >= len(state.PendingCalls) {
 		return graph.Transition[State]{}, errors.New("pending tool-call index is out of range")
 	}
-	if state.PendingIndex == 0 && len(state.PendingCalls) > 0 {
-		hasCategorySelector := false
-		for _, pending := range state.PendingCalls {
-			if a.categorized != nil && pending.Name == model.CategorySelectorName {
-				hasCategorySelector = true
-				break
-			}
-		}
-		if hasCategorySelector {
-			state.SelectedCategories = nil
-		}
-	}
 	if a.options.ProjectInstructionsForTool != nil {
 		working := state
 		newInstructions := false
@@ -78,6 +66,28 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		}
 	}
 	call := state.PendingCalls[state.PendingIndex]
+	// Discovery is not authorization. Only recover registered categorized tools
+	// that are allowed through the current mode's normal execution path.
+	if !contains(state.VisibleTools, call.Name) {
+		category := a.categoryForTool(call.Name)
+		mode := a.permissionMode(state)
+		discoverable := false
+		if category != "" {
+			for _, available := range a.visibleCategories(state, mode, state.PlanMode) {
+				if available.Name == category {
+					discoverable = true
+					break
+				}
+			}
+		}
+		if discoverable && contains(toolNames(a.visibleDefinitions(a.categorized.DefinitionsForCategory(category), mode, state.PlanMode)), call.Name) {
+			if !contains(state.SelectedCategories, category) {
+				state.SelectedCategories = append(state.SelectedCategories, category)
+			}
+			state.VisibleTools = append(state.VisibleTools, call.Name)
+			a.options.Logger.InfoContext(ctx, "tool category automatically discovered", "tool", call.Name, "category", category, "call_id", call.CallID)
+		}
+	}
 	var output model.InputFunctionCallOutput
 	switch {
 	case call.Name == askUserToolName && state.NoInteractiveDecisions && !state.TeamBranch:
@@ -86,13 +96,17 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		expectedCategory := a.categoryForTool(call.Name)
 		a.options.Logger.WarnContext(ctx, "tool call is not in the visible tool set",
 			"tool", call.Name,
-			"selected_category", state.SelectedCategory,
+			"selected_category", state.SelectedCategories,
 			"visible_tools", state.VisibleTools,
 			"expected_category", expectedCategory,
 		)
+		message := unavailableToolMessage(call.Name, expectedCategory, a.categorized != nil)
+		if expectedCategory != "" {
+			message = fmt.Sprintf("Tool %q, which is not visible in this request, is unavailable under the current permissions, Plan mode or runtime availability. Do not retry category discovery for this tool while that restriction remains.", call.Name)
+		}
 		output = model.InputFunctionCallOutput{
 			CallID: call.CallID,
-			Output: model.NewToolOutputText(unavailableToolMessage(call.Name, expectedCategory, a.categorized != nil)),
+			Output: model.NewToolOutputText(message),
 		}
 	case call.Name == askUserToolName && a.options.AskUser && !state.NoInteractiveDecisions && !state.TeamBranch:
 		questions, err := parseUserQuestion(call.Arguments)
@@ -121,12 +135,11 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		text := "Category selected. Its tools will be available in the next request."
 		if err != nil {
 			a.options.Logger.WarnContext(ctx, "tool category selection rejected",
-				"selected_category", state.SelectedCategory,
+				"selected_category", state.SelectedCategories,
 				"error_type", fmt.Sprintf("%T", err),
 			)
 			text = "Category was not changed: " + err.Error()
 		} else {
-			state.SelectedCategory = category
 			if !contains(state.SelectedCategories, category) {
 				state.SelectedCategories = append(state.SelectedCategories, category)
 			}

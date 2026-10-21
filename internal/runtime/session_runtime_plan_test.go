@@ -75,8 +75,8 @@ func TestPlanModeHandoffImplementsInSameContextWithScopedPermission(t *testing.T
 	provider.mu.Lock()
 	planningRequest := provider.seenRequests[0]
 	provider.mu.Unlock()
-	if !strings.Contains(planningRequest.Instructions, "Plan mode") || !strings.Contains(planningRequest.Instructions, "<proposed_plan>") || !strings.Contains(planningRequest.Instructions, "workspace") {
-		t.Fatalf("Plan mode instructions = %q", planningRequest.Instructions)
+	if !strings.Contains(requestHostText(planningRequest), "Plan mode") || !strings.Contains(requestHostText(planningRequest), "<proposed_plan>") || !strings.Contains(requestHostText(planningRequest), "workspace") {
+		t.Fatalf("Plan mode instructions = %q", requestHostText(planningRequest))
 	}
 	for _, definition := range planningRequest.Tools {
 		if function, ok := definition.(publicmodel.FunctionTool); ok && function.Name == "host_echo" {

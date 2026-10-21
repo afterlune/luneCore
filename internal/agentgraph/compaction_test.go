@@ -40,7 +40,7 @@ func TestAutomaticCompactionClearsOldToolOutputAndKeepsTranscript(t *testing.T) 
 		t.Fatal(err)
 	}
 	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-clear-tool-output", history, history, input,
-		TaskOptions{ContextWindow: 1000, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
+		TaskOptions{ContextWindow: 2400, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
 		store, graph.Options{})
 	if err != nil {
 		t.Fatalf("StartWithTranscript: %v", err)
@@ -113,7 +113,7 @@ func TestAutomaticCompactionSummarizesOlderHistoryWhenToolClearingIsInsufficient
 		t.Fatal(err)
 	}
 	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-summary", history, history, input,
-		TaskOptions{ContextWindow: 1000, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
+		TaskOptions{ContextWindow: 2400, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
 		store, graph.Options{})
 	if err != nil {
 		t.Fatalf("StartWithTranscript: %v", err)

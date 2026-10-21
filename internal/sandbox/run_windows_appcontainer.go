@@ -143,35 +143,39 @@ func appContainerCapabilities(network bool) ([]windows.SIDAndAttributes, func(),
 }
 
 func deriveCapabilitySID(name string) (*windows.SID, error) {
-	proc := windows.NewLazySystemDLL("advapi32.dll").NewProc("DeriveCapabilitySidsFromName")
+	proc := windows.NewLazySystemDLL("kernelbase.dll").NewProc("DeriveCapabilitySidsFromName")
+	if err := proc.Find(); err != nil {
+		return nil, fmt.Errorf("load capability API: %w", err)
+	}
 	name16, err := windows.UTF16PtrFromString(name)
 	if err != nil {
 		return nil, err
 	}
-	var groups *windows.SIDAndAttributes
-	var groupCount uint32
-	var capabilities *windows.SIDAndAttributes
-	var capabilityCount uint32
-	hr, _, _ := proc.Call(uintptr(unsafe.Pointer(name16)), uintptr(unsafe.Pointer(&groups)), uintptr(unsafe.Pointer(&groupCount)), uintptr(unsafe.Pointer(&capabilities)), uintptr(unsafe.Pointer(&capabilityCount)))
-	if hr != 0 || capabilities == nil || capabilityCount == 0 {
-		return nil, fmt.Errorf("derive AppContainer capability %q failed: HRESULT 0x%08x", name, uint32(hr))
-	}
-	items := unsafe.Slice(capabilities, capabilityCount)
-	copy, err := items[0].Sid.Copy()
-	for _, item := range items {
-		_, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(item.Sid)))
-	}
-	if groups != nil {
-		for _, group := range unsafe.Slice(groups, groupCount) {
-			_, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(group.Sid)))
+	// The API returns arrays of SID pointers, not SID_AND_ATTRIBUTES structs,
+	// and its return value is BOOL, not HRESULT.
+	var groups, capabilities **windows.SID
+	var groupCount, capabilityCount uint32
+	ok, _, callErr := proc.Call(uintptr(unsafe.Pointer(name16)), uintptr(unsafe.Pointer(&groups)), uintptr(unsafe.Pointer(&groupCount)), uintptr(unsafe.Pointer(&capabilities)), uintptr(unsafe.Pointer(&capabilityCount)))
+	free := func(sids **windows.SID, count uint32) {
+		if sids == nil {
+			return
 		}
-		_, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(groups)))
+		for _, sid := range unsafe.Slice(sids, count) {
+			if sid != nil {
+				_, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(sid)))
+			}
+		}
+		_, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(sids)))
 	}
-	_, _ = windows.LocalFree(windows.Handle(unsafe.Pointer(capabilities)))
-	if err != nil {
-		return nil, err
+	defer free(groups, groupCount)
+	defer free(capabilities, capabilityCount)
+	if ok == 0 {
+		return nil, fmt.Errorf("derive AppContainer capability %q: %w", name, callErr)
 	}
-	return copy, nil
+	if capabilities == nil || capabilityCount == 0 || *capabilities == nil {
+		return nil, fmt.Errorf("derive AppContainer capability %q returned no SID", name)
+	}
+	return (*capabilities).Copy()
 }
 
 // Helpers run in separate processes. Serialize each ACL read/modify/write so

@@ -3,6 +3,7 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"sync"
 
@@ -32,7 +33,7 @@ type Responder struct {
 	taskOptions           agentgraph.TaskOptions
 	modelName             string
 	reasoningEffort       string
-	historySaver          func(string, *model.ResponseInput, *model.ResponseInput, string) error
+	historySaver          func(string, *model.ResponseInput, *model.ResponseInput, string, json.RawMessage) error
 	deferCompletedCleanup bool
 }
 
@@ -45,7 +46,7 @@ func (r *Responder) SetRunModel(agent *agentgraph.Agent, requester *UsageTrackin
 	r.reasoningEffort = reasoningEffort
 }
 
-func (r *Responder) SetHistorySaver(saver func(string, *model.ResponseInput, *model.ResponseInput, string) error) {
+func (r *Responder) SetHistorySaver(saver func(string, *model.ResponseInput, *model.ResponseInput, string, json.RawMessage) error) {
 	r.historyMu.Lock()
 	r.historySaver = saver
 	r.historyMu.Unlock()
@@ -63,6 +64,7 @@ func (r *Responder) SetSessionState(id string, transcript, modelContext *model.R
 	r.historyMu.Lock()
 	defer r.historyMu.Unlock()
 	r.sessionID = id
+	r.lastState = nil
 	if transcript == nil {
 		r.transcript = nil
 	} else {
@@ -110,7 +112,7 @@ func (r *Responder) persistSessionHistory() error {
 	if saver == nil || id == "" {
 		return nil
 	}
-	return saver(id, r.SessionHistory(), r.ModelContextHistory(), contextKey)
+	return saver(id, r.SessionHistory(), r.ModelContextHistory(), contextKey, r.ConversationState())
 }
 
 // PendingQuestion describes a durable lead-agent clarification wait.
@@ -148,4 +150,14 @@ func (r *Responder) LastState() (agentgraph.State, bool) {
 
 func (r *Responder) Fork(ctx context.Context, newRunID string, source graph.Checkpoint[agentgraph.State]) (graph.Checkpoint[agentgraph.State], error) {
 	return r.agent.Fork(ctx, newRunID, source)
+}
+
+// ConversationState returns host metadata, separate from user-authored history.
+func (r *Responder) ConversationState() json.RawMessage {
+	state := r.taskOptions.Conversation
+	if r.lastState != nil {
+		state = r.lastState.ConversationState()
+	}
+	data, _ := json.Marshal(state)
+	return data
 }

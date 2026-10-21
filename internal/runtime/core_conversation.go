@@ -90,6 +90,12 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 		c.finishTaskState(sessionID, TaskFailed, err)
 		return 0, err
 	}
+	if len(saved.AgentContext) > 0 {
+		if err := json.Unmarshal(saved.AgentContext, &compactOptions.Conversation); err != nil {
+			return 0, err
+		}
+	}
+	taskRuntime.SetTaskOptions(compactOptions)
 	taskRuntime.SetSessionState(sessionID, transcript, modelContext, contextKey)
 	compacted, err := taskRuntime.Compact(ctx)
 	if err == nil {
@@ -122,5 +128,5 @@ func (c *Core) resetTaskUsage(ctx context.Context, sessionID string) error {
 }
 
 func (c *Core) saveHistoryUsage(ctx context.Context, sessionID string, runtime *agentruntime.Responder) error {
-	return c.setSessionConversation(ctx, sessionID, runtime.SessionHistory(), runtime.ModelContextHistory(), runtime.ContextKey())
+	return c.setSessionConversation(ctx, sessionID, runtime.SessionHistory(), runtime.ModelContextHistory(), runtime.ContextKey(), runtime.ConversationState())
 }

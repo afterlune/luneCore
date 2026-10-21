@@ -154,7 +154,12 @@ type State struct {
 	History                  model.ResponseInput          `json:"history"`
 	Transcript               model.ResponseInput          `json:"transcript,omitempty"`
 	CompactionWarningEmitted bool                         `json:"compaction_warning_emitted,omitempty"`
-	SelectedCategory         string                       `json:"selected_category,omitempty"`
+	LastRequest              model.RequestTrace           `json:"last_request,omitzero"`
+	HostContext              string                       `json:"host_context,omitempty"`
+	MemorySummary            string                       `json:"memory_summary,omitempty"`
+	MemoryLoaded             bool                         `json:"memory_loaded,omitempty"`
+	ContextAtTaskStart       bool                         `json:"context_at_task_start,omitempty"`
+	ContextInsertIndex       int                          `json:"context_insert_index,omitempty"`
 	SelectedCategories       []string                     `json:"selected_categories,omitempty"`
 	PendingCalls             []model.OutputFunctionCall   `json:"pending_calls,omitempty"`
 	PendingIndex             int                          `json:"pending_index,omitempty"`
@@ -192,6 +197,7 @@ type State struct {
 
 // TaskOptions configures one user task. A zero tool-round limit is unlimited.
 type TaskOptions struct {
+	Conversation  ConversationState
 	ExecutionID   string
 	MaxToolRounds int
 	// Model optionally overrides the configured profile's model identifier for this task.

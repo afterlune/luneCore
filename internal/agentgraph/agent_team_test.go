@@ -304,9 +304,14 @@ func TestForkDispatchCopiesPreDispatchHistoryAndScopesCacheByModel(t *testing.T)
 		if request.Input != nil {
 			inputCount = len(request.Input.Items)
 		}
-		if inputCount != prefixCount+1 {
-			t.Errorf("branch %q input item count = %d, want %d", id, inputCount, prefixCount+1)
+		if inputCount != prefixCount+2 {
+			t.Errorf("branch %q input item count = %d, want assignment plus updated worker context (%d)", id, inputCount, prefixCount+2)
 			continue
+		}
+		parentPrefix, _ := json.Marshal(requester.requests[0].Input)
+		childPrefix, _ := json.Marshal(model.NewResponseInputItems(request.Input.Items[:prefixCount]...))
+		if string(parentPrefix) != string(childPrefix) {
+			t.Fatal("worker context update rewrote shared fork prefix")
 		}
 		encoded, err := json.Marshal(request.Input)
 		if err != nil {
@@ -461,8 +466,8 @@ func TestAgentTeamTreeUsesConfiguredChildAndDepthLimits(t *testing.T) {
 	if depthCounts[1] != 4 || depthCounts[2] != 16 {
 		t.Fatalf("branch depths = %#v, want 4 at depth one and 16 at depth two", depthCounts)
 	}
-	if got := teamToolMaxItems(t, root.requests[0].Tools); got != 4 {
-		t.Errorf("root delegate_team maxItems = %d, want 4", got)
+	if got := teamToolMaxItems(t, root.requests[0].Tools); got != 0 {
+		t.Errorf("root delegate_team maxItems = %d, want absent", got)
 	}
 	for id, agentRequests := range requests {
 		if len(agentRequests) == 0 {
@@ -471,8 +476,8 @@ func TestAgentTeamTreeUsesConfiguredChildAndDepthLimits(t *testing.T) {
 		}
 		depth := strings.Count(id, "/")
 		if depth == 1 {
-			if got := teamToolMaxItems(t, agentRequests[0].Tools); got != 4 {
-				t.Errorf("depth-one agent %q maxItems = %d, want 4", id, got)
+			if got := teamToolMaxItems(t, agentRequests[0].Tools); got != 0 {
+				t.Errorf("depth-one agent %q maxItems = %d, want absent", id, got)
 			}
 		} else if hasTeamTool(agentRequests[0].Tools) {
 			t.Errorf("depth-two agent %q still sees delegate_team", id)
@@ -527,16 +532,23 @@ func TestAgentTeamChildQuotaIsCumulativeAcrossDispatches(t *testing.T) {
 	if len(team.assignments) != 4 || result.Final.TeamChildrenCreated != 4 {
 		t.Fatalf("accepted children = %d, checkpoint count = %d; want 4 and 4", len(team.assignments), result.Final.TeamChildrenCreated)
 	}
-	if got := teamToolMaxItems(t, root.requests[0].Tools); got != 4 {
-		t.Fatalf("initial quota = %d, want 4", got)
+	if got := teamToolMaxItems(t, root.requests[0].Tools); got != 0 {
+		t.Fatalf("initial maxItems = %d, want absent", got)
 	}
-	if got := teamToolMaxItems(t, root.requests[1].Tools); got != 1 {
-		t.Fatalf("remaining quota after first dispatch = %d, want 1", got)
+	if got := teamToolMaxItems(t, root.requests[1].Tools); got != 0 {
+		t.Fatalf("maxItems after first dispatch = %d, want absent", got)
 	}
-	if hasTeamTool(root.requests[2].Tools) {
-		t.Fatal("delegate_team remained visible after the cumulative quota was exhausted")
+	initialSchema, _ := json.Marshal(root.requests[0].Tools)
+	for _, request := range root.requests[1:] {
+		schema, _ := json.Marshal(request.Tools)
+		if string(schema) != string(initialSchema) {
+			t.Fatal("delegation quota mutated tool declarations")
+		}
 	}
-	if history := teamResponseHistoryText(root.requests[3].Input); !strings.Contains(history, "not available in this request") {
+	if !hasTeamTool(root.requests[2].Tools) {
+		t.Fatal("delegate_team declaration changed after the cumulative quota was exhausted")
+	}
+	if history := teamResponseHistoryText(root.requests[3].Input); !strings.Contains(history, "reached its delegation limit") {
 		t.Fatalf("stale delegation call was not rejected: %s", history)
 	}
 }
@@ -575,10 +587,10 @@ func TestAgentTaskTeamLimitsOverrideHostDefaults(t *testing.T) {
 	if result.Final.Execution.MaxTeamChildrenPerAgent != 2 || result.Final.Execution.MaxTeamDepth != 1 {
 		t.Fatalf("effective task limits = %#v, want 2 children and depth 1", result.Final.Execution)
 	}
-	if got := teamToolMaxItems(t, root.requests[0].Tools); got != 2 {
-		t.Fatalf("task override schema maxItems = %d, want 2", got)
+	if got := teamToolMaxItems(t, root.requests[0].Tools); got != 0 {
+		t.Fatalf("task override schema maxItems = %d, want absent", got)
 	}
-	childDefinitions, _, err := agent.visibleTools(State{Execution: result.Final.Execution, TeamDepth: 1}, "", "")
+	childDefinitions, _, err := agent.visibleTools(State{Execution: result.Final.Execution, TeamDepth: 1}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

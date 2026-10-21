@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"github.com/afterlune/luneCore/internal/agentgraph"
+	"github.com/afterlune/luneCore/internal/model"
 	"sync"
 	"testing"
 
@@ -98,5 +100,12 @@ func TestMCPPromptAndResourceRunThroughCoreTask(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("Core model requests = %d, want one", len(requests))
 	}
-	assertMCPPromptResourceInput(t, requests[0].Input, expectedImageURL)
+	inputWithoutHost := model.NewResponseInputItems()
+	for _, item := range requests[0].Input.Items {
+		if msg, ok := item.(model.InputMessage); ok && agentgraph.IsHostContextMessage(msg) {
+			continue
+		}
+		inputWithoutHost.Items = append(inputWithoutHost.Items, item)
+	}
+	assertMCPPromptResourceInput(t, inputWithoutHost, expectedImageURL)
 }

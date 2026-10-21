@@ -37,6 +37,9 @@ const (
 )
 
 type UsageRecord struct {
+	RequestID            string       `json:"request_id,omitempty"`
+	RequestAttempt       int          `json:"request_attempt,omitempty"`
+	RequestChanges       []string     `json:"request_changes,omitempty"`
 	Request              int          `json:"request"`
 	Usage                Usage        `json:"usage"`
 	EstimatedInputTokens int64        `json:"estimated_input_tokens,omitempty"`
@@ -96,7 +99,9 @@ func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, 
 	if len(purposes) > 0 {
 		purpose = purposes[0]
 	}
+	trace := model.RequestTraceFromContext(ctx)
 	record := UsageRecord{
+		RequestID: trace.ID, RequestAttempt: trace.Attempt, RequestChanges: trace.Changes,
 		Request: saved.SessionUsage.Requests + 1, Usage: usage, Available: available,
 		ContextWindow: contextWindow, EstimatedInputTokens: estimatedInputTokensIfMissing(usage.InputTokens, estimatedInputTokens),
 		AgentID: agentID, Purpose: purpose, ModelProfile: profile, Provider: provider, Model: modelID,

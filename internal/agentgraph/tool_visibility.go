@@ -6,7 +6,7 @@ import (
 	"github.com/afterlune/luneCore/internal/model"
 )
 
-func (a *Agent) visibleTools(state State, category, permissionMode string) ([]model.ResponseTool, []string, error) {
+func (a *Agent) visibleTools(state State, permissionMode string) ([]model.ResponseTool, []string, error) {
 	if permissionMode == "" {
 		permissionMode = state.PermissionOverride
 	}
@@ -14,10 +14,9 @@ func (a *Agent) visibleTools(state State, category, permissionMode string) ([]mo
 		permissionMode = a.options.CurrentPermissionMode()
 	}
 	addRuntimeTools := func(definitions []model.ResponseTool) []model.ResponseTool {
-		remaining := state.Execution.MaxTeamChildrenPerAgent - state.TeamChildrenCreated
-		canDelegate := state.TeamDepth < state.Execution.MaxTeamDepth && remaining > 0
+		canDelegate := state.TeamDepth < state.Execution.MaxTeamDepth && state.Execution.MaxTeamChildrenPerAgent > 0
 		if a.options.Team != nil && len(a.options.Team.Profiles()) > 0 && canDelegate {
-			definitions = append(definitions, teamDispatchDefinition(a.options.Team, remaining))
+			definitions = append(definitions, teamDispatchDefinition(a.options.Team))
 		}
 		if a.options.AskUser && !state.NoInteractiveDecisions && !state.TeamBranch {
 			definitions = append(definitions, askUserDefinition())
@@ -40,11 +39,10 @@ func (a *Agent) visibleTools(state State, category, permissionMode string) ([]mo
 	}
 	definitions := []model.ResponseTool{selector}
 	selectedCategories := state.SelectedCategories
-	if len(selectedCategories) == 0 && category != "" {
-		selectedCategories = []string{category}
-	}
-	for _, cat := range selectedCategories {
-		definitions = append(definitions, a.visibleDefinitions(a.categorized.DefinitionsForCategory(cat), permissionMode, state.PlanMode)...)
+	for _, cat := range categories {
+		if contains(selectedCategories, cat.Name) {
+			definitions = append(definitions, a.visibleDefinitions(a.categorized.DefinitionsForCategory(cat.Name), permissionMode, state.PlanMode)...)
+		}
 	}
 	definitions = addRuntimeTools(definitions)
 	return definitions, toolNames(definitions), nil
@@ -144,4 +142,14 @@ func contains(values []string, value string) bool {
 		}
 	}
 	return false
+}
+
+func (a *Agent) permissionMode(state State) string {
+	if state.PermissionOverride != "" {
+		return state.PermissionOverride
+	}
+	if a.options.CurrentPermissionMode != nil {
+		return a.options.CurrentPermissionMode()
+	}
+	return ""
 }

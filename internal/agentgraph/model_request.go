@@ -73,7 +73,7 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 	if permissionMode == "" && a.options.CurrentPermissionMode != nil {
 		permissionMode = a.options.CurrentPermissionMode()
 	}
-	visibleTools, visibleNames, err := a.visibleTools(state, state.SelectedCategory, permissionMode)
+	visibleTools, visibleNames, err := a.visibleTools(state, permissionMode)
 	if err != nil {
 		return a.failTask(state, err)
 	}
@@ -92,23 +92,9 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 	if request.Model == "" {
 		request.Model = a.options.Model
 	}
-	request.Instructions = taskInstructions(state.Goal, permissionMode, state.PlanMode, contains(visibleNames, teamDispatchToolName), a.options.Team != nil)
-	if !state.TeamBranch && a.options.MemorySummaryFor != nil {
-		if summary, summaryErr := a.options.MemorySummaryFor(ctx, state); summaryErr != nil {
-			a.options.Logger.WarnContext(ctx, "load workspace memory summary", "error_type", fmt.Sprintf("%T", summaryErr))
-		} else if summary != "" {
-			request.Instructions += "\n\n" + summary
-		}
-	}
-	if personalContext := personalInstructionContext(state.PersonalInstructions); personalContext != "" {
-		request.Instructions += "\n\n" + personalContext
-	}
-	if projectContext := projectInstructionContext(state.ProjectInstructions); projectContext != "" {
-		request.Instructions += "\n\n" + projectContext
-	}
-	if state.NoInteractiveDecisions {
-		request.Instructions += "\n\nHost approved this plan. Do not ask the user or seek new permission. Stop and report if an unapproved action is required."
-	}
+	state = a.prepareHostContext(ctx, state, permissionMode, visibleNames)
+	request.Input = model.NewResponseInputItems(state.History.Items...)
+	request.Instructions = stableInstructions
 	compactionThreshold := int64(0)
 	serverCompactionRequested := false
 	forkCachePrefixValid := true
@@ -167,15 +153,20 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 		"reasoning_effort", state.ReasoningEffort,
 		"request", state.ToolRounds+1,
 		"tool_rounds_completed", state.ToolRounds,
-		"selected_category", state.SelectedCategory,
+		"discovered_categories", state.SelectedCategories,
 		"visible_tools", visibleNames,
 	)
+	sendIndex := 0
 	sendRequest := func(request *model.ModelRequest) (*model.ModelResponse, error) {
 		request.PromptCache = requestPromptCacheHint(state, *request, visibleNames, forkCachePrefixValid)
+		sendIndex++
+		requestID := fmt.Sprintf("%s:%s:%d", state.ExecutionID, call.CallID, sendIndex)
+		trace := traceRequest(state, *request, requestID, permissionMode)
+		state.LastRequest = trace
 		var emit func(model.ModelStreamEvent) error
 		if a.options.StreamObserverFor != nil || a.options.StreamObserver != nil {
 			emit = func(event model.ModelStreamEvent) error {
-				event.RequestID = call.CallID
+				event.RequestID = requestID
 				event.Purpose = string(usagePurpose)
 				if a.options.StreamObserverFor != nil {
 					a.options.StreamObserverFor(state, event)
@@ -185,7 +176,7 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 				return nil
 			}
 		}
-		return a.sendModel(requestCtx, state, requester, *request, emit)
+		return a.sendModel(model.WithRequestTrace(requestCtx, trace), state, requester, *request, emit)
 	}
 	response, responseErr := sendRequest(&request)
 	if serverCompactionRequested && compactOptionUnsupported(responseErr) && !streamFailure(responseErr) {

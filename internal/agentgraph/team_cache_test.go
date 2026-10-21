@@ -23,8 +23,13 @@ func TestRequestPromptCacheHintUsesModelScopedParentLineage(t *testing.T) {
 	if parentHint == nil || parentHint.PrefixItems != 1 {
 		t.Fatalf("parent cache hint = %#v", parentHint)
 	}
-	if hint := requestPromptCacheHint(parent, request, nil, true); hint != nil {
-		t.Fatalf("non-delegatable parent request received cache hint %#v", hint)
+	nextTurn := parent
+	nextTurn.ExecutionID = "another-execution"
+	if hint := requestPromptCacheHint(nextTurn, request, nil, true); hint == nil || hint.Key != parentHint.Key {
+		t.Fatal("task boundary changed cache key")
+	}
+	if hint := requestPromptCacheHint(parent, request, nil, true); hint == nil {
+		t.Fatal("ordinary parent request is missing cache hint")
 	}
 	if hint := requestPromptCacheHint(parent, model.ModelRequest{
 		Model: "shared-model", Input: request.Input,

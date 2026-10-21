@@ -46,6 +46,9 @@ const (
 // Event is a structured runtime notification. Arguments and response payloads
 // are transient; clients should not persist or log them without sanitizing.
 type Event struct {
+	RequestID       string
+	RequestAttempt  int
+	RequestChanges  []string
 	Kind            EventKind
 	CommandID       string
 	CommandStatus   publictool.CommandStatus

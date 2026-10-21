@@ -54,7 +54,7 @@ func BenchmarkTeamForkCacheHint(b *testing.B) {
 		b.Fatal(err)
 	}
 	defer registry.Close()
-	tools := append(registry.Definitions(), askUserDefinition(), teamDispatchDefinition(benchmarkTeamExecutor{}, 4))
+	tools := append(registry.Definitions(), askUserDefinition(), teamDispatchDefinition(benchmarkTeamExecutor{}))
 	state := State{
 		TeamForked:          true,
 		TeamForkPrefixItems: 100,

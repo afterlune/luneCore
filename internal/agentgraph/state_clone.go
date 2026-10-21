@@ -28,6 +28,7 @@ func cloneState(state State) (State, error) {
 	if clone.Transcript, err = model.CloneResponseInput(state.Transcript); err != nil {
 		return State{}, fmt.Errorf("clone transcript: %w", err)
 	}
+	clone.LastRequest.Changes = append([]string(nil), state.LastRequest.Changes...)
 	clone.SelectedCategories = append([]string(nil), state.SelectedCategories...)
 	clone.PendingCalls = append([]model.OutputFunctionCall(nil), state.PendingCalls...)
 	clone.VisibleTools = append([]string(nil), state.VisibleTools...)

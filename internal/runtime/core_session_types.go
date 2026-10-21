@@ -78,7 +78,10 @@ type Session struct {
 	History json.RawMessage `json:"history,omitempty"`
 	// ModelContext is a cached provider-specific request context when it differs
 	// from History. It can contain opaque Responses state and is never rendered.
-	ModelContext       json.RawMessage        `json:"model_context,omitempty"`
+	ModelContext json.RawMessage `json:"model_context,omitempty"`
+	// AgentContext stores opaque host-owned discovery and prompt context state.
+	// It is not user-authored history and must be preserved when copying snapshots.
+	AgentContext       json.RawMessage        `json:"agent_context,omitempty"`
 	ModelContextKey    string                 `json:"model_context_key,omitempty"`
 	UsageRequests      []UsageRecord          `json:"usage_requests,omitempty"`
 	AgentUsage         map[string]UsageTotals `json:"agent_usage,omitempty"`

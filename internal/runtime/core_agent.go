@@ -35,7 +35,7 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		if current, ok := c.StateForSession(identity.SessionID); ok {
 			state = current
 		}
-		c.onAgentUsageForTask(state, usage, agentID, profile, provider, modelName, estimatedInputTokens, model.UsagePurposeFromContext(ctx))
+		c.onAgentUsageForTask(state, usage, agentID, profile, provider, modelName, estimatedInputTokens, model.UsagePurposeFromContext(ctx), model.RequestTraceFromContext(ctx))
 	}
 	requester.SetContextAgentUsageObserver(usageObserver)
 	memoryRequester.SetContextAgentUsageObserver(usageObserver)

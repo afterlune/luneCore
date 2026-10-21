@@ -41,7 +41,7 @@ func TestTaskGoalIsAppliedWithoutForcingPlanInstructions(t *testing.T) {
 	if result.Status != graph.StatusCompleted || len(requester.requests) != 1 {
 		t.Fatalf("result status=%q requests=%d", result.Status, len(requester.requests))
 	}
-	instructions := requester.requests[0].Instructions
+	instructions := requestContextText(requester.requests[0])
 	for _, expected := range []string{
 		"Map the public API and summarize its dependencies.",
 		"does not override higher-priority instructions",
@@ -56,33 +56,15 @@ func TestTaskGoalIsAppliedWithoutForcingPlanInstructions(t *testing.T) {
 }
 
 func TestDelegationGuidanceIsConditionalAndBounded(t *testing.T) {
-	leadInstructions := taskInstructions("", "workspace", false, true, true)
-	for _, expected := range []string{
-		"Use delegate_team for",
-		"at least two independent subtasks",
-		"benefit from parallel work",
-		"obey task and depth limits",
-	} {
-		if !strings.Contains(leadInstructions, expected) {
-			t.Errorf("lead instructions are missing %q: %s", expected, leadInstructions)
+	for _, expected := range []string{"When delegate_team is available", "at least two independent subtasks", "benefit from parallel work", "obey task and depth limits"} {
+		if !strings.Contains(stableInstructions, expected) {
+			t.Fatalf("fixed instructions missing %q", expected)
 		}
-	}
-
-	withoutTool := taskInstructions("", "workspace", false, false, true)
-	if strings.Contains(withoutTool, "delegate_team") {
-		t.Fatalf("instructions should not recommend delegation when the tool is unavailable: %s", withoutTool)
-	}
-	if !strings.Contains(leadInstructions, "Worker task") {
-		t.Fatalf("shared instructions should describe delegated worker behavior: %s", leadInstructions)
-	}
-	withoutTeam := taskInstructions("", "workspace", false, false, false)
-	if strings.Contains(withoutTeam, "Worker task") {
-		t.Fatalf("non-team agents should not pay for worker instructions: %s", withoutTeam)
 	}
 }
 
 func TestWorkspaceServiceGuidanceUsesManagedBackgroundMode(t *testing.T) {
-	instructions := taskInstructions("", "workspace", false, false, false)
+	instructions := taskInstructions("", "workspace", false, false)
 	for _, expected := range []string{
 		"command background=true",
 		"keep the service process in the foreground",
@@ -94,7 +76,7 @@ func TestWorkspaceServiceGuidanceUsesManagedBackgroundMode(t *testing.T) {
 			t.Errorf("service guidance is missing %q: %s", expected, instructions)
 		}
 	}
-	readOnly := taskInstructions("", "read-only", false, false, false)
+	readOnly := taskInstructions("", "read-only", false, false)
 	if strings.Contains(readOnly, "command background=true") {
 		t.Fatalf("read-only instructions advertise command execution: %s", readOnly)
 	}
@@ -160,7 +142,7 @@ func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing
 	if err != nil || result.Status != graph.StatusCompleted || len(requester.requests) != 1 {
 		t.Fatalf("Start = status %q, requests %d, error %v", result.Status, len(requester.requests), err)
 	}
-	instructions := requester.requests[0].Instructions
+	instructions := requestContextText(requester.requests[0])
 	for _, expected := range []string{
 		"You are in Plan mode.",
 		"If the user prompt is a greeting, pleasantry, or does not specify a task to plan, reply naturally directly without calling tools or inspecting the workspace.",
@@ -178,7 +160,7 @@ func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing
 	if strings.Contains(instructions, "Prefer reasonable assumptions and continue instead of asking routine questions") {
 		t.Fatalf("generic no-routine-questions instruction should not override Plan mode: %s", instructions)
 	}
-	workerInstructions := taskInstructions("", "workspace", true, false, true)
+	workerInstructions := taskInstructions("", "workspace", true, true)
 	if !strings.Contains(workerInstructions, "report facts and unresolved decisions to the lead") || !strings.Contains(workerInstructions, "do not call ask_user") {
 		t.Fatalf("shared Plan mode instructions = %q", workerInstructions)
 	}
@@ -236,7 +218,7 @@ func TestProjectInstructionsPreflightSkipsWholeToolBatch(t *testing.T) {
 	if readFile.calls != 0 || writeFile.calls != 0 {
 		t.Fatalf("tools ran before the model reconsidered the batch: read=%d write=%d", readFile.calls, writeFile.calls)
 	}
-	if len(requester.requests) != 2 || !strings.Contains(requester.requests[1].Instructions, "Do not change generated files.") {
+	if len(requester.requests) != 2 || !strings.Contains(requestContextText(requester.requests[1]), "Do not change generated files.") {
 		t.Fatalf("follow-up request did not receive project instruction: %#v", requester.requests)
 	}
 }
@@ -273,7 +255,7 @@ func TestProjectAndPersonalInstructionsReachTaskRequest(t *testing.T) {
 	if len(requester.requests) != 1 {
 		t.Fatalf("model requests = %d, want one task request", len(requester.requests))
 	}
-	executionInstructions := requester.requests[0].Instructions
+	executionInstructions := requestContextText(requester.requests[0])
 	if !strings.Contains(executionInstructions, "Project-only execution guidance") || !strings.Contains(executionInstructions, personalInstructions) {
 		t.Fatal("project or personal guidance was not included for task execution")
 	}
@@ -297,4 +279,14 @@ func TestProjectAndPersonalInstructionsReachTaskRequest(t *testing.T) {
 	if checkpoint.PersonalInstructions != personalInstructions {
 		t.Fatalf("checkpoint personal instructions = %q", checkpoint.PersonalInstructions)
 	}
+}
+
+func requestContextText(request model.ModelRequest) string {
+	var parts []string
+	for _, item := range request.Input.Items {
+		if msg, ok := item.(model.InputMessage); ok && msg.Content.Text != nil {
+			parts = append(parts, *msg.Content.Text)
+		}
+	}
+	return strings.Join(parts, "\n")
 }

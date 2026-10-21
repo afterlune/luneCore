@@ -86,9 +86,10 @@ func (a *Agent) dispatchTeam(ctx context.Context, state State, call model.Output
 		branch.TeamForked = inheritContext
 		branch.TeamForkPrefixItems = prefixCount
 		if inheritContext {
+			branch.HostContext = state.HostContext
+			branch.MemorySummary, branch.MemoryLoaded = state.MemorySummary, state.MemoryLoaded
 			branch.Goal = state.Goal
 			branch.TeamForkSourceCache = parentCache
-			branch.SelectedCategory = state.SelectedCategory
 			branch.SelectedCategories = append([]string(nil), state.SelectedCategories...)
 		}
 		branch.TeamDepth = state.TeamDepth + 1

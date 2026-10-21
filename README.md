@@ -337,3 +337,20 @@ status, and p95 checks as a quality result.
 `EventToolDetails` is a live-only companion to durable tool lifecycle events. It carries transient arguments and `ToolCall.Details`: bounded textual output, command snapshots (status, output and exit code), or structured file changes. Hosts merge records by execution and invocation identity; command status polls refer to the original command invocation. These bodies are excluded from JSON logging and durable runtime events. File changes are captured by the tool after successful writes, not inferred by the host from a later filesystem read.
 
 Clarification options contain `label` and `description`. `UserQuestionRequest.Questions` contains the ordered batch; `UserQuestionAnswer.Answers` contains `{question_id, answer}` responses in the same order. `UserQuestionAnswer.ExecutionID` is required along with the graph wait identity, so a stale UI cannot answer a question from a later execution that reused the graph counters. Starting a new execution clears earlier graph input receipts. The batch representation is a breaking checkpoint format change for pending questions; discard older paused-question checkpoints before starting a fresh task.
+
+
+### Prompt stability and diagnostics
+
+Tool categories are discovered cumulatively within each session. Selecting a category adds its tools; it does not replace previously discovered categories. Discovery survives task completion and restart. Permission and Plan-mode metadata still filter every request and every execution. If a model calls a registered, discoverable tool before selecting its category, Core discovers it and executes the original call through the normal instruction, permission, approval and sandbox checks. Unknown or prohibited tools remain rejected. Independent team tasks start with empty discovery; same-model forks inherit the parent's discoveries.
+
+Instructions contain fixed host rules. Changing task goals, Plan state, personal/project guidance and memory notes adds a model-only runtime context snapshot to history, rather than rewriting the fixed prompt prefix. Identical snapshots are not repeated; memory retrieval is snapshotted once per task. These messages are not part of the user-visible transcript. `Session.AgentContext` stores the associated opaque host metadata atomically with the conversation. Replacing canonical history clears it; older sessions bootstrap it on their next task.
+
+Delegation limits are validated at execution, not encoded as a shrinking schema. Ordinary cache hints remain stable across task boundaries for the same session, agent and provider/model identity. DeepSeek still uses automatic caching and receives no unsupported cache-key parameter.
+
+`UsageRecord` and usage events expose `RequestID`, `RequestAttempt` and `RequestChanges`. Request-attempt logs include instruction, tool and history fingerprints, never prompt text or tool arguments. Local changes describe what Core changed, not why the provider did or did not return a cache hit. Cache hits remain provider-dependent.
+
+中文：工具类别在会话内累计发现，跨任务和重启保留；发现不等于授权，自动纠正未发现类别的调用仍需经过项目指令、权限、授权与沙箱检查。动态任务信息以模型专用上下文快照追加，固定指令不随运行状态重写；会话元数据与对话原子保存。委派额度由执行层校验，不再修改工具声明。诊断记录请求身份、重试次数、本地变化与内容指纹，不记录正文或参数，也不把本地变化冒充服务端缓存失效原因。
+
+An opt-in real API check is available in `internal/runtime`: set `LUNE_CACHE_SMOKE_CONFIG` to a private config.json, optionally set `LUNE_CACHE_SMOKE_DIR` and `LUNE_CACHE_SMOKE_HELPER`, then run `go test ./internal/runtime -run '^TestCacheRealAPISmoke$' -count=1 -v`. Each invocation is limited to 12 API requests, 250,000 estimated/counted input tokens and 10,000 output tokens, with at most 2,048 output tokens per response and no automatic model retries. A budget stop fails the smoke test and must be reported as incomplete validation, even if tools already produced the expected file. It uses a separate temporary workspace and does not alter the source configuration.
+
+中文：真实 API 验证需显式设置配置路径，每次最多调用 12 次，并受输入、输出预算限制。到达上限即停止，不自动增加费用；工具结果正确但最后回复尚未完成时，也必须记录为未完成验证。测试使用独立临时目录，不修改源配置。

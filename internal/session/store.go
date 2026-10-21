@@ -180,18 +180,21 @@ func (s *Store) Delete(ctx context.Context, id, workspace string) (bool, error) 
 // UpdateHistory replaces the canonical conversation and discards any cached
 // provider context because it no longer corresponds to that transcript.
 func (s *Store) UpdateHistory(ctx context.Context, id, workspace string, history json.RawMessage) error {
-	return s.UpdateConversation(ctx, id, workspace, history, json.RawMessage("null"), "")
+	return s.UpdateConversation(ctx, id, workspace, history, json.RawMessage("null"), "", nil)
 }
 
 // UpdateConversation atomically replaces the canonical transcript and its
 // active provider context. A single SQL update keeps them consistent with the
 // graph checkpoint lifecycle.
-func (s *Store) UpdateConversation(ctx context.Context, id, workspace string, history, modelContext json.RawMessage, contextKey string) error {
+func (s *Store) UpdateConversation(ctx context.Context, id, workspace string, history, modelContext json.RawMessage, contextKey string, agentContext json.RawMessage) error {
 	if s == nil || s.db == nil {
 		return errors.New("session store is not open")
 	}
-	if id == "" || workspace == "" || !json.Valid(history) || len(modelContext) > 0 && !json.Valid(modelContext) {
+	if id == "" || workspace == "" || !json.Valid(history) || len(modelContext) > 0 && !json.Valid(modelContext) || len(agentContext) > 0 && !json.Valid(agentContext) {
 		return errors.New("session id, workspace, valid history, and valid model context are required")
+	}
+	if len(agentContext) == 0 {
+		agentContext = json.RawMessage("null")
 	}
 	if len(modelContext) == 0 {
 		modelContext = json.RawMessage("null")
@@ -202,9 +205,9 @@ func (s *Store) UpdateConversation(ctx context.Context, id, workspace string, hi
 			json_set(
 				json_set(CAST(data AS TEXT), '$.history', json(?)),
 				'$.model_context', json(?)),
-			'$.model_context_key', ?) AS BLOB), updated_at = ?
+			'$.model_context_key', ?, '$.agent_context', json(?)) AS BLOB), updated_at = ?
 		WHERE id = ? AND workspace = ?
-	`, string(history), string(modelContext), contextKey, time.Now().UnixNano(), id, workspace)
+	`, string(history), string(modelContext), contextKey, string(agentContext), time.Now().UnixNano(), id, workspace)
 	if err != nil {
 		return fmt.Errorf("persist conversation for session %q: %w", id, err)
 	}

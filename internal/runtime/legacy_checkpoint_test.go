@@ -22,7 +22,7 @@ func TestOpenSessionRuntimeDiscardsLegacyPausedCheckpoint(t *testing.T) {
 	transcript := model.NewResponseInputItems(model.InputMessage{
 		Role: model.RoleUser, Content: model.NewMessageText("keep this conversation"),
 	})
-	if err := client.setSessionConversation(ctx, saved.ID, transcript, transcript, ""); err != nil {
+	if err := client.setSessionConversation(ctx, saved.ID, transcript, transcript, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	before, err := client.GetSession(ctx, saved.ID)

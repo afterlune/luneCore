@@ -59,7 +59,7 @@ func TestToolVisibilityFollowsPermissionMode(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	definitions, _, err := agent.visibleTools(State{AgentID: "lead"}, "", "")
+	definitions, _, err := agent.visibleTools(State{AgentID: "lead"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +82,7 @@ func TestToolVisibilityFollowsPermissionMode(t *testing.T) {
 	if err := registry.SetPermissionMode(tool.PermissionModeAsk); err != nil {
 		t.Fatal(err)
 	}
-	definitions, _, err = agent.visibleTools(State{AgentID: "lead"}, "", "")
+	definitions, _, err = agent.visibleTools(State{AgentID: "lead"}, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,7 +97,7 @@ func TestToolVisibilityFollowsPermissionMode(t *testing.T) {
 			t.Errorf("ask mode did not expose approval-gated tool %q", name)
 		}
 	}
-	definitions, _, err = agent.visibleTools(State{AgentID: "lead", PlanMode: true}, "", "")
+	definitions, _, err = agent.visibleTools(State{AgentID: "lead", PlanMode: true}, "")
 	if err != nil {
 		t.Fatal(err)
 	}

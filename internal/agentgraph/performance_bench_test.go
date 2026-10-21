@@ -38,7 +38,7 @@ func BenchmarkRuntimeToolDefinitionBudget(b *testing.B) {
 			definitions := registry.Definitions()
 			definitions = append(definitions, askUserDefinition())
 			if includeTeam {
-				definitions = append(definitions, teamDispatchDefinition(team, 4))
+				definitions = append(definitions, teamDispatchDefinition(team))
 			}
 			request := model.ModelRequest{Tools: definitions}
 			encoded, err := json.Marshal(definitions)
@@ -51,7 +51,7 @@ func BenchmarkRuntimeToolDefinitionBudget(b *testing.B) {
 				current := registry.Definitions()
 				current = append(current, askUserDefinition())
 				if includeTeam {
-					current = append(current, teamDispatchDefinition(team, 4))
+					current = append(current, teamDispatchDefinition(team))
 				}
 				_ = current
 			}

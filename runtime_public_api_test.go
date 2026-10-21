@@ -239,7 +239,8 @@ func TestHostPersonalInstructionsReachTaskRequests(t *testing.T) {
 	if len(provider.requests) != 1 {
 		t.Fatalf("model requests = %d, want one task request", len(provider.requests))
 	}
-	if !strings.Contains(provider.requests[0].Instructions, "Prefers concise answers.") {
+	encodedContext, _ := json.Marshal(provider.requests[0].Input)
+	if !strings.Contains(string(encodedContext), "Prefers concise answers.") {
 		t.Fatal("normal task request is missing host personal instructions")
 	}
 }

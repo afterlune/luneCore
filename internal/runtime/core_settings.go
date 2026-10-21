@@ -230,6 +230,7 @@ func (c *Core) resolveTaskSettings(settings SessionSettings) (taskSettings, erro
 
 func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 	return agentgraph.TaskOptions{
+		Conversation:  state.ConversationState(),
 		ExecutionID:   state.ExecutionID,
 		MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
 		Goal: state.Goal, PersonalInstructions: state.PersonalInstructions,

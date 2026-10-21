@@ -271,7 +271,7 @@ func (c *Core) SetSessionHistory(ctx context.Context, id string, history json.Ra
 	return c.sessions.UpdateHistory(ctx, id, c.workspace, history)
 }
 
-func (c *Core) setSessionConversation(ctx context.Context, id string, transcript, modelContext *model.ResponseInput, contextKey string) error {
+func (c *Core) setSessionConversation(ctx context.Context, id string, transcript, modelContext *model.ResponseInput, contextKey string, agentContext json.RawMessage) error {
 	if c == nil || ctx == nil || id == "" {
 		return errors.New("core, context, and session id are required")
 	}
@@ -296,5 +296,5 @@ func (c *Core) setSessionConversation(ctx context.Context, id string, transcript
 			contextKeyToSave = ""
 		}
 	}
-	return c.sessions.UpdateConversation(ctx, id, c.workspace, transcriptJSON, contextJSON, contextKeyToSave)
+	return c.sessions.UpdateConversation(ctx, id, c.workspace, transcriptJSON, contextJSON, contextKeyToSave, agentContext)
 }

@@ -2,6 +2,7 @@ package agentgraph
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"errors"
 	"math/rand/v2"
 	"time"
@@ -49,17 +50,24 @@ func (a *Agent) sendModel(ctx context.Context, state State, requester Requester,
 	if maxAttempts == 0 {
 		maxAttempts = 3
 	}
+	trace := model.RequestTraceFromContext(ctx)
+	if trace.ID == "" {
+		trace = traceRequest(state, request, state.ExecutionID+":aux:"+cryptorand.Text(), a.permissionMode(state))
+	}
 	streamStarted := false
 	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		trace.Attempt = attempt
+		attemptCtx := model.WithRequestTrace(ctx, trace)
+		a.options.Logger.InfoContext(ctx, "model request attempt", "session_run_id", state.RunID, "execution_id", state.ExecutionID, "agent_id", state.AgentID, "request_id", trace.ID, "attempt", attempt, "instructions_hash", trace.Instructions, "tools_hash", trace.Tools, "history_hash", trace.History, "local_changes", trace.Changes)
 		var response *model.ModelResponse
 		var err error
 		if streaming, ok := requester.(StreamingRequester); ok && emit != nil {
-			response, err = streaming.StreamResponse(ctx, request, func(event model.ModelStreamEvent) error { streamStarted = true; return emit(event) })
+			response, err = streaming.StreamResponse(attemptCtx, request, func(event model.ModelStreamEvent) error { streamStarted = true; return emit(event) })
 		} else {
-			response, err = requester.CreateResponse(ctx, request)
+			response, err = requester.CreateResponse(attemptCtx, request)
 		}
 		if err == nil && response != nil && response.Status == "failed" {
 			if response.Error != nil {

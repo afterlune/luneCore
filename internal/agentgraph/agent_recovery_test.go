@@ -60,7 +60,7 @@ func TestAgentGraphRecoversSelectedCategoryAfterSQLiteStoreReopen(t *testing.T) 
 	}
 	selectedCategoryPersisted := false
 	for _, invocation := range cp.Invocations {
-		if invocation.State.SelectedCategory == "files" {
+		if contains(invocation.State.SelectedCategories, "files") {
 			selectedCategoryPersisted = true
 		}
 	}

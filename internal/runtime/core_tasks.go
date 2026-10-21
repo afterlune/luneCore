@@ -243,7 +243,7 @@ func (c *Core) onUsage(usage model.ResponseUsage) {
 }
 
 func (c *Core) onAgentUsage(usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64) {
-	c.onAgentUsageForTask(c.State(), usage, agentID, profile, provider, modelID, estimatedInputTokens, "")
+	c.onAgentUsageForTask(c.State(), usage, agentID, profile, provider, modelID, estimatedInputTokens, "", model.RequestTrace{})
 }
 
 func (c *Core) onAgentUsageContext(ctx context.Context, usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64) {
@@ -252,10 +252,10 @@ func (c *Core) onAgentUsageContext(ctx context.Context, usage model.ResponseUsag
 	if !ok {
 		state = TaskState{SessionID: identity.SessionID, TaskID: identity.TaskID}
 	}
-	c.onAgentUsageForTask(state, usage, agentID, profile, provider, modelID, estimatedInputTokens, model.UsagePurposeFromContext(ctx))
+	c.onAgentUsageForTask(state, usage, agentID, profile, provider, modelID, estimatedInputTokens, model.UsagePurposeFromContext(ctx), model.RequestTraceFromContext(ctx))
 }
 
-func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64, purpose UsagePurpose) {
+func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, agentID, profile, provider, modelID string, estimatedInputTokens int64, purpose UsagePurpose, trace model.RequestTrace) {
 	totalTokens := usage.TotalTokens
 	if totalTokens <= 0 {
 		totalTokens = usage.InputTokens + usage.OutputTokens
@@ -273,11 +273,11 @@ func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, a
 		}
 	}
 	if state.SessionID != "" {
-		if err := c.recordUsageForAgent(context.Background(), state.SessionID, value, agentID, profile, provider, modelID, contextWindow, estimatedInputTokens, purpose); err != nil {
+		if err := c.recordUsageForAgent(model.WithRequestTrace(context.Background(), trace), state.SessionID, value, agentID, profile, provider, modelID, contextWindow, estimatedInputTokens, purpose); err != nil {
 			c.logger.Warn("persist token usage", "error", err)
 		}
 	}
-	c.emit(Event{Kind: EventUsage, SessionID: state.SessionID, TaskID: state.TaskID, ExecutionID: state.ExecutionID, Usage: value,
+	c.emit(Event{RequestID: trace.ID, RequestAttempt: trace.Attempt, RequestChanges: trace.Changes, Kind: EventUsage, SessionID: state.SessionID, TaskID: state.TaskID, ExecutionID: state.ExecutionID, Usage: value,
 		AgentID: agentID, UsagePurpose: purpose, ModelProfile: profile, Provider: provider, Model: modelID, ContextWindow: contextWindow,
 		EstimatedInputTokens: estimatedInputTokensIfMissing(value.InputTokens, estimatedInputTokens)})
 }

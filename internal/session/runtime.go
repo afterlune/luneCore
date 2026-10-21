@@ -278,11 +278,11 @@ func (s *Store) PauseQueuedTurnWithReason(ctx context.Context, sessionID, queueI
 
 // CompleteQueuedTurn atomically saves conversation state, the durable result,
 // the terminal event, and queue removal.
-func (s *Store) CompleteQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, response, history, modelContext json.RawMessage, contextKey string, event json.RawMessage) (int64, error) {
+func (s *Store) CompleteQueuedTurn(ctx context.Context, sessionID, queueID, executionID, status string, response, history, modelContext json.RawMessage, contextKey string, event json.RawMessage, agentContext json.RawMessage) (int64, error) {
 	if s == nil || s.db == nil || sessionID == "" || queueID == "" || executionID == "" || status == "" || !json.Valid(event) {
 		return 0, errors.New("session store, turn identity, status, and valid event JSON are required")
 	}
-	if len(response) > 0 && !json.Valid(response) || len(history) > 0 && !json.Valid(history) || len(modelContext) > 0 && !json.Valid(modelContext) {
+	if len(response) > 0 && !json.Valid(response) || len(history) > 0 && !json.Valid(history) || len(modelContext) > 0 && !json.Valid(modelContext) || len(agentContext) > 0 && !json.Valid(agentContext) {
 		return 0, errors.New("turn response and conversation must be valid JSON")
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -291,6 +291,9 @@ func (s *Store) CompleteQueuedTurn(ctx context.Context, sessionID, queueID, exec
 	}
 	defer tx.Rollback()
 	if len(history) > 0 {
+		if len(agentContext) == 0 {
+			agentContext = json.RawMessage("null")
+		}
 		if len(modelContext) == 0 {
 			modelContext = json.RawMessage("null")
 		}
@@ -303,8 +306,8 @@ func (s *Store) CompleteQueuedTurn(ctx context.Context, sessionID, queueID, exec
 				json_set(
 					json_set(CAST(data AS TEXT), '$.history', json(?)),
 					'$.model_context', json(?)),
-				'$.model_context_key', ?) AS BLOB), updated_at = ?
-			WHERE id = ?`, string(history), string(modelContext), contextKey, time.Now().UnixNano(), sessionID)
+				'$.model_context_key', ?, '$.agent_context', json(?)) AS BLOB), updated_at = ?
+			WHERE id = ?`, string(history), string(modelContext), contextKey, string(agentContext), time.Now().UnixNano(), sessionID)
 		if err != nil {
 			return 0, fmt.Errorf("persist completed conversation for session %q: %w", sessionID, err)
 		}

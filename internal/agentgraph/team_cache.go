@@ -21,10 +21,7 @@ func requestPromptCacheHint(state State, request model.ModelRequest, visibleTool
 			return hint
 		}
 	}
-	if contains(visibleTools, teamDispatchToolName) {
-		return agentPromptCacheHint(state, request, prefixItems)
-	}
-	return nil
+	return agentPromptCacheHint(state, request, prefixItems)
 }
 
 func teamForkCacheHint(state State, request model.ModelRequest) *model.PromptCacheHint {
@@ -44,11 +41,11 @@ func teamForkCacheHint(state State, request model.ModelRequest) *model.PromptCac
 }
 
 func agentPromptCacheHint(state State, request model.ModelRequest, prefixItems int) *model.PromptCacheHint {
-	if state.RunID == "" || state.ExecutionID == "" || state.AgentID == "" || state.Provider == "" || request.Model == "" {
+	if state.RunID == "" || state.AgentID == "" || state.Provider == "" || request.Model == "" {
 		return nil
 	}
 	return &model.PromptCacheHint{
-		Key:         cacheKey("agent", state.RunID, state.ExecutionID, state.AgentID, state.Provider, request.Model),
+		Key:         cacheKey("agent", state.RunID, state.AgentID, state.Provider, state.Protocol, request.Model),
 		PrefixItems: prefixItems,
 	}
 }

@@ -58,7 +58,7 @@ func TestSessionConversationPersistsProviderContextAndClearsItOnHistoryEdit(t *t
 	}
 	transcript := model.NewResponseInputItems(model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("hello")})
 	modelContext := model.NewResponseInputItems(model.UnknownInputItem{Raw: json.RawMessage(`{"type":"compaction","id":"cmp-1","encrypted_content":"opaque"}`)})
-	if err := client.setSessionConversation(context.Background(), saved.ID, transcript, modelContext, "responses:openai:gpt-test"); err != nil {
+	if err := client.setSessionConversation(context.Background(), saved.ID, transcript, modelContext, "responses:openai:gpt-test", nil); err != nil {
 		t.Fatalf("setSessionConversation: %v", err)
 	}
 	loaded, err := client.GetSession(context.Background(), saved.ID)
@@ -97,7 +97,7 @@ func TestSessionConversationDoesNotDuplicateUncompactedContext(t *testing.T) {
 			model.InputImage{ImageURL: "data:image/png;base64," + strings.Repeat("a", 64)},
 		)},
 	)
-	if err := client.setSessionConversation(context.Background(), saved.ID, conversation, conversation, "same-context-key"); err != nil {
+	if err := client.setSessionConversation(context.Background(), saved.ID, conversation, conversation, "same-context-key", nil); err != nil {
 		t.Fatalf("setSessionConversation: %v", err)
 	}
 	loaded, err := client.GetSession(context.Background(), saved.ID)

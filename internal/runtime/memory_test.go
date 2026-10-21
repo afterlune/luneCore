@@ -231,7 +231,7 @@ func TestTaskExtractsAndSharesWorkspaceMemory(t *testing.T) {
 	provider.mu.Lock()
 	requests := append([]publicmodel.ModelRequest(nil), provider.seenRequests...)
 	provider.mu.Unlock()
-	if len(requests) != 4 || !strings.Contains(requests[2].Instructions, "Prefers concise Chinese answers.") {
+	if len(requests) != 4 || !strings.Contains(requestHostText(requests[2]), "Prefers concise Chinese answers.") {
 		t.Fatalf("second session did not receive workspace memory; request count=%d", len(requests))
 	}
 	for _, definition := range requests[1].Tools {

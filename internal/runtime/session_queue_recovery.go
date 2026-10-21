@@ -213,9 +213,10 @@ func (c *Core) completeQueuedTurnFromCheckpoint(ctx context.Context, queued sess
 		return false, nil, nil
 	}
 	status := TaskFailed
-	var response, history, modelContext json.RawMessage
+	var response, history, modelContext, agentContext json.RawMessage
 	contextKey := ""
 	if state != nil {
+		agentContext, _ = json.Marshal(state.ConversationState())
 		transcript := state.Transcript
 		if transcript.Items == nil && transcript.Text == nil {
 			transcript = state.History
@@ -256,7 +257,7 @@ func (c *Core) completeQueuedTurnFromCheckpoint(ctx context.Context, queued sess
 	if status != TaskCompleted {
 		response = nil
 	}
-	if err := c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey); err != nil {
+	if err := c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey, agentContext); err != nil {
 		return true, nil, err
 	}
 	return true, response, nil

@@ -3,6 +3,7 @@ package agentgraph
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/afterlune/luneCore/internal/model"
 	graph "github.com/afterlune/luneGraph"
@@ -73,7 +74,7 @@ func (a *Agent) mergeTeam(ctx context.Context, _ graph.CallInfo, parent State, b
 		return State{}, errors.New("team join lost its originating tool call")
 	}
 	call := parent.PendingCalls[parent.PendingIndex]
-	output := model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(formatTeamResults(results))}
+	output := model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(fmt.Sprintf("%s\nDelegation remaining for this agent: %d; maximum depth: %d.", formatTeamResults(results), parent.Execution.MaxTeamChildrenPerAgent-parent.TeamChildrenCreated, parent.Execution.MaxTeamDepth))}
 	parent = appendToolOutput(parent, output)
 	parent.TeamAssignments, parent.TeamDispatchID = nil, ""
 	parent.TeamBranchModes = nil

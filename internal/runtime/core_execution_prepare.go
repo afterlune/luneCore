@@ -117,6 +117,11 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 			NoInteractiveDecisions: request.noInteractiveDecisions,
 		}
 	}
+	if !request.resume && len(saved.AgentContext) > 0 {
+		if err := json.Unmarshal(saved.AgentContext, &taskOptions.Conversation); err != nil {
+			return taskRunSetup{}, fmt.Errorf("decode agent context: %w", err)
+		}
+	}
 	if request.resume {
 		if taskOptions.ExecutionID == "" {
 			return taskRunSetup{}, errors.New("paused task checkpoint is missing its execution identity; discard it and start a new task")

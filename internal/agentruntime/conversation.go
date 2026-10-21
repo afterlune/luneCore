@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/model"
 )
 
@@ -26,7 +27,7 @@ func (r *Responder) Compact(ctx context.Context) (int, error) {
 	items := responseHistoryItems(history)
 	userStarts := make([]int, 0, len(items))
 	for index, item := range items {
-		if message, ok := item.(model.InputMessage); ok && message.Role == model.RoleUser {
+		if message, ok := item.(model.InputMessage); ok && message.Role == model.RoleUser && !agentgraph.IsHostContextMessage(message) {
 			userStarts = append(userStarts, index)
 		}
 	}
