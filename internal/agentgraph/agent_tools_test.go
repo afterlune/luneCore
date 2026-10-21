@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -191,6 +193,113 @@ func TestAgentGraphResumesBetweenModelAndToolSteps(t *testing.T) {
 	for _, preserved := range []string{"input_audio", "opaque-audio-payload", "file contents"} {
 		if !strings.Contains(string(encodedHistory), preserved) {
 			t.Errorf("recovered history lost %q: %s", preserved, encodedHistory)
+		}
+	}
+}
+
+func TestDefaultCommonToolsAreVisibleOnFirstRequest(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewDefaultRegistry(workspace)
+	if err != nil {
+		t.Fatalf("NewDefaultRegistry: %v", err)
+	}
+	defer registry.Close()
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"read_1","name":"read_file","arguments":"{\"path\":\"main.go\",\"start_line\":1,\"limit\":10}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
+	}}
+	agent, err := NewWithOptions(requester, registry, AgentOptions{
+		ToolVisibleForMode: registry.ToolVisibleForMode,
+		ToolReadOnly: func(name string) bool {
+			metadata, ok := registry.ToolMetadata(name)
+			return ok && metadata.ReadOnly
+		},
+		CurrentPermissionMode: func() string { return string(registry.PermissionMode()) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("read main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "common-tool-first-turn", nil, input, TaskOptions{}, store, graph.Options{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("result = %#v, want a completed task", result)
+	}
+	if len(requester.requests) != 2 {
+		t.Fatalf("model requests = %d, want one direct read request and one final response", len(requester.requests))
+	}
+	firstNames := toolNames(requester.requests[0].Tools)
+	for _, name := range []string{"read_file", "list_dir", "glob", "grep", "write_file", "edit_file", "command", model.CategorySelectorName} {
+		if !contains(firstNames, name) {
+			t.Errorf("first request tools %v missing %q", firstNames, name)
+		}
+	}
+	for _, name := range []string{"web_search", "web_fetch"} {
+		if contains(firstNames, name) {
+			t.Errorf("first request exposed deferred tool %q: %v", name, firstNames)
+		}
+	}
+	selector := requester.requests[0].Tools[len(requester.requests[0].Tools)-1].(model.FunctionTool)
+	if !strings.Contains(string(selector.Parameters), `"enum":["web"]`) {
+		t.Errorf("selector should only list the deferred web category: %s", selector.Parameters)
+	}
+}
+
+func TestAlwaysVisibleToolsRemainPermissionAndPlanFiltered(t *testing.T) {
+	registry, err := tool.NewDefaultRegistry(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewDefaultRegistry: %v", err)
+	}
+	defer registry.Close()
+	agent, err := NewWithOptions(&scriptedRequester{}, registry, AgentOptions{
+		ToolVisibleForMode: registry.ToolVisibleForMode,
+		ToolReadOnly: func(name string) bool {
+			metadata, ok := registry.ToolMetadata(name)
+			return ok && metadata.ReadOnly
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []string{string(tool.PermissionModeReadOnly), string(tool.PermissionModeWorkspace)} {
+		definitions, _, err := agent.visibleTools(State{AgentID: "lead"}, mode)
+		if err != nil {
+			t.Fatalf("visibleTools(%q): %v", mode, err)
+		}
+		visible := toolNames(definitions)
+		for _, name := range []string{"read_file", "list_dir", "glob", "grep"} {
+			if !contains(visible, name) {
+				t.Errorf("mode %q omitted common read tool %q: %v", mode, name, visible)
+			}
+		}
+		if mode == string(tool.PermissionModeReadOnly) {
+			for _, name := range []string{"write_file", "edit_file", "command"} {
+				if contains(visible, name) {
+					t.Errorf("read-only mode exposed %q: %v", name, visible)
+				}
+			}
+		}
+	}
+	planTools, _, err := agent.visibleTools(State{AgentID: "lead", PlanMode: true}, string(tool.PermissionModeWorkspace))
+	if err != nil {
+		t.Fatalf("visibleTools in Plan mode: %v", err)
+	}
+	planVisible := toolNames(planTools)
+	for _, name := range []string{"write_file", "edit_file", "command"} {
+		if contains(planVisible, name) {
+			t.Errorf("Plan mode exposed mutating tool %q: %v", name, planVisible)
 		}
 	}
 }

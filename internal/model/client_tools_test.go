@@ -168,6 +168,157 @@ func TestRespondRevealsCategoriesAndValidatesVisibleTools(t *testing.T) {
 	}
 }
 
+func TestRespondRunsAlwaysVisibleToolWithoutCategoryRoundTrip(t *testing.T) {
+	executor := newCategorizedTestExecutor()
+	executor.testToolExecutor.alwaysVisible = map[string]bool{"read_file": true}
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var request ResponseRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got, want := strings.Join(responseToolNameList(request.Tools), ","), "read_file,"+CategorySelectorName; got != want {
+			t.Errorf("request %d tools = %q, want %q", requestCount, got, want)
+		}
+		switch requestCount {
+		case 1:
+			_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"function_call","call_id":"read_1","name":"read_file","arguments":"{}"}]}`)
+		case 2:
+			_, _ = fmt.Fprint(w, `{"id":"resp_2","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
+		default:
+			t.Errorf("unexpected request %d", requestCount)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	client := newClient("test-key", server.URL, server.Client(), executor)
+	input, err := NewResponseInput("read a file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Respond(context.Background(), input); err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if requestCount != 2 || len(executor.calls) != 1 || executor.calls[0].Name != "read_file" {
+		t.Fatalf("requests=%d calls=%#v, want one direct read and a final response", requestCount, executor.calls)
+	}
+}
+
+func TestRespondKeepsAlwaysVisibleToolsWhenADeferredCategoryIsSelected(t *testing.T) {
+	executor := newCategorizedTestExecutor()
+	executor.testToolExecutor.alwaysVisible = map[string]bool{"read_file": true}
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var request ResponseRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		got := responseToolNameList(request.Tools)
+		switch requestCount {
+		case 1:
+			if strings.Join(got, ",") != "read_file,"+CategorySelectorName {
+				t.Errorf("initial tools = %v, want common read_file and selector", got)
+			}
+			selector := request.Tools[1].(FunctionTool)
+			if strings.Contains(string(selector.Parameters), `"files"`) {
+				t.Errorf("selector includes an all-resident category: %s", selector.Parameters)
+			}
+			_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"function_call","call_id":"select_web","name":"select_tool_category","arguments":"{\"category\":\"web\"}"}]}`)
+		case 2:
+			if strings.Join(got, ",") != "read_file,"+CategorySelectorName+",web_search" {
+				t.Errorf("web tools = %v, want common read_file, selector, and web_search", got)
+			}
+			_, _ = fmt.Fprint(w, `{"id":"resp_2","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
+		default:
+			t.Errorf("unexpected request %d", requestCount)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	client := newClient("test-key", server.URL, server.Client(), executor)
+	input, err := NewResponseInput("search the web")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Respond(context.Background(), input); err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if requestCount != 2 {
+		t.Fatalf("requests = %d, want category selection then final response", requestCount)
+	}
+}
+
+func TestRespondOmitsSelectorWhenEveryToolIsAlwaysVisible(t *testing.T) {
+	executor := newCategorizedTestExecutor()
+	executor.testToolExecutor.alwaysVisible = map[string]bool{"read_file": true, "command": true, "web_search": true}
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var request ResponseRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got, want := strings.Join(responseToolNameList(request.Tools), ","), "read_file,command,web_search"; got != want {
+			t.Errorf("tools = %q, want %q", got, want)
+		}
+		_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
+	}))
+	defer server.Close()
+	client := newClient("test-key", server.URL, server.Client(), executor)
+	input, err := NewResponseInput("hello")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Respond(context.Background(), input); err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if requestCount != 1 {
+		t.Fatalf("requests = %d, want one request without a selector", requestCount)
+	}
+}
+
+func TestRespondFiltersAlwaysVisibleToolsThroughExecutorPermissions(t *testing.T) {
+	executor := &visibleCategorizedTestExecutor{
+		categorizedTestExecutor: newCategorizedTestExecutor(),
+		visible:                 map[string]bool{"read_file": true},
+	}
+	executor.testToolExecutor.alwaysVisible = map[string]bool{"read_file": true, "command": true}
+	requestCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestCount++
+		var request ResponseRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode request: %v", err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if got, want := strings.Join(responseToolNameList(request.Tools), ","), "read_file"; got != want {
+			t.Errorf("permission-filtered tools = %q, want %q", got, want)
+		}
+		_, _ = fmt.Fprint(w, `{"id":"resp_1","object":"response","status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`)
+	}))
+	defer server.Close()
+	client := newClient("test-key", server.URL, server.Client(), executor)
+	input, err := NewResponseInput("read a file")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.Respond(context.Background(), input); err != nil {
+		t.Fatalf("Respond: %v", err)
+	}
+	if requestCount != 1 {
+		t.Fatalf("requests = %d, want one request without denied tools or selector", requestCount)
+	}
+}
+
 func TestRespondMakesHiddenCategoryToolActionableAndLogsMismatch(t *testing.T) {
 	logs := captureLogs(t)
 	executor := newCategorizedTestExecutor()
@@ -452,6 +603,15 @@ type categorizedTestExecutor struct {
 	*testToolExecutor
 	categories []ToolCategory
 	byCategory map[string][]ResponseTool
+}
+
+type visibleCategorizedTestExecutor struct {
+	*categorizedTestExecutor
+	visible map[string]bool
+}
+
+func (e *visibleCategorizedTestExecutor) ToolVisible(name string) bool {
+	return e.visible[name]
 }
 
 func (e *categorizedTestExecutor) Categories() []ToolCategory {

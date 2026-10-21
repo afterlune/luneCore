@@ -77,7 +77,7 @@ func HostToolRegistrations(registrations []publictool.Registration) ([]ToolRegis
 			Tool: publicToolAdapter{inner: registration.Tool},
 			Metadata: model.ToolMetadata{
 				Category: category, PermissionClass: model.ToolPermissionClass(registration.Metadata.PermissionClass),
-				ReadOnly: registration.Metadata.ReadOnly,
+				ReadOnly: registration.Metadata.ReadOnly, AlwaysVisible: registration.Metadata.AlwaysVisible,
 			},
 		})
 	}

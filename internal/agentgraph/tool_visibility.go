@@ -29,19 +29,19 @@ func (a *Agent) visibleTools(state State, permissionMode string) ([]model.Respon
 		return definitions, toolNames(definitions), nil
 	}
 	categories := a.visibleCategories(state, permissionMode, state.PlanMode)
-	if len(categories) == 0 {
-		definitions := addRuntimeTools(nil)
-		return definitions, toolNames(definitions), nil
+	definitions := a.visibleDefinitions(model.AlwaysVisibleDefinitions(a.tools), permissionMode, state.PlanMode)
+	if len(categories) > 0 {
+		selector, err := model.CategorySelectorDefinition(categories)
+		if err != nil {
+			return nil, nil, fmt.Errorf("build category selector: %w", err)
+		}
+		definitions = append(definitions, selector)
 	}
-	selector, err := model.CategorySelectorDefinition(categories)
-	if err != nil {
-		return nil, nil, fmt.Errorf("build category selector: %w", err)
-	}
-	definitions := []model.ResponseTool{selector}
 	selectedCategories := state.SelectedCategories
 	for _, cat := range categories {
 		if contains(selectedCategories, cat.Name) {
-			definitions = append(definitions, a.visibleDefinitions(a.categorized.DefinitionsForCategory(cat.Name), permissionMode, state.PlanMode)...)
+			deferred := model.DeferredDefinitions(a.tools, a.categorized.DefinitionsForCategory(cat.Name))
+			definitions = append(definitions, a.visibleDefinitions(deferred, permissionMode, state.PlanMode)...)
 		}
 	}
 	definitions = addRuntimeTools(definitions)
@@ -51,7 +51,8 @@ func (a *Agent) visibleTools(state State, permissionMode string) ([]model.Respon
 func (a *Agent) visibleCategories(state State, permissionMode string, planMode bool) []model.ToolCategory {
 	var categories []model.ToolCategory
 	for _, category := range a.categories {
-		defs := a.visibleDefinitions(a.categorized.DefinitionsForCategory(category.Name), permissionMode, planMode)
+		deferred := model.DeferredDefinitions(a.tools, a.categorized.DefinitionsForCategory(category.Name))
+		defs := a.visibleDefinitions(deferred, permissionMode, planMode)
 		if len(defs) == 0 {
 			continue
 		}

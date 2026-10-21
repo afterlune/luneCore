@@ -129,7 +129,7 @@ func TestGraphResponderCarriesHistoryBetweenCompletedTasks(t *testing.T) {
 	}
 	defer registry.Close()
 	requester := &graphScriptedRequester{responses: []*model.Response{
-		graphResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"select_files","name":"select_tool_category","arguments":"{\"category\":\"files\"}"}]}`),
+		graphResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"select_web","name":"select_tool_category","arguments":"{\"category\":\"web\"}"}]}`),
 		graphResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"first answer"}]}]}`),
 		graphResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second answer"}]}]}`),
 	}}
@@ -180,16 +180,26 @@ func TestGraphResponderCarriesHistoryBetweenCompletedTasks(t *testing.T) {
 		return names
 	}
 	initialTools := toolNames(requester.requests[0])
-	if len(initialTools) != 1 || !initialTools[model.CategorySelectorName] {
-		t.Fatalf("first task initial tools = %#v, want only category selector", initialTools)
+	for _, name := range []string{"read_file", "list_dir", "glob", "grep", "write_file", "edit_file", "command", model.CategorySelectorName} {
+		if !initialTools[name] {
+			t.Errorf("first task initial tools = %#v, missing %q", initialTools, name)
+		}
+	}
+	if initialTools["web_search"] || initialTools["web_fetch"] {
+		t.Fatalf("first task exposed deferred web tools: %#v", initialTools)
 	}
 	selectedTools := toolNames(requester.requests[1])
-	if !selectedTools["read_file"] {
-		t.Fatalf("files category did not expose read_file: %#v", selectedTools)
+	if !selectedTools["read_file"] || !selectedTools["web_search"] || !selectedTools["web_fetch"] {
+		t.Fatalf("web category did not preserve common tools and expose web tools: %#v", selectedTools)
 	}
 	newTaskTools := toolNames(requester.requests[2])
-	if len(newTaskTools) != 1 || !newTaskTools[model.CategorySelectorName] {
-		t.Fatalf("second task initial tools = %#v, want only category selector", newTaskTools)
+	for _, name := range []string{"read_file", "list_dir", "glob", "grep", "write_file", "edit_file", "command", model.CategorySelectorName} {
+		if !newTaskTools[name] {
+			t.Errorf("second task initial tools = %#v, missing %q", newTaskTools, name)
+		}
+	}
+	if newTaskTools["web_search"] || newTaskTools["web_fetch"] {
+		t.Fatalf("second task inherited deferred category selection: %#v", newTaskTools)
 	}
 	encoded, err := json.Marshal(requester.requests[2].Input)
 	if err != nil {

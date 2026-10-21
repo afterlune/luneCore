@@ -25,11 +25,15 @@ type Category struct {
 	Description string
 }
 
-// Metadata classifies a tool for permission modes and plan-mode filtering.
+// Metadata classifies a tool for permission modes, plan-mode filtering, and
+// whether it is exposed before category discovery.
 type Metadata struct {
 	Category        Category
 	PermissionClass PermissionClass
 	ReadOnly        bool
+	// AlwaysVisible exposes the tool alongside the category selector. Permission
+	// and Plan mode checks still determine whether it is available.
+	AlwaysVisible bool
 }
 
 func (m Metadata) Valid() bool {

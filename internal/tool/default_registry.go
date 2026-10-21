@@ -20,9 +20,9 @@ func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry
 	filesCategory := model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}
 	commandCategory := model.ToolCategory{Name: "command", Description: "Run workspace commands."}
 	webCategory := model.ToolCategory{Name: "web", Description: "Search the web and fetch pages."}
-	workspaceRead := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true}
-	workspaceWrite := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceWrite}
-	command := model.ToolMetadata{Category: commandCategory, PermissionClass: model.ToolPermissionCommand}
+	workspaceRead := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true, AlwaysVisible: true}
+	workspaceWrite := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceWrite, AlwaysVisible: true}
+	command := model.ToolMetadata{Category: commandCategory, PermissionClass: model.ToolPermissionCommand, AlwaysVisible: true}
 	network := model.ToolMetadata{Category: webCategory, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true}
 	registry, err := newRegistry(registryOptions.Logger,
 		ToolRegistration{Tool: ListDirTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},

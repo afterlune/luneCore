@@ -48,11 +48,15 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 
 	categorized, isCategorized := c.tools.(CategorizedToolExecutor)
 	var categories []ToolCategory
+	var alwaysVisibleTools []ResponseTool
 	if isCategorized {
 		categories = categorized.Categories()
-	}
-	if len(categories) == 0 {
-		isCategorized = false
+		if len(categories) == 0 {
+			isCategorized = false
+		} else {
+			alwaysVisibleTools = PermissionVisibleDefinitions(c.tools, AlwaysVisibleDefinitions(c.tools))
+			categories = deferredCategories(c.tools, categorized, categories)
+		}
 	}
 	selectedCategory := ""
 	providerName := c.provider.Name()
@@ -71,13 +75,17 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 		)
 		var visibleTools []ResponseTool
 		if isCategorized {
-			selector, err := CategorySelectorDefinition(categories)
-			if err != nil {
-				return nil, fmt.Errorf("build category selector: %w", err)
+			visibleTools = append(visibleTools, alwaysVisibleTools...)
+			if len(categories) > 0 {
+				selector, err := CategorySelectorDefinition(categories)
+				if err != nil {
+					return nil, fmt.Errorf("build category selector: %w", err)
+				}
+				visibleTools = append(visibleTools, selector)
 			}
-			visibleTools = []ResponseTool{selector}
 			if selectedCategory != "" {
-				visibleTools = append(visibleTools, categorized.DefinitionsForCategory(selectedCategory)...)
+				deferred := DeferredDefinitions(c.tools, categorized.DefinitionsForCategory(selectedCategory))
+				visibleTools = append(visibleTools, PermissionVisibleDefinitions(c.tools, deferred)...)
 			}
 		} else {
 			visibleTools = c.tools.Definitions()
@@ -199,6 +207,17 @@ func (c *Client) RespondWithOptions(ctx context.Context, input *ResponseInput, o
 		}
 		toolRounds++
 	}
+}
+
+func deferredCategories(executor ToolExecutor, categorized CategorizedToolExecutor, categories []ToolCategory) []ToolCategory {
+	deferred := make([]ToolCategory, 0, len(categories))
+	for _, category := range categories {
+		definitions := DeferredDefinitions(executor, categorized.DefinitionsForCategory(category.Name))
+		if len(PermissionVisibleDefinitions(executor, definitions)) > 0 {
+			deferred = append(deferred, category)
+		}
+	}
+	return deferred
 }
 
 func appendSkippedToolCalls(history *[]InputItem, calls []OutputFunctionCall, reason string) {

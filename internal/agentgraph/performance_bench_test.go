@@ -11,6 +11,8 @@ import (
 	graph "github.com/afterlune/luneGraph"
 )
 
+var benchmarkToolSchema []byte
+
 func BenchmarkAgentConstruction(b *testing.B) {
 	requester := benchmarkRequester{}
 	tools, err := tool.NewRegistry()
@@ -62,6 +64,75 @@ func BenchmarkRuntimeToolDefinitionBudget(b *testing.B) {
 	}
 	bench("clarification", false)
 	bench("team", true)
+}
+
+func BenchmarkRuntimeToolExposureBudget(b *testing.B) {
+	registry, err := tool.NewDefaultRegistry(b.TempDir())
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer registry.Close()
+	agent, err := NewWithOptions(benchmarkRequester{}, registry, AgentOptions{
+		ToolVisibleForMode: registry.ToolVisibleForMode,
+		ToolReadOnly: func(name string) bool {
+			metadata, ok := registry.ToolMetadata(name)
+			return ok && metadata.ReadOnly
+		},
+	})
+	if err != nil {
+		b.Fatal(err)
+	}
+	legacySelector, err := model.CategorySelectorDefinition(registry.Categories())
+	if err != nil {
+		b.Fatal(err)
+	}
+	legacyFiles := append([]model.ResponseTool{legacySelector}, registry.DefinitionsForCategory("files")...)
+	legacyWeb := append([]model.ResponseTool{legacySelector}, registry.DefinitionsForCategory("web")...)
+	for _, benchmark := range []struct {
+		name        string
+		state       State
+		definitions []model.ResponseTool
+		current     bool
+	}{
+		{name: "previous_selector_only", definitions: []model.ResponseTool{legacySelector}},
+		{name: "previous_files_selected", definitions: legacyFiles},
+		{name: "common_initial", state: State{AgentID: "lead"}, current: true},
+		{name: "previous_web_selected", definitions: legacyWeb},
+		{name: "common_plus_web", state: State{AgentID: "lead", SelectedCategories: []string{"web"}}, current: true},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			definitions := benchmark.definitions
+			if benchmark.current {
+				definitions, _, err = agent.visibleTools(benchmark.state, string(tool.PermissionModeWorkspace))
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+			request := model.ModelRequest{Tools: definitions}
+			encoded, err := json.Marshal(definitions)
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for range b.N {
+				current := definitions
+				if benchmark.current {
+					current, _, err = agent.visibleTools(benchmark.state, string(tool.PermissionModeWorkspace))
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+				benchmarkToolSchema, err = json.Marshal(current)
+				if err != nil {
+					b.Fatal(err)
+				}
+			}
+			b.StopTimer()
+			b.ReportMetric(float64(model.EstimateInputTokens(request)), "tokens/request")
+			b.ReportMetric(float64(len(encoded)), "schema-bytes")
+		})
+	}
 }
 
 func BenchmarkStateClone(b *testing.B) {

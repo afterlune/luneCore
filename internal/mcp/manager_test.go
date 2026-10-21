@@ -136,8 +136,8 @@ func TestHTTPManagerRegistersToolsAndPreservesMCPResults(t *testing.T) {
 		t.Fatalf("registered definition = %#v", definitions[0])
 	}
 	metadata, ok := registry.ToolMetadata(definition.Name)
-	if !ok || !metadata.ReadOnly || metadata.PermissionClass != model.ToolPermissionNetwork {
-		t.Fatalf("MCP metadata = %#v, %v", metadata, ok)
+	if !ok || !metadata.ReadOnly || metadata.PermissionClass != model.ToolPermissionNetwork || metadata.AlwaysVisible {
+		t.Fatalf("MCP metadata = %#v, %v; MCP tools should remain deferred by default", metadata, ok)
 	}
 	output := registry.ExecuteCall(context.Background(), model.OutputFunctionCall{
 		CallID: "call-1", Name: definition.Name, Arguments: `{"tenant":"中国"}`,

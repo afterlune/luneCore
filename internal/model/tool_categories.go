@@ -34,12 +34,52 @@ const (
 )
 
 // ToolMetadata keeps discovery, side-effect, and permission hints next to the
-// tool registration that owns them. An empty permission class is treated as
-// unclassified and must fail closed where the active mode requires it.
+// tool registration that owns them. AlwaysVisible controls initial exposure,
+// not authorization. An empty permission class is treated as unclassified and
+// must fail closed where the active mode requires it.
 type ToolMetadata struct {
 	Category        ToolCategory
 	PermissionClass ToolPermissionClass
 	ReadOnly        bool // Side-effect hint; permission decisions use PermissionClass.
+	AlwaysVisible   bool
+}
+
+// ToolAlwaysVisible reports whether a registered function is exposed before
+// category discovery. Permission checks remain the executor's responsibility.
+func ToolAlwaysVisible(executor ToolExecutor, definition ResponseTool) bool {
+	function, ok := definition.(FunctionTool)
+	if !ok || executor == nil {
+		return false
+	}
+	metadata, exists := executor.ToolMetadata(function.Name)
+	return exists && metadata.AlwaysVisible
+}
+
+// AlwaysVisibleDefinitions returns registered tools that bypass category
+// discovery while preserving their registered order.
+func AlwaysVisibleDefinitions(executor ToolExecutor) []ResponseTool {
+	if executor == nil {
+		return nil
+	}
+	definitions := executor.Definitions()
+	visible := make([]ResponseTool, 0, len(definitions))
+	for _, definition := range definitions {
+		if ToolAlwaysVisible(executor, definition) {
+			visible = append(visible, definition)
+		}
+	}
+	return visible
+}
+
+// DeferredDefinitions filters out tools exposed before category discovery.
+func DeferredDefinitions(executor ToolExecutor, definitions []ResponseTool) []ResponseTool {
+	deferred := make([]ResponseTool, 0, len(definitions))
+	for _, definition := range definitions {
+		if !ToolAlwaysVisible(executor, definition) {
+			deferred = append(deferred, definition)
+		}
+	}
+	return deferred
 }
 
 // Valid reports whether the class is recognized by the permission system.
@@ -58,6 +98,29 @@ type CategorizedToolExecutor interface {
 	ToolExecutor
 	Categories() []ToolCategory
 	DefinitionsForCategory(string) []ResponseTool
+}
+
+// ToolVisibilityExecutor optionally lets an executor filter model-visible
+// definitions using its active permission mode.
+type ToolVisibilityExecutor interface {
+	ToolVisible(string) bool
+}
+
+// PermissionVisibleDefinitions applies an executor's active permission-mode
+// visibility policy when it provides one.
+func PermissionVisibleDefinitions(executor ToolExecutor, definitions []ResponseTool) []ResponseTool {
+	visibility, ok := executor.(ToolVisibilityExecutor)
+	if !ok {
+		return definitions
+	}
+	visible := make([]ResponseTool, 0, len(definitions))
+	for _, definition := range definitions {
+		function, ok := definition.(FunctionTool)
+		if !ok || visibility.ToolVisible(function.Name) {
+			visible = append(visible, definition)
+		}
+	}
+	return visible
 }
 
 const (

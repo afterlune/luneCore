@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 type loggingTestTool struct{}
@@ -138,15 +139,15 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 		t.Fatalf("default registry mode = %q, want workspace", mode)
 	}
 	want := map[string]model.ToolMetadata{
-		"command":    {Category: model.ToolCategory{Name: "command", Description: "Run workspace commands."}, PermissionClass: model.ToolPermissionCommand},
-		"read_file":  {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
-		"write_file": {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite},
-		"edit_file":  {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite},
+		"command":    {Category: model.ToolCategory{Name: "command", Description: "Run workspace commands."}, PermissionClass: model.ToolPermissionCommand, AlwaysVisible: true},
+		"read_file":  {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true, AlwaysVisible: true},
+		"write_file": {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite, AlwaysVisible: true},
+		"edit_file":  {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceWrite, AlwaysVisible: true},
 		"web_search": {Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch pages."}, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
 		"web_fetch":  {Category: model.ToolCategory{Name: "web", Description: "Search the web and fetch pages."}, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true},
-		"list_dir":   {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
-		"glob":       {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
-		"grep":       {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true},
+		"list_dir":   {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true, AlwaysVisible: true},
+		"glob":       {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true, AlwaysVisible: true},
+		"grep":       {Category: model.ToolCategory{Name: "files", Description: "Read, search, and modify workspace files."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true, AlwaysVisible: true},
 	}
 	for _, definition := range registry.Definitions() {
 		function, ok := definition.(model.FunctionTool)
@@ -171,6 +172,45 @@ func TestDefaultRegistryIncludesEveryBuiltInTool(t *testing.T) {
 	for name := range want {
 		t.Errorf("default registry is missing %q", name)
 	}
+}
+
+func TestHostToolRegistrationsPreserveAlwaysVisibleMetadata(t *testing.T) {
+	registrations, err := HostToolRegistrations([]publictool.Registration{
+		{
+			Tool: publicRegistrationTestTool{name: "host_eager"},
+			Metadata: publictool.Metadata{
+				Category:        publictool.Category{Name: "host", Description: "Host tools."},
+				PermissionClass: publictool.PermissionWorkspaceRead,
+				ReadOnly:        true, AlwaysVisible: true,
+			},
+		},
+		{
+			Tool: publicRegistrationTestTool{name: "host_deferred"},
+			Metadata: publictool.Metadata{
+				Category:        publictool.Category{Name: "host", Description: "Host tools."},
+				PermissionClass: publictool.PermissionWorkspaceRead,
+				ReadOnly:        true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("HostToolRegistrations: %v", err)
+	}
+	if len(registrations) != 2 || !registrations[0].Metadata.AlwaysVisible || registrations[1].Metadata.AlwaysVisible {
+		t.Fatalf("converted metadata = %#v, want eager then deferred", registrations)
+	}
+}
+
+type publicRegistrationTestTool struct{ name string }
+
+func (tool publicRegistrationTestTool) Definition() publictool.Definition {
+	return publictool.Definition{
+		Name: tool.name, Parameters: json.RawMessage(`{"type":"object","properties":{},"required":[],"additionalProperties":false}`),
+	}
+}
+
+func (publicRegistrationTestTool) Run(context.Context, json.RawMessage) publictool.Result {
+	return publictool.Result{Output: "ok"}
 }
 
 func TestDefaultRegistryFailsClosedWhenSandboxHelperIsUnavailable(t *testing.T) {
