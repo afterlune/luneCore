@@ -24,6 +24,13 @@ var (
 	ErrPlanOutdated = errors.New("proposed plan is no longer the latest session result")
 )
 
+const (
+	proposedPlanOpenTag  = "<proposed_plan>"
+	proposedPlanCloseTag = "</proposed_plan>"
+	// Some providers emit this self-closing alias instead of the canonical close tag.
+	proposedPlanCompatCloseTag = "<proposed_plan_end/>"
+)
+
 // ProposedPlan is a complete plan emitted by the model while the active
 // permission mode is read-only.
 type ProposedPlan struct {
@@ -93,18 +100,17 @@ func extractProposedPlan(raw json.RawMessage) *ProposedPlan {
 		return "\x00CODE_" + strconv.Itoa(idx) + "\x00"
 	})
 
-	const open, close = "<proposed_plan>", "</proposed_plan>"
-	start := strings.Index(protected, open)
-	if start < 0 || strings.Contains(protected[start+len(open):], open) {
+	start := strings.Index(protected, proposedPlanOpenTag)
+	if start < 0 || strings.Contains(protected[start+len(proposedPlanOpenTag):], proposedPlanOpenTag) {
 		return nil
 	}
-	start += len(open)
-	end := strings.Index(protected[start:], close)
+	start += len(proposedPlanOpenTag)
+	end, closeLength := proposedPlanCloseIndex(protected[start:])
 	if end < 0 {
 		return nil
 	}
 	end += start
-	if strings.Contains(protected[end+len(close):], close) {
+	if _, extraCloseLength := proposedPlanCloseIndex(protected[end+closeLength:]); extraCloseLength > 0 {
 		return nil
 	}
 	planRaw := protected[start:end]
@@ -116,6 +122,23 @@ func extractProposedPlan(raw json.RawMessage) *ProposedPlan {
 		return nil
 	}
 	return &ProposedPlan{Text: plan}
+}
+
+func proposedPlanCloseIndex(text string) (int, int) {
+	canonical := strings.Index(text, proposedPlanCloseTag)
+	compat := strings.Index(text, proposedPlanCompatCloseTag)
+	switch {
+	case canonical < 0 && compat < 0:
+		return -1, 0
+	case canonical < 0:
+		return compat, len(proposedPlanCompatCloseTag)
+	case compat < 0:
+		return canonical, len(proposedPlanCloseTag)
+	case canonical < compat:
+		return canonical, len(proposedPlanCloseTag)
+	default:
+		return compat, len(proposedPlanCompatCloseTag)
+	}
 }
 
 // ImplementPlan starts one approved plan using the selected permission mode.

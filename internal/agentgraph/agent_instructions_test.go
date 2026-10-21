@@ -152,6 +152,8 @@ func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing
 		"When calling ask_user, put questions into the tool call and do not repeat them in message text.",
 		"Do not modify files or run commands that change the workspace.",
 		"<proposed_plan>",
+		"</proposed_plan>",
+		"Do not use `<proposed_plan_end/>`",
 	} {
 		if !strings.Contains(instructions, expected) {
 			t.Errorf("Plan mode instructions missing %q: %s", expected, instructions)

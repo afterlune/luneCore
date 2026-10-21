@@ -404,7 +404,9 @@ func TestProposedPlanRequiresOneCompleteNonEmptyBlock(t *testing.T) {
 		"<proposed_plan>unfinished",
 		"<proposed_plan></proposed_plan>",
 		"<proposed_plan>one</proposed_plan><proposed_plan>two</proposed_plan>",
+		"<proposed_plan>one</proposed_plan><proposed_plan_end/>",
 		"</proposed_plan>orphaned",
+		"<proposed_plan_end/>orphaned",
 	} {
 		response, err := json.Marshal(hostTextResponse(text))
 		if err != nil {
@@ -413,6 +415,20 @@ func TestProposedPlanRequiresOneCompleteNonEmptyBlock(t *testing.T) {
 		if plan := extractProposedPlan(response); plan != nil {
 			t.Errorf("extractProposedPlan(%q) = %#v, want nil", text, plan)
 		}
+	}
+}
+
+func TestProposedPlanAcceptsObservedCompatCloseTag(t *testing.T) {
+	response, err := json.Marshal(hostTextResponse("Before.\n<proposed_plan>\n## Steps\n1. Inspect\n<proposed_plan_end/>\nAfter."))
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := extractProposedPlan(response)
+	if plan == nil {
+		t.Fatal("expected the observed compatibility close tag to produce a plan")
+	}
+	if plan.Text != "## Steps\n1. Inspect" {
+		t.Fatalf("compatibility plan = %q", plan.Text)
 	}
 }
 
