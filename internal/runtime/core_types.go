@@ -11,8 +11,8 @@ const (
 	DefaultAttachmentMaxFiles   = projectconfig.DefaultAttachmentMaxFiles
 )
 
-// ErrStateDirInUse indicates that another Core instance already owns the state directory.
-var ErrStateDirInUse = session.ErrStateDirInUse
+// ErrSessionInUse indicates that another Core instance already owns a session.
+var ErrSessionInUse = session.ErrSessionInUse
 
 const (
 	DefaultAttachmentMaxFileBytes  = projectconfig.DefaultAttachmentMaxFileBytes

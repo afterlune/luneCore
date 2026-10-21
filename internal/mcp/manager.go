@@ -48,7 +48,6 @@ type ServerStatus struct {
 type Manager struct {
 	mu          sync.Mutex
 	connectGate chan struct{}
-	stateMu     sync.Mutex
 	generations map[string]uint64
 	connecting  map[string]context.CancelFunc
 	logger      *slog.Logger
@@ -151,7 +150,7 @@ func (manager *Manager) Enable(name string) error {
 		manager.mu.Unlock()
 		return err
 	}
-	if err := manager.writeEnabled(); err != nil {
+	if err := manager.writeEnabled(name, true); err != nil {
 		return errors.Join(err, manager.Disable(name))
 	}
 	return nil
@@ -175,7 +174,7 @@ func (manager *Manager) Disable(name string) error {
 		instance.hostOperationsWG.Wait()
 		closeErr = instance.client.Close()
 	}
-	return errors.Join(closeErr, manager.writeEnabled())
+	return errors.Join(closeErr, manager.writeEnabled(name, false))
 }
 
 func (manager *Manager) List() []ServerStatus {

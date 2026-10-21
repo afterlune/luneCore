@@ -109,6 +109,12 @@ func (c *Core) SetSessionSettings(ctx context.Context, sessionID string, setting
 	if err != nil {
 		return err
 	}
+	return c.withSessionLock(sessionID, func() error {
+		return c.setSessionSettingsOwned(ctx, sessionID, settings)
+	})
+}
+
+func (c *Core) setSessionSettingsOwned(ctx context.Context, sessionID string, settings SessionSettings) error {
 	// Usage writes and settings writes both replace the JSON session snapshot.
 	// Serialize them so neither update can overwrite the other's fields.
 	c.usageMu.Lock()

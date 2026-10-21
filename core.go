@@ -125,7 +125,7 @@ var (
 	ErrQueuedTurnStarted         = coreruntime.ErrQueuedTurnStarted
 	ErrMCPServerLifecycleChanged = coreruntime.ErrMCPServerLifecycleChanged
 	ErrModelRetryNotReady        = coreruntime.ErrModelRetryNotReady
-	ErrStateDirInUse             = coreruntime.ErrStateDirInUse
+	ErrSessionInUse              = coreruntime.ErrSessionInUse
 	ErrToolInvocationPersistence = coreruntime.ErrToolInvocationPersistence
 )
 

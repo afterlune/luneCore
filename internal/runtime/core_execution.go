@@ -27,6 +27,7 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...Exec
 	if err != nil {
 		return TaskResult{}, err
 	}
+	defer runtime.Close()
 	cursor, err := c.sessions.LatestRuntimeEventCursor(ctx, sessionID)
 	if err != nil {
 		return TaskResult{}, err

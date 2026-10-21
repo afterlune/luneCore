@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
@@ -120,6 +121,8 @@ type PendingRequest struct {
 type SessionRuntime struct {
 	core      *Core
 	sessionID string
+	closeMu   sync.Mutex
+	closed    bool
 }
 
 type storedTurnRequest struct {
@@ -145,10 +148,22 @@ const (
 	legacyAcceptanceTaskSettingsVersion = 9
 )
 
-func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (*SessionRuntime, error) {
+func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (_ *SessionRuntime, err error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return nil, errors.New("core, context, and session id are required")
 	}
+	if err := c.beginSessionOpen(sessionID); err != nil {
+		return nil, err
+	}
+	defer c.sessionOps.Done()
+	keepSessionLock := false
+	defer func() {
+		if !keepSessionLock {
+			if releaseErr := c.releaseSessionLock(sessionID); releaseErr != nil {
+				err = errors.Join(err, fmt.Errorf("release session lock after open failure: %w", releaseErr))
+			}
+		}
+	}()
 	if _, err := c.GetSession(ctx, sessionID); err != nil {
 		return nil, err
 	}
@@ -175,8 +190,34 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (*Sessi
 		c.removeEventHub(sessionID, hub)
 		return nil, err
 	}
+	c.mu.RLock()
+	closing := c.closed || c.closing
+	c.mu.RUnlock()
+	if closing {
+		c.removeEventHub(sessionID, hub)
+		return nil, errors.New("core is closed")
+	}
 	c.scheduleQueueDrain(sessionID)
+	keepSessionLock = true
 	return &SessionRuntime{core: c, sessionID: sessionID}, nil
+}
+
+// Close releases this runtime's session ownership. Do not use the runtime
+// after Close. Active or queued work keeps the session locked until it drains.
+func (r *SessionRuntime) Close() error {
+	if r == nil || r.core == nil {
+		return nil
+	}
+	r.closeMu.Lock()
+	defer r.closeMu.Unlock()
+	if r.closed {
+		return nil
+	}
+	if err := r.core.releaseSessionLock(r.sessionID); err != nil {
+		return err
+	}
+	r.closed = true
+	return nil
 }
 
 func (c *Core) discardObsoletePausedTask(ctx context.Context, sessionID string) error {

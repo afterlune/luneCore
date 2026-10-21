@@ -46,12 +46,13 @@ func TestModelContextKeyUsesSelectedProtocolAndEndpointCapability(t *testing.T) 
 }
 
 func TestSessionConversationPersistsProviderContextAndClearsItOnHistoryEdit(t *testing.T) {
-	store, err := session.Open(filepath.Join(t.TempDir(), "sessions.db"))
+	stateDir := t.TempDir()
+	store, err := session.Open(filepath.Join(stateDir, "sessions.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer store.Close()
-	client := &Core{workspace: "workspace", sessions: store}
+	client := &Core{workspace: "workspace", stateDir: stateDir, sessions: store, sessionLocks: make(map[string]*sessionLockEntry)}
 	saved, err := client.createSession(context.Background(), json.RawMessage(`[{"type":"message","role":"user","content":"hello"}]`), SessionSettings{ModelProfile: "main"})
 	if err != nil {
 		t.Fatal(err)

@@ -31,6 +31,9 @@ func (c *Core) drainQueue(sessionID string) {
 		if closed {
 			return
 		}
+		if err := c.releasePendingSessionLock(sessionID); err != nil {
+			c.logger.Warn("release idle session lock", "session_id", sessionID, "error", err)
+		}
 		queued, err := c.sessions.QueuedTurns(context.Background(), sessionID)
 		if err != nil {
 			return

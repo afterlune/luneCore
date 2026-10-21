@@ -206,6 +206,7 @@ func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (TaskRes
 	if err != nil {
 		return TaskResult{}, err
 	}
+	defer runtime.Close()
 	cursor, err := c.sessions.LatestRuntimeEventCursor(ctx, request.SessionID)
 	if err != nil {
 		return TaskResult{}, err

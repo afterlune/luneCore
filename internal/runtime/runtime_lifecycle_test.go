@@ -15,76 +15,239 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-const stateLockTestEnv = "LUNECORE_STATE_LOCK_HELPER_DIR"
+const (
+	sessionLockStateDirEnv  = "LUNECORE_SESSION_LOCK_STATE_DIR"
+	sessionLockWorkspaceEnv = "LUNECORE_SESSION_LOCK_WORKSPACE"
+	sessionLockSessionEnv   = "LUNECORE_SESSION_LOCK_SESSION"
+	sessionLockBlockedEnv   = "LUNECORE_SESSION_LOCK_BLOCKED"
+)
 
-func TestStateDirectoryLockSubprocessHelper(t *testing.T) {
-	stateDir := os.Getenv(stateLockTestEnv)
-	if stateDir == "" {
+func TestSessionLockSubprocessHelper(t *testing.T) {
+	stateDir, workspace, sessionID := os.Getenv(sessionLockStateDirEnv), os.Getenv(sessionLockWorkspaceEnv), os.Getenv(sessionLockSessionEnv)
+	if stateDir == "" || workspace == "" || sessionID == "" {
 		return
 	}
-	_, err := New(Config{StateDir: stateDir})
-	if !errors.Is(err, ErrStateDirInUse) {
-		t.Fatalf("New with locked StateDir error = %v, want ErrStateDirInUse", err)
+	client, err := New(sessionLockTestConfig(workspace, stateDir))
+	if err != nil {
+		t.Fatalf("New shared Core: %v", err)
+	}
+	defer client.Close()
+	runtime, err := client.OpenSessionRuntime(context.Background(), sessionID)
+	blocked := os.Getenv(sessionLockBlockedEnv) == "1"
+	if blocked {
+		if !errors.Is(err, ErrSessionInUse) {
+			t.Fatalf("OpenSessionRuntime for locked session error = %v, want ErrSessionInUse", err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatalf("OpenSessionRuntime for different session: %v", err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("close helper session runtime: %v", err)
 	}
 }
 
-func TestStateDirectoryLockIsExclusiveAndReleased(t *testing.T) {
+func TestSessionLockIsExclusivePerSessionAndReleased(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	config := stateLockTestConfig(workspace, stateDir)
+	config := sessionLockTestConfig(workspace, stateDir)
 	first, err := New(config)
 	if err != nil {
 		t.Fatalf("New first Core: %v", err)
 	}
-	defer func() {
-		if err := first.Close(); err != nil {
-			t.Errorf("close first Core: %v", err)
+	second, err := New(config)
+	if err != nil {
+		t.Fatalf("New second Core with shared StateDir: %v", err)
+	}
+	defer first.Close()
+	defer second.Close()
+
+	sessionA, err := first.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatalf("create session A: %v", err)
+	}
+	sessionB, err := first.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatalf("create session B: %v", err)
+	}
+	sessionC, err := first.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatalf("create session C: %v", err)
+	}
+	runtimeA, err := first.OpenSessionRuntime(context.Background(), sessionA.ID)
+	if err != nil {
+		t.Fatalf("open session A in first Core: %v", err)
+	}
+	runtimeB, err := second.OpenSessionRuntime(context.Background(), sessionB.ID)
+	if err != nil {
+		t.Fatalf("open different session in second Core: %v", err)
+	}
+	if _, err := second.OpenSessionRuntime(context.Background(), sessionA.ID); !errors.Is(err, ErrSessionInUse) {
+		t.Fatalf("open session A in second Core error = %v, want ErrSessionInUse", err)
+	}
+	if err := second.SetSessionTitle(context.Background(), sessionA.ID, "raced update"); !errors.Is(err, ErrSessionInUse) {
+		t.Fatalf("mutate session A in second Core error = %v, want ErrSessionInUse", err)
+	}
+
+	runHelper := func(sessionID string, blocked bool) {
+		t.Helper()
+		command := exec.Command(os.Args[0], "-test.run=^TestSessionLockSubprocessHelper$")
+		command.Env = append(os.Environ(), sessionLockStateDirEnv+"="+stateDir, sessionLockWorkspaceEnv+"="+workspace, sessionLockSessionEnv+"="+sessionID)
+		if blocked {
+			command.Env = append(command.Env, sessionLockBlockedEnv+"=1")
 		}
-	}()
-
-	if _, err := New(config); !errors.Is(err, ErrStateDirInUse) {
-		t.Fatalf("New second Core with same StateDir error = %v, want ErrStateDirInUse", err)
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("session lock subprocess failed: %v\n%s", err, output)
+		}
 	}
-	command := exec.Command(os.Args[0], "-test.run=^TestStateDirectoryLockSubprocessHelper$")
-	command.Env = append(os.Environ(), stateLockTestEnv+"="+stateDir)
-	if output, err := command.CombinedOutput(); err != nil {
-		t.Fatalf("subprocess lock check failed: %v\n%s", err, output)
-	}
+	runHelper(sessionA.ID, true)
+	runHelper(sessionC.ID, false)
 
-	otherConfig := stateLockTestConfig(workspace, t.TempDir())
-	other, err := New(otherConfig)
+	if err := runtimeA.Close(); err != nil {
+		t.Fatalf("close session A runtime: %v", err)
+	}
+	reopened, err := second.OpenSessionRuntime(context.Background(), sessionA.ID)
 	if err != nil {
-		t.Fatalf("New Core with a different StateDir: %v", err)
-	}
-	if err := other.Close(); err != nil {
-		t.Fatalf("close Core with a different StateDir: %v", err)
-	}
-
-	if err := first.Close(); err != nil {
-		t.Fatalf("close first Core: %v", err)
-	}
-	reopened, err := New(config)
-	if err != nil {
-		t.Fatalf("New after releasing StateDir lock: %v", err)
+		t.Fatalf("open session A after release: %v", err)
 	}
 	if err := reopened.Close(); err != nil {
-		t.Fatalf("close reopened Core: %v", err)
+		t.Fatalf("close reopened session A: %v", err)
+	}
+	if err := runtimeB.Close(); err != nil {
+		t.Fatalf("close session B runtime: %v", err)
 	}
 }
 
-func TestStateDirectoryLockReleasedWhenNewFails(t *testing.T) {
+func TestCoreInitializationFailureDoesNotBlockAnotherInstance(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	invalid := stateLockTestConfig(workspace, stateDir)
+	invalid := sessionLockTestConfig(workspace, stateDir)
 	invalid.Tools = []publictool.Registration{{}}
 	if _, err := New(invalid); err == nil {
 		t.Fatal("New with an invalid tool registration succeeded")
 	}
 
-	valid, err := New(stateLockTestConfig(workspace, stateDir))
+	valid, err := New(sessionLockTestConfig(workspace, stateDir))
 	if err != nil {
 		t.Fatalf("New after failed initialization: %v", err)
 	}
 	if err := valid.Close(); err != nil {
 		t.Fatalf("close Core after failed initialization: %v", err)
+	}
+}
+
+func TestConcurrentCoreInitializationSharedStateDir(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	config := sessionLockTestConfig(workspace, stateDir)
+	start := make(chan struct{})
+	type result struct {
+		client *Core
+		err    error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			<-start
+			client, err := New(config)
+			results <- result{client: client, err: err}
+		}()
+	}
+	close(start)
+	var opened []*Core
+	for range 2 {
+		result := <-results
+		if result.err != nil {
+			for _, existing := range opened {
+				_ = existing.Close()
+			}
+			t.Fatalf("concurrent Core.New: %v", result.err)
+		}
+		opened = append(opened, result.client)
+	}
+	for _, client := range opened {
+		if err := client.Close(); err != nil {
+			t.Errorf("close concurrently initialized Core: %v", err)
+		}
+	}
+}
+
+func TestCoreCloseReleasesOpenSessionLock(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	config := sessionLockTestConfig(workspace, stateDir)
+	first, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := first.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.OpenSessionRuntime(context.Background(), saved.ID); err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+	if _, err := second.OpenSessionRuntime(context.Background(), saved.ID); !errors.Is(err, ErrSessionInUse) {
+		t.Fatalf("open session while first Core owns it = %v, want ErrSessionInUse", err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := second.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatalf("open session after Core.Close: %v", err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestClosedRuntimeKeepsLockUntilActiveWorkFinishes(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	config := sessionLockTestConfig(workspace, stateDir)
+	first, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(config)
+	if err != nil {
+		_ = first.Close()
+		t.Fatal(err)
+	}
+	defer first.Close()
+	defer second.Close()
+	saved, err := first.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := first.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first.mu.Lock()
+	first.activeTasks[saved.ID] = TaskState{SessionID: saved.ID, Status: TaskRunning}
+	first.mu.Unlock()
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("close runtime while task is active: %v", err)
+	}
+	if _, err := second.OpenSessionRuntime(context.Background(), saved.ID); !errors.Is(err, ErrSessionInUse) {
+		t.Fatalf("open session while detached task runs = %v, want ErrSessionInUse", err)
+	}
+	first.mu.Lock()
+	delete(first.activeTasks, saved.ID)
+	first.mu.Unlock()
+	first.queueDrainWG.Wait()
+	if err := first.releasePendingSessionLock(saved.ID); err != nil {
+		t.Fatalf("release idle session lock after task: %v", err)
+	}
+	reopened, err := second.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatalf("open session after task finished: %v", err)
+	}
+	if err := reopened.Close(); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -442,7 +605,7 @@ func TestCancelTaskCancelsPendingApproval(t *testing.T) {
 	}
 }
 
-func stateLockTestConfig(workspace, stateDir string) Config {
+func sessionLockTestConfig(workspace, stateDir string) Config {
 	return Config{
 		Workspace: workspace, StateDir: stateDir,
 		Memory: MemoryConfig{Disabled: true},

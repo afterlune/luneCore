@@ -16,6 +16,16 @@ func (c *Core) ForkSession(ctx context.Context, sessionID string) (Session, erro
 	if c == nil || ctx == nil || sessionID == "" {
 		return Session{}, errors.New("core, context, and session id are required")
 	}
+	var forked Session
+	err := c.withSessionLock(sessionID, func() error {
+		var err error
+		forked, err = c.forkSessionOwned(ctx, sessionID)
+		return err
+	})
+	return forked, err
+}
+
+func (c *Core) forkSessionOwned(ctx context.Context, sessionID string) (Session, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || c.closing {
@@ -39,6 +49,16 @@ func (c *Core) ForkPausedTask(ctx context.Context, sessionID string) (Session, e
 	if c == nil || ctx == nil || sessionID == "" {
 		return Session{}, errors.New("core, context, and session id are required")
 	}
+	var forked Session
+	err := c.withSessionLock(sessionID, func() error {
+		var err error
+		forked, err = c.forkPausedTaskOwned(ctx, sessionID)
+		return err
+	})
+	return forked, err
+}
+
+func (c *Core) forkPausedTaskOwned(ctx context.Context, sessionID string) (Session, error) {
 	c.runtimeConfigMu.RLock()
 	defer c.runtimeConfigMu.RUnlock()
 	c.mu.Lock()

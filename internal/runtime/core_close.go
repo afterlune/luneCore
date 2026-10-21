@@ -87,6 +87,7 @@ func (c *Core) Close() error {
 	// Terminal command observers append events through Core and may need c.mu.
 	// Keep new work out via c.closing, but release the lock while joining them.
 	c.mu.Unlock()
+	c.sessionOps.Wait()
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
 	cleanupErr := c.commands.Close(cleanupCtx)
 	cleanupCancel()
@@ -108,9 +109,7 @@ func (c *Core) Close() error {
 		default:
 		}
 	}
-	c.mu.Unlock()
-	closeErr := errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.stateDirLock.Close())
-	c.mu.Lock()
+	closeErr := errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.closeSessionLocksLocked())
 	c.closed = true
 	c.closing = false
 	c.mu.Unlock()

@@ -74,6 +74,7 @@ type Core struct {
 	commands             *commandruntime.Manager
 	logger               *slog.Logger
 	workspace            string
+	stateDir             string
 	registry             *tool.Registry
 	models               *model.ProviderCatalog
 	taskDefaults         taskSettings
@@ -90,7 +91,7 @@ type Core struct {
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
-	stateDirLock   *session.DirectoryLock
+	sessionLocks   map[string]*sessionLockEntry
 
 	mu                  sync.RWMutex
 	eventHubMu          sync.Mutex
@@ -109,6 +110,7 @@ type Core struct {
 	executionRuns       map[string]chan struct{}
 	interruptRequests   map[string]bool
 	queueDrainWG        sync.WaitGroup
+	sessionOps          sync.WaitGroup
 	closed              bool
 	closing             bool
 }
@@ -168,18 +170,6 @@ func New(config Config) (_ *Core, err error) {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
-	stateLock, err := session.AcquireStateDirectoryLock(stateDir)
-	if err != nil {
-		return nil, fmt.Errorf("acquire StateDir lock: %w", err)
-	}
-	keepStateLock := false
-	defer func() {
-		if !keepStateLock {
-			if lockErr := stateLock.Close(); lockErr != nil {
-				err = errors.Join(err, fmt.Errorf("release StateDir lock after initialization failure: %w", lockErr))
-			}
-		}
-	}()
 	projectConfig, err := projectconfig.LoadForRuntime(workspace, config.ModelConfig, config.ModelProviders, config.ProjectConfig, config.MaxParallelAgents)
 	if err != nil {
 		return nil, err
@@ -241,6 +231,7 @@ func New(config Config) (_ *Core, err error) {
 	c := &Core{
 		logger:           logger,
 		workspace:        workspace,
+		stateDir:         stateDir,
 		registry:         registry,
 		models:           models,
 		attachmentLimits: projectConfig.Attachments,
@@ -266,7 +257,7 @@ func New(config Config) (_ *Core, err error) {
 		turnWaiters:          make(map[string]chan turnResult),
 		executionRuns:        make(map[string]chan struct{}),
 		interruptRequests:    make(map[string]bool),
-		stateDirLock:         stateLock,
+		sessionLocks:         make(map[string]*sessionLockEntry),
 	}
 	if err := c.configureCommands(config); err != nil {
 		return nil, err
@@ -317,7 +308,6 @@ func New(config Config) (_ *Core, err error) {
 		return nil, err
 	}
 	closeCheckpoints, closeSessions, closeRegistry, closeMCPManager = false, false, false, false
-	keepStateLock = true
 	return c, nil
 }
 

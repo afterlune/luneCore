@@ -102,20 +102,30 @@ func (c *Core) SetSessionTitle(ctx context.Context, sessionID, title string) err
 	if utf8.RuneCountInString(title) > 120 {
 		return errors.New("session title must be at most 120 characters")
 	}
-	return c.sessions.UpdateTitle(ctx, sessionID, c.workspace, title)
+	return c.withSessionLock(sessionID, func() error {
+		return c.sessions.UpdateTitle(ctx, sessionID, c.workspace, title)
+	})
 }
 
 func (c *Core) SetSessionArchived(ctx context.Context, sessionID string, archived bool) error {
 	if c == nil || ctx == nil || sessionID == "" {
 		return errors.New("core, context, and session id are required")
 	}
-	return c.sessions.SetArchived(ctx, sessionID, c.workspace, archived)
+	return c.withSessionLock(sessionID, func() error {
+		return c.sessions.SetArchived(ctx, sessionID, c.workspace, archived)
+	})
 }
 
 func (c *Core) DeleteSession(ctx context.Context, sessionID string) error {
 	if c == nil || ctx == nil || sessionID == "" {
 		return errors.New("core, context, and session id are required")
 	}
+	return c.withSessionLock(sessionID, func() error {
+		return c.deleteSessionOwned(ctx, sessionID)
+	})
+}
+
+func (c *Core) deleteSessionOwned(ctx context.Context, sessionID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || c.closing {
@@ -193,6 +203,16 @@ func (c *Core) RewindSession(ctx context.Context, sessionID string, userTurns in
 	if userTurns <= 0 {
 		return 0, errors.New("rewind count must be greater than zero")
 	}
+	var removed int
+	err := c.withSessionLock(sessionID, func() error {
+		var err error
+		removed, err = c.rewindSessionOwned(ctx, sessionID, userTurns)
+		return err
+	})
+	return removed, err
+}
+
+func (c *Core) rewindSessionOwned(ctx context.Context, sessionID string, userTurns int) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || c.closing {
@@ -241,7 +261,7 @@ func (c *Core) RewindSession(ctx context.Context, sessionID string, userTurns in
 	if err != nil {
 		return 0, fmt.Errorf("encode rewound history: %w", err)
 	}
-	if err := c.SetSessionHistory(ctx, sessionID, encoded); err != nil {
+	if err := c.sessions.UpdateHistory(ctx, sessionID, c.workspace, encoded); err != nil {
 		return 0, err
 	}
 	return removed, nil
@@ -268,7 +288,9 @@ func (c *Core) SetSessionHistory(ctx context.Context, id string, history json.Ra
 	if _, err := model.NewResponseInput(history); err != nil {
 		return err
 	}
-	return c.sessions.UpdateHistory(ctx, id, c.workspace, history)
+	return c.withSessionLock(id, func() error {
+		return c.sessions.UpdateHistory(ctx, id, c.workspace, history)
+	})
 }
 
 func (c *Core) setSessionConversation(ctx context.Context, id string, transcript, modelContext *model.ResponseInput, contextKey string, agentContext json.RawMessage) error {

@@ -24,6 +24,16 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (int, error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return 0, errors.New("core, context, and session id are required")
 	}
+	var compacted int
+	err := c.withSessionLock(sessionID, func() error {
+		var err error
+		compacted, err = c.compactOwned(ctx, sessionID)
+		return err
+	})
+	return compacted, err
+}
+
+func (c *Core) compactOwned(ctx context.Context, sessionID string) (int, error) {
 	c.runtimeConfigMu.RLock()
 	defer c.runtimeConfigMu.RUnlock()
 	c.mu.RLock()

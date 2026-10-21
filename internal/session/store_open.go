@@ -25,25 +25,28 @@ func Open(path string) (*Store, error) {
 	params.Set("_busy_timeout", "5000")
 	params.Set("_journal_mode", "WAL")
 	params.Set("_synchronous", "FULL")
+	params.Set("_txlock", "immediate")
 	fileURL := url.URL{Scheme: "file", Path: filePath, RawQuery: params.Encode()}
 	db, err := sql.Open("sqlite", fileURL.String())
 	if err != nil {
 		return nil, fmt.Errorf("open session database: %w", err)
 	}
 	db.SetMaxOpenConns(1)
-	var version int
-	if err := db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("read session database version: %w", err)
-	}
-	if version > currentSchemaVersion {
-		_ = db.Close()
-		return nil, fmt.Errorf("session database version %d is newer than supported version %d", version, currentSchemaVersion)
-	}
 	tx, err := db.Begin()
 	if err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("begin session database migration: %w", err)
+	}
+	var version int
+	if err := tx.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("read session database version: %w", err)
+	}
+	if version > currentSchemaVersion {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("session database version %d is newer than supported version %d", version, currentSchemaVersion)
 	}
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS sessions (
 			id TEXT PRIMARY KEY,
