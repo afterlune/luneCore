@@ -108,9 +108,12 @@ type ExecutionBlocker struct {
 type ContextCompactionDetails struct {
 	Stage        string
 	Mode         string
+	Reason       string
+	Strategy     string
 	BeforeTokens int64
 	AfterTokens  int64
 	Threshold    int64
+	Turns        int
 	Err          string
 }
 

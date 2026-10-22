@@ -102,8 +102,9 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 				currentTask = current
 			}
 			details := &ContextCompactionDetails{
-				Stage: event.Stage, Mode: event.Mode, BeforeTokens: event.BeforeTokens,
-				AfterTokens: event.AfterTokens, Threshold: event.Threshold, Err: errorString(event.Error),
+				Stage: event.Stage, Mode: event.Mode, Reason: event.Reason, Strategy: event.Strategy,
+				BeforeTokens: event.BeforeTokens, AfterTokens: event.AfterTokens, Threshold: event.Threshold,
+				Turns: event.Turns, Err: errorString(event.Error),
 			}
 			c.emit(Event{Kind: EventContextCompaction, TaskID: currentTask.TaskID, ExecutionID: currentTask.ExecutionID, SessionID: currentTask.SessionID,
 				Provider: profile.Provider, ModelProfile: profileID, Model: currentTask.Model, Err: errorString(event.Error), Compaction: details})

@@ -109,9 +109,12 @@ type AgentOptions struct {
 type ContextCompactionEvent struct {
 	Stage        string
 	Mode         string
+	Reason       string
+	Strategy     string
 	BeforeTokens int64
 	AfterTokens  int64
 	Threshold    int64
+	Turns        int
 	Error        error
 }
 

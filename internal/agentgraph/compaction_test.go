@@ -124,8 +124,11 @@ func TestAutomaticCompactionSummarizesOlderHistoryWhenToolClearingIsInsufficient
 	if len(requester.requests) != 2 {
 		t.Fatalf("model requests = %d, want one summary and one task request", len(requester.requests))
 	}
-	if !strings.Contains(requester.requests[0].Instructions, "key code facts") {
-		t.Fatalf("summary instructions = %q", requester.requests[0].Instructions)
+	if !strings.Contains(string(mustMarshal(t, requester.requests[0].Input)), "handoff summary") {
+		t.Fatalf("summary directive missing from the compaction input: %s", mustMarshal(t, requester.requests[0].Input))
+	}
+	if !strings.Contains(requester.requests[0].Instructions, "You are Lune") {
+		t.Fatalf("summary request must reuse the routed instructions: %q", requester.requests[0].Instructions)
 	}
 	contextJSON, err := json.Marshal(result.Final.History)
 	if err != nil {
@@ -482,5 +485,86 @@ func TestAutomaticCompactionCancellationLeavesResumableUnmodifiedContext(t *test
 	}
 	if !strings.Contains(string(mustMarshal(t, state.Transcript)), "new user request") {
 		t.Fatal("checkpoint lost the current user request")
+	}
+}
+
+func TestPlanLocalCompactionRetainsRecentTurns(t *testing.T) {
+	var items []model.InputItem
+	for index := 0; index < 6; index++ {
+		items = append(items,
+			model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("user turn")},
+			model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText(strings.Repeat("detail ", 400))},
+		)
+	}
+	request := model.ModelRequest{Input: model.NewResponseInputItems(items...)}
+	plan, err := planLocalCompaction(request, 6000, 6000)
+	if err != nil {
+		t.Fatalf("planLocalCompaction: %v", err)
+	}
+	if plan.turns == 0 || len(plan.head) == 0 {
+		t.Fatalf("expected a compactable head, got turns=%d head=%d", plan.turns, len(plan.head))
+	}
+	if plan.turns >= 6 {
+		t.Fatalf("retained tail is the whole history: turns=%d", plan.turns)
+	}
+	firstTail, ok := plan.tail[0].(model.InputMessage)
+	if !ok || firstTail.Role != model.RoleUser {
+		t.Fatalf("retained tail does not start at a user turn: %#v", plan.tail[0])
+	}
+}
+
+func TestAutomaticCompactionFallsBackToPrunedHistoryWhenSummaryFails(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	largeResult := strings.Repeat("old-tool-result ", 600)
+	history := model.NewResponseInputItems(
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("old request")},
+		model.InputFunctionCallOutput{Status: "completed", CallID: "call-old", Output: model.NewToolOutputText(largeResult)},
+		model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText(strings.Repeat("detail.", 2200))},
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("recent request")},
+	)
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"continued"}]}]}`),
+	}}
+	var events []ContextCompactionEvent
+	agent, err := NewWithOptions(requester, registry, AgentOptions{ID: "lead", Profile: "main", Provider: "vendor", Protocol: model.ProtocolAnthropicMessages, Model: "claude-test", CompactionObserver: func(event ContextCompactionEvent) { events = append(events, event) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-summary-fallback", history, history,
+		model.NewResponseInputText("continue"), TaskOptions{ContextWindow: 5000, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8},
+		store, graph.Options{})
+	if err != nil {
+		t.Fatalf("StartWithTranscript: %v", err)
+	}
+	if result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(requester.requests) != 2 {
+		t.Fatalf("expected one summary attempt and one task request, requests=%d", len(requester.requests))
+	}
+	var fallback bool
+	for _, event := range events {
+		if event.Stage == "fallback" {
+			fallback = true
+		}
+	}
+	if !fallback {
+		t.Fatalf("summary failure did not emit a fallback event: %#v", events)
+	}
+	contextJSON, err := json.Marshal(result.Final.History)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(contextJSON), largeResult) || !strings.Contains(string(contextJSON), "Earlier tool output cleared") {
+		t.Fatalf("fallback did not keep the pruned history: %s", contextJSON)
 	}
 }
