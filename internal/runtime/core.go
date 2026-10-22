@@ -40,6 +40,10 @@ type Config struct {
 	ProjectConfig     *projectconfig.ProjectConfig
 	ModelConfig       *publicmodel.Config
 	MaxParallelAgents int
+	// RestoreEnabledMCP restores and persists enabled MCP servers across Core
+	// instances. Leave disabled when workspace configuration or state is
+	// controlled by the project rather than the host.
+	RestoreEnabledMCP bool
 	ModelProviders    map[string]publicmodel.Provider
 	Tools             []publictool.Registration
 	CommandExecutor   publictool.CommandExecutor
@@ -285,6 +289,7 @@ func New(config Config) (_ *Core, err error) {
 		Limits:             mcp.Limits{MaxBinaryBlocks: attachmentLimits.MaxFiles, MaxFileBytes: attachmentLimits.MaxFileBytes, MaxTotalBytes: attachmentLimits.MaxTotalBytes},
 		Logger:             logger,
 		RequestInteraction: c.requestUserInteraction,
+		RestoreEnabled:     config.RestoreEnabledMCP,
 	})
 	if err != nil {
 		return nil, err
@@ -296,8 +301,10 @@ func New(config Config) (_ *Core, err error) {
 			_ = mcpManager.Close()
 		}
 	}()
-	for _, restoreErr := range mcpManager.RestoreEnabled() {
-		c.logger.Warn("could not restore enabled MCP server", "error_type", fmt.Sprintf("%T", restoreErr))
+	if config.RestoreEnabledMCP {
+		for _, restoreErr := range mcpManager.RestoreEnabled() {
+			c.logger.Warn("could not restore enabled MCP server", "error_type", fmt.Sprintf("%T", restoreErr))
+		}
 	}
 	team := &teamExecutor{core: c, models: models, tools: registry}
 	c.team = team

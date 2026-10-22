@@ -25,8 +25,10 @@ type Limits struct {
 type InteractionHandler func(context.Context, string, string, json.RawMessage) (json.RawMessage, error)
 
 type Options struct {
-	Workspace          string
-	StateDir           string
+	Workspace string
+	StateDir  string
+	// RestoreEnabled loads and persists enabled server state when true.
+	RestoreEnabled     bool
 	Logger             *slog.Logger
 	Servers            map[string]projectconfig.MCPServerConfig
 	Registry           *tool.Registry
@@ -46,21 +48,22 @@ type ServerStatus struct {
 }
 
 type Manager struct {
-	mu          sync.Mutex
-	connectGate chan struct{}
-	generations map[string]uint64
-	connecting  map[string]context.CancelFunc
-	logger      *slog.Logger
-	workspace   string
-	stateFile   string
-	servers     map[string]projectconfig.MCPServerConfig
-	registry    *tool.Registry
-	limits      Limits
-	interact    InteractionHandler
-	enabled     map[string]bool
-	instances   map[string]*serverInstance
-	errors      map[string]string
-	closed      bool
+	mu             sync.Mutex
+	connectGate    chan struct{}
+	generations    map[string]uint64
+	connecting     map[string]context.CancelFunc
+	logger         *slog.Logger
+	workspace      string
+	stateFile      string
+	restoreEnabled bool
+	servers        map[string]projectconfig.MCPServerConfig
+	registry       *tool.Registry
+	limits         Limits
+	interact       InteractionHandler
+	enabled        map[string]bool
+	instances      map[string]*serverInstance
+	errors         map[string]string
+	closed         bool
 }
 
 type serverInstance struct {
@@ -111,12 +114,15 @@ func NewManager(options Options) (*Manager, error) {
 		generations: make(map[string]uint64),
 		connecting:  make(map[string]context.CancelFunc),
 		workspace:   options.Workspace, stateFile: filepath.Join(options.StateDir, "mcp-enabled.json"),
-		servers: options.Servers, registry: options.Registry, limits: options.Limits,
+		restoreEnabled: options.RestoreEnabled,
+		servers:        options.Servers, registry: options.Registry, limits: options.Limits,
 		interact: options.RequestInteraction, enabled: make(map[string]bool),
 		instances: make(map[string]*serverInstance), errors: make(map[string]string),
 	}
-	if err := manager.readEnabled(); err != nil {
-		return nil, err
+	if manager.restoreEnabled {
+		if err := manager.readEnabled(); err != nil {
+			return nil, err
+		}
 	}
 	return manager, nil
 }
@@ -150,7 +156,7 @@ func (manager *Manager) Enable(name string) error {
 		manager.mu.Unlock()
 		return err
 	}
-	if err := manager.writeEnabled(name, true); err != nil {
+	if err := manager.persistEnabled(name, true); err != nil {
 		return errors.Join(err, manager.Disable(name))
 	}
 	return nil
@@ -174,7 +180,14 @@ func (manager *Manager) Disable(name string) error {
 		instance.hostOperationsWG.Wait()
 		closeErr = instance.client.Close()
 	}
-	return errors.Join(closeErr, manager.writeEnabled(name, false))
+	return errors.Join(closeErr, manager.persistEnabled(name, false))
+}
+
+func (manager *Manager) persistEnabled(name string, enabled bool) error {
+	if !manager.restoreEnabled {
+		return nil
+	}
+	return manager.writeEnabled(name, enabled)
 }
 
 func (manager *Manager) List() []ServerStatus {

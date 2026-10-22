@@ -100,7 +100,8 @@ func TestProgrammaticModelConfigOverridesFileAndStateDirOwnsMCPState(t *testing.
 	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{hostTextResponse("unused")}}
 	client, err := New(Config{
 		Workspace: workspace, StateDir: stateDir,
-		Memory: MemoryConfig{Disabled: true},
+		RestoreEnabledMCP: true,
+		Memory:            MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
 			Providers:      map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
 			Profiles:       map[string]publicmodel.ModelProfile{"host-profile": {Provider: "host", Model: "new-model"}},
@@ -131,5 +132,49 @@ func TestProgrammaticModelConfigOverridesFileAndStateDirOwnsMCPState(t *testing.
 	}
 	if _, err := os.Stat(filepath.Join(workspace, ".luneagent", "mcp-enabled.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unexpected MCP state in workspace default directory, stat err=%v", err)
+	}
+}
+
+func TestCoreIgnoresMCPEnabledStateByDefault(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	writeSettingsConfig(t, workspace, "http://127.0.0.1:1")
+	statePath := filepath.Join(stateDir, "mcp-enabled.json")
+	if err := os.WriteFile(statePath, []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := New(Config{
+		Workspace: workspace,
+		StateDir:  stateDir,
+		Memory:    MemoryConfig{Disabled: true},
+	})
+	if err != nil {
+		t.Fatalf("New with default MCP restore policy: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Errorf("Close: %v", err)
+	}
+	if data, err := os.ReadFile(statePath); err != nil || string(data) != "not json" {
+		t.Fatalf("Core changed MCP state file: data=%q err=%v", data, err)
+	}
+}
+
+func TestCoreReadsMCPEnabledStateWhenRestoreOptedIn(t *testing.T) {
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	writeSettingsConfig(t, workspace, "http://127.0.0.1:1")
+	statePath := filepath.Join(stateDir, "mcp-enabled.json")
+	if err := os.WriteFile(statePath, []byte("not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	client, err := New(Config{
+		Workspace:         workspace,
+		StateDir:          stateDir,
+		Memory:            MemoryConfig{Disabled: true},
+		RestoreEnabledMCP: true,
+	})
+	if err == nil {
+		_ = client.Close()
+		t.Fatal("New with opted-in MCP restore accepted malformed state")
 	}
 }

@@ -118,7 +118,8 @@ func TestHTTPManagerRegistersToolsAndPreservesMCPResults(t *testing.T) {
 	registry := testRegistry(t)
 	manager, err := NewManager(Options{
 		Workspace: t.TempDir(), StateDir: t.TempDir(), Registry: registry,
-		Servers: map[string]projectconfig.MCPServerConfig{"docs": {Transport: projectconfig.MCPTransportStreamableHTTP, URL: server.URL}},
+		RestoreEnabled: true,
+		Servers:        map[string]projectconfig.MCPServerConfig{"docs": {Transport: projectconfig.MCPTransportStreamableHTTP, URL: server.URL}},
 	})
 	if err != nil {
 		t.Fatal(err)
