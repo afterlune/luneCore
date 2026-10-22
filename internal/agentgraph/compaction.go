@@ -50,14 +50,14 @@ func contextTokenThreshold(window, reserve int64, ratio float64) int64 {
 	return threshold
 }
 
-func (a *Agent) prepareAutomaticCompaction(ctx context.Context, state State, request model.ModelRequest) (State, model.ModelRequest, bool, error) {
-	if !state.AutoCompact {
+func (a *Agent) prepareCompaction(ctx context.Context, state State, request model.ModelRequest, reason string, force bool) (State, model.ModelRequest, bool, error) {
+	if !state.AutoCompact && !force {
 		return state, request, false, nil
 	}
-	if state.ContextWindow <= 0 {
+	if state.ContextWindow <= 0 && !force {
 		if !state.CompactionWarningEmitted {
 			a.notifyCompaction(ContextCompactionEvent{
-				Stage: "skipped", Mode: "local", Reason: "threshold",
+				Stage: "skipped", Mode: "local", Reason: reason,
 				Error: errors.New("contextWindow is unset or disabled; automatic compaction is waiting for a positive window"),
 			})
 			state.CompactionWarningEmitted = true
@@ -68,74 +68,84 @@ func (a *Agent) prepareAutomaticCompaction(ctx context.Context, state State, req
 	if ratio <= 0 {
 		ratio = defaultAutoCompactThreshold
 	}
+	before := model.EstimateInputTokens(request)
+	if state.LastInputTokens > before {
+		before = state.LastInputTokens
+	}
 	threshold := contextTokenThreshold(state.ContextWindow, state.ReserveOutputTokens, ratio)
+	if force && state.ContextWindow <= 0 {
+		threshold = max(1, before*3/4)
+	}
 	if threshold == 0 {
 		return state, request, false, errors.New("automatic compaction has no available input-token budget")
 	}
 
-	if state.Protocol == model.ProtocolResponses && state.ServerCompaction && !state.ServerCompactionFallback {
+	if !force && state.Protocol == model.ProtocolResponses && state.ServerCompaction && !state.ServerCompactionFallback {
 		request.ContextManagement = []model.ContextManagementItem{{Type: "compaction", CompactThreshold: threshold}}
 		return state, request, false, nil
 	}
 
-	before := model.EstimateInputTokens(request)
-	if before < threshold {
+	if !force && before < threshold {
 		return state, request, false, nil
 	}
-	a.notifyCompaction(ContextCompactionEvent{Stage: "started", Mode: "local", Reason: "threshold", BeforeTokens: before, Threshold: threshold})
+	a.notifyCompaction(ContextCompactionEvent{Stage: "started", Mode: "local", Reason: reason, BeforeTokens: before, Threshold: threshold})
 
 	usable := state.ContextWindow - state.ReserveOutputTokens
 	if usable <= 0 {
 		usable = threshold
 	}
-	plan, err := planLocalCompaction(request, threshold, usable)
+	plan, err := planLocalCompaction(request, threshold, usable, before)
 	if err != nil {
-		a.notifyCompaction(ContextCompactionEvent{Stage: "failed", Mode: "local", Reason: "threshold", BeforeTokens: before, Threshold: threshold, Error: err})
+		a.notifyCompaction(ContextCompactionEvent{Stage: "failed", Mode: "local", Reason: reason, BeforeTokens: before, Threshold: threshold, Error: err})
 		return state, request, false, err
 	}
 	plan.hard = state.ContextWindow - state.ReserveOutputTokens
 	plan.target = threshold - max(compactSummaryMargin, threshold/20)
+	if force {
+		plan.target = max(1, plan.before/2)
+	}
 
 	prunedHead, prunedAfter, prunedCount := pruneHeadToolOutputs(plan)
-	if prunedAfter < threshold {
-		return a.commitLocalCompaction(state, request, prunedHead, plan.tail, prunedAfter, plan.before, plan.turns, threshold, "prune", "")
+	if prunedCount > 0 && (prunedAfter < threshold || force && prunedAfter <= plan.target) {
+		return a.commitLocalCompaction(state, request, reason, prunedHead, plan.tail, prunedAfter, plan.before, plan.turns, threshold, "prune", "")
 	}
 
 	compacted, after, summaryErr := a.summarizeCompactionCandidate(ctx, request, plan, prunedHead, state, threshold)
 	if summaryErr == nil && after < threshold {
-		return a.commitLocalCompaction(state, request, compacted, nil, after, plan.before, plan.turns, threshold, "summary", "")
+		return a.commitLocalCompaction(state, request, reason, compacted, nil, after, plan.before, plan.turns, threshold, "summary", "")
 	}
 	// A failed summary must not fail the turn when pruning already made the
 	// request safe; keep the pruned history and record the fallback.
 	if prunedCount > 0 && prunedAfter < plan.hard {
-		reason := "summary failed; kept cleared tool outputs"
+		fallbackReason := "summary failed; kept cleared tool outputs"
 		if summaryErr != nil {
-			reason = summaryErr.Error()
+			fallbackReason = summaryErr.Error()
 		}
-		return a.commitLocalCompaction(state, request, prunedHead, plan.tail, prunedAfter, plan.before, plan.turns, threshold, "prune", reason)
+		return a.commitLocalCompaction(state, request, reason, prunedHead, plan.tail, prunedAfter, plan.before, plan.turns, threshold, "prune", fallbackReason)
 	}
 	if summaryErr == nil {
 		summaryErr = fmt.Errorf("context remains above the compaction threshold after %d summary passes (%d/%d tokens)", compactSummaryAttempts, after, threshold)
 	}
-	a.notifyCompaction(ContextCompactionEvent{Stage: "failed", Mode: "local", Reason: "threshold", BeforeTokens: before, AfterTokens: after, Threshold: threshold, Error: summaryErr})
+	a.notifyCompaction(ContextCompactionEvent{Stage: "failed", Mode: "local", Reason: reason, BeforeTokens: before, AfterTokens: after, Threshold: threshold, Error: summaryErr})
 	return state, request, false, summaryErr
 }
 
-func (a *Agent) commitLocalCompaction(state State, request model.ModelRequest, head, tail []model.InputItem, after, before int64, turns int, threshold int64, strategy, fallbackReason string) (State, model.ModelRequest, bool, error) {
+func (a *Agent) commitLocalCompaction(state State, request model.ModelRequest, reason string, head, tail []model.InputItem, after, before int64, turns int, threshold int64, strategy, fallbackReason string) (State, model.ModelRequest, bool, error) {
 	items := make([]model.InputItem, 0, len(head)+len(tail))
 	items = append(items, head...)
 	items = append(items, tail...)
 	state.History = *model.NewResponseInputItems(items...)
 	request.Input = model.NewResponseInputItems(items...)
+	state.LastInputTokens = 0
 	if strategy == "prune" && fallbackReason != "" {
 		a.notifyCompaction(ContextCompactionEvent{
-			Stage: "fallback", Mode: "local", Reason: "threshold",
+			Stage: "fallback", Mode: "local", Reason: reason,
 			BeforeTokens: before, AfterTokens: after, Threshold: threshold, Turns: turns,
 			Error: errors.New(fallbackReason),
 		})
 	}
 	a.notifyCompaction(ContextCompactionEvent{
-		Stage: "completed", Mode: "local", Reason: "threshold", Strategy: strategy,
+		Stage: "completed", Mode: "local", Reason: reason, Strategy: strategy,
 		BeforeTokens: before, AfterTokens: after, Threshold: threshold, Turns: turns,
 	})
 	return state, request, true, nil
@@ -145,7 +155,7 @@ func (a *Agent) commitLocalCompaction(state State, request model.ModelRequest, h
 // The tail always contains the current turn; earlier whole turns are added until
 // the retained-token budget is met, so a tool call is never separated from its
 // output.
-func planLocalCompaction(request model.ModelRequest, threshold, usable int64) (localCompactionPlan, error) {
+func planLocalCompaction(request model.ModelRequest, threshold, usable, before int64) (localCompactionPlan, error) {
 	var items []model.InputItem
 	if request.Input != nil {
 		items = request.Input.Items
@@ -153,7 +163,9 @@ func planLocalCompaction(request model.ModelRequest, threshold, usable int64) (l
 	if len(items) == 0 {
 		return localCompactionPlan{}, errors.New("no conversation history can be compacted")
 	}
-	before := model.EstimateInputTokens(request)
+	if before <= 0 {
+		before = model.EstimateInputTokens(request)
+	}
 	userStarts := make([]int, 0, len(items))
 	for index, item := range items {
 		message, ok := item.(model.InputMessage)
@@ -171,7 +183,7 @@ func planLocalCompaction(request model.ModelRequest, threshold, usable int64) (l
 	cut := userStarts[len(userStarts)-1]
 	for index := len(userStarts) - 2; index >= 0; index-- {
 		candidate := userStarts[index]
-		if rangeTokens(items[candidate:]) >= tailBudget {
+		if candidate == 0 || rangeTokens(items[candidate:]) >= tailBudget {
 			break
 		}
 		cut = candidate

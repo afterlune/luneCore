@@ -215,6 +215,7 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.ReserveOutputTokens = taskOptions.ReserveOutputTokens
 	state.AutoCompact = taskOptions.AutoCompact
 	state.AutoCompactThreshold = taskOptions.AutoCompactThreshold
+	state.LastInputTokens = taskOptions.LastInputTokens
 	state.Execution = effectiveTeamExecution(a.options.Execution, taskOptions.Execution)
 	state.PermissionOverride = taskOptions.PermissionOverride
 	state.PlanMode = taskOptions.PlanMode

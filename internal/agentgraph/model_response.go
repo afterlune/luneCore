@@ -12,6 +12,9 @@ import (
 func (a *Agent) handleModelResponse(ctx context.Context, state State, request model.ModelRequest, response *model.ModelResponse, visibleNames []string, compactionThreshold int64, serverCompactionRequested bool) (graph.Transition[State], error) {
 	var err error
 	clearTeamForkBase(&state)
+	if measured := response.Usage.InputTokens; measured > state.LastInputTokens {
+		state.LastInputTokens = measured
+	}
 	if a.options.Team != nil && request.Input != nil {
 		for _, call := range responseFunctionCalls(response.Output) {
 			if call.Name == teamDispatchToolName {

@@ -130,7 +130,7 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 			})
 		} else {
 			var compacted bool
-			state, request, compacted, err = a.prepareAutomaticCompaction(requestCtx, state, request)
+			state, request, compacted, err = a.prepareCompaction(requestCtx, state, request, "threshold", false)
 			forkCachePrefixValid = !compacted
 			if compacted {
 				state.TeamForked = false
@@ -187,7 +187,7 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 		})
 		request.ContextManagement = nil
 		var compacted bool
-		state, request, compacted, err = a.prepareAutomaticCompaction(requestCtx, state, request)
+		state, request, compacted, err = a.prepareCompaction(requestCtx, state, request, "threshold", false)
 		forkCachePrefixValid = !compacted
 		if compacted {
 			state.TeamForked = false
@@ -201,6 +201,33 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 		}
 		serverCompactionRequested = false
 		response, responseErr = sendRequest(&request)
+	}
+	if responseErr != nil && model.IsContextWindowError(responseErr) && state.OverflowCompactions < 1 {
+		// The provider rejected the request as too large: compact once with an
+		// overflow budget, then retry the same request a single time.
+		state.OverflowCompactions++
+		if serverCompactionRequested {
+			state.ServerCompactionFallback = true
+			request.ContextManagement = nil
+			serverCompactionRequested = false
+		}
+		var compacted bool
+		var compactErr error
+		state, request, compacted, compactErr = a.prepareCompaction(requestCtx, state, request, "overflow", true)
+		forkCachePrefixValid = !compacted
+		if compacted {
+			state.TeamForked = false
+			state.TeamForkPrefixItems = 0
+		}
+		if compactErr != nil {
+			if ctx.Err() != nil {
+				return graph.Transition[State]{}, ctx.Err()
+			}
+			return a.failOrPauseModel(ctx, state, fmt.Errorf("context overflow recovery: %w", compactErr))
+		}
+		if compacted {
+			response, responseErr = sendRequest(&request)
+		}
 	}
 	if responseErr != nil {
 		a.options.Logger.ErrorContext(ctx, "agent model request failed",

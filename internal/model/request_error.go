@@ -22,8 +22,11 @@ func RequestFailure(status int, code string) *publicmodel.RequestError {
 		category = publicmodel.ErrorQuota
 	case "authentication_error", "invalid_api_key", "permission_error":
 		category = publicmodel.ErrorAuthentication
-	case "invalid_request_error", "invalid_request", "context_length_exceeded":
+	case "invalid_request_error", "invalid_request", "context_length_exceeded", "context_window_exceeded", "string_above_max_length":
 		category = publicmodel.ErrorInvalidRequest
+		if isContextWindowCode(code) {
+			category = publicmodel.ErrorContextWindow
+		}
 	case "rate_limit_error", "rate_limit_exceeded", "rate_limit", "slow_down":
 		category = publicmodel.ErrorRateLimit
 	case "overloaded_error", "server_error", "api_error", "service_unavailable":
@@ -65,6 +68,9 @@ func providerPayloadError(status int, body []byte) *publicmodel.RequestError {
 		code = payload.Error.Type
 	}
 	err := RequestFailure(status, code)
+	if err.Category == publicmodel.ErrorInvalidRequest && isContextWindowMessage(payload.Error.Message) {
+		err.Category = publicmodel.ErrorContextWindow
+	}
 	if typed := RequestFailure(0, payload.Error.Type); typed.Category == publicmodel.ErrorQuota || typed.Category == publicmodel.ErrorAuthentication {
 		err.Category = typed.Category
 	}
@@ -134,4 +140,33 @@ func ResponseFailure(responseError *ResponseError) *publicmodel.RequestError {
 		failure.Cause = errors.New("unsupported context_management")
 	}
 	return failure
+}
+
+func isContextWindowCode(code string) bool {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "context_length_exceeded", "context_window_exceeded", "string_above_max_length":
+		return true
+	}
+	return false
+}
+
+func isContextWindowMessage(message string) bool {
+	message = strings.ToLower(message)
+	for _, marker := range []string{
+		"context length", "context window", "maximum context", "prompt is too long",
+		"too many tokens", "input length", "reduce the length",
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+// IsContextWindowError reports whether a request failed because the provider
+// rejected its input as larger than the context window. Automatic compaction
+// uses it to recover once before failing the turn.
+func IsContextWindowError(err error) bool {
+	var requestErr *publicmodel.RequestError
+	return errors.As(err, &requestErr) && requestErr.Category == publicmodel.ErrorContextWindow
 }

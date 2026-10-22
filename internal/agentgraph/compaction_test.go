@@ -9,6 +9,7 @@ import (
 
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/tool"
+	publicmodel "github.com/afterlune/luneCore/model"
 	graph "github.com/afterlune/luneGraph"
 	"github.com/afterlune/luneGraph/checkpoint/memory"
 )
@@ -497,7 +498,7 @@ func TestPlanLocalCompactionRetainsRecentTurns(t *testing.T) {
 		)
 	}
 	request := model.ModelRequest{Input: model.NewResponseInputItems(items...)}
-	plan, err := planLocalCompaction(request, 6000, 6000)
+	plan, err := planLocalCompaction(request, 6000, 6000, 0)
 	if err != nil {
 		t.Fatalf("planLocalCompaction: %v", err)
 	}
@@ -566,5 +567,117 @@ func TestAutomaticCompactionFallsBackToPrunedHistoryWhenSummaryFails(t *testing.
 	}
 	if strings.Contains(string(contextJSON), largeResult) || !strings.Contains(string(contextJSON), "Earlier tool output cleared") {
 		t.Fatalf("fallback did not keep the pruned history: %s", contextJSON)
+	}
+}
+
+func TestAutomaticCompactionUsesMeasuredInputTokens(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	history := model.NewResponseInputItems(
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("old request")},
+		model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText("old answer")},
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("recent request")},
+	)
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Earlier work summary."}]}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"continued"}]}]}`),
+	}}
+	var events []ContextCompactionEvent
+	agent, err := NewWithOptions(requester, registry, AgentOptions{ID: "lead", Profile: "main", Provider: "vendor", Protocol: model.ProtocolAnthropicMessages, Model: "claude-test", CompactionObserver: func(event ContextCompactionEvent) { events = append(events, event) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The local estimate is far below the threshold; only the provider-measured
+	// size from the previous request crosses it.
+	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-measured", history, history,
+		model.NewResponseInputText("continue"), TaskOptions{
+			ContextWindow: 4000, ReserveOutputTokens: 100, AutoCompact: true, AutoCompactThreshold: 0.8,
+			LastInputTokens: 3500,
+		}, store, graph.Options{})
+	if err != nil {
+		t.Fatalf("StartWithTranscript: %v", err)
+	}
+	if result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(requester.requests) != 2 {
+		t.Fatalf("measured pressure did not summarize: requests=%d", len(requester.requests))
+	}
+	if len(events) == 0 || events[0].Stage != "started" || events[0].BeforeTokens != 3500 {
+		t.Fatalf("compaction events = %#v", events)
+	}
+	if result.Final.LastInputTokens != 0 {
+		t.Fatalf("compaction must clear the measured input, got %d", result.Final.LastInputTokens)
+	}
+}
+
+type overflowRequester struct {
+	inner *scriptedRequester
+	fired bool
+}
+
+func (r *overflowRequester) CreateResponse(ctx context.Context, request model.ResponseRequest) (*model.Response, error) {
+	if !r.fired {
+		r.fired = true
+		return nil, &publicmodel.RequestError{Category: publicmodel.ErrorContextWindow, Code: "context_length_exceeded"}
+	}
+	return r.inner.CreateResponse(ctx, request)
+}
+
+func TestContextOverflowCompactsAndRetriesOnce(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	history := model.NewResponseInputItems(
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("old request")},
+		model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText(strings.Repeat("detail.", 800))},
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("recent request")},
+	)
+	scripted := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Overflow summary."}]}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"recovered"}]}]}`),
+	}}
+	requester := &overflowRequester{inner: scripted}
+	var events []ContextCompactionEvent
+	agent, err := NewWithOptions(requester, registry, AgentOptions{ID: "lead", Profile: "main", Provider: "vendor", Protocol: model.ProtocolAnthropicMessages, Model: "claude-test", CompactionObserver: func(event ContextCompactionEvent) { events = append(events, event) }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.StartWithTranscript(context.Background(), "auto-compact-overflow", history, history,
+		model.NewResponseInputText("continue"), TaskOptions{ContextWindow: 4000, ReserveOutputTokens: 100, AutoCompact: false},
+		store, graph.Options{})
+	if err != nil {
+		t.Fatalf("StartWithTranscript: %v", err)
+	}
+	if result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("result = %#v", result)
+	}
+	if len(scripted.requests) != 2 {
+		t.Fatalf("expected a summary and a retried request, requests=%d", len(scripted.requests))
+	}
+	var started, completed bool
+	for _, event := range events {
+		if event.Reason == "overflow" && event.Stage == "started" {
+			started = true
+		}
+		if event.Reason == "overflow" && event.Stage == "completed" {
+			completed = true
+		}
+	}
+	if !started || !completed {
+		t.Fatalf("overflow compaction events = %#v", events)
 	}
 }

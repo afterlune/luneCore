@@ -244,6 +244,7 @@ func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 		ProjectInstructions:      append([]agentgraph.ProjectInstruction(nil), state.ProjectInstructions...),
 		ContextWindow:            state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,
 		AutoCompact: state.AutoCompact, AutoCompactThreshold: state.AutoCompactThreshold,
+		LastInputTokens:    state.LastInputTokens,
 		Execution:          state.Execution,
 		PermissionOverride: state.PermissionOverride,
 		PlanMode:           state.PlanMode,

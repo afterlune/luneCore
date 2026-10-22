@@ -154,6 +154,8 @@ type State struct {
 	ReserveOutputTokens      int64                        `json:"reserve_output_tokens,omitempty"`
 	AutoCompact              bool                         `json:"auto_compact,omitempty"`
 	AutoCompactThreshold     float64                      `json:"auto_compact_threshold,omitempty"`
+	LastInputTokens          int64                        `json:"last_input_tokens,omitempty"`
+	OverflowCompactions      int                          `json:"overflow_compactions,omitempty"`
 	History                  model.ResponseInput          `json:"history"`
 	Transcript               model.ResponseInput          `json:"transcript,omitempty"`
 	CompactionWarningEmitted bool                         `json:"compaction_warning_emitted,omitempty"`
@@ -214,11 +216,15 @@ type TaskOptions struct {
 	ReserveOutputTokens      int64
 	AutoCompact              bool
 	AutoCompactThreshold     float64
-	Execution                ExecutionOptions
-	PermissionOverride       string
-	PlanMode                 bool
-	PlanAuthorization        publictool.PlanAuthorization
-	NoInteractiveDecisions   bool
+	// LastInputTokens is the provider-reported input size of the session's latest
+	// main request; it seeds the automatic compaction trigger so a measured
+	// window usage above the threshold cannot be hidden by an under-estimate.
+	LastInputTokens        int64
+	Execution              ExecutionOptions
+	PermissionOverride     string
+	PlanMode               bool
+	PlanAuthorization      publictool.PlanAuthorization
+	NoInteractiveDecisions bool
 }
 
 // ExecutionOptions contains the small set of controls that affect one Agent run.

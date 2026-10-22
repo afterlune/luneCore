@@ -17,6 +17,7 @@ const (
 	ErrorInvalidRequest ErrorCategory = "invalid_request"
 	ErrorQuota          ErrorCategory = "quota"
 	ErrorProtocol       ErrorCategory = "protocol"
+	ErrorContextWindow  ErrorCategory = "context_window"
 	ErrorUnknown        ErrorCategory = "unknown"
 )
 

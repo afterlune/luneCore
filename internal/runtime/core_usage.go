@@ -146,3 +146,31 @@ func addUsage(totals *UsageTotals, usage Usage, available bool) {
 	totals.Cached += usage.InputTokensDetails.CachedTokens
 	totals.CacheCreation += usage.InputTokensDetails.CacheCreationTokens
 }
+
+// latestLeadInputTokens returns the provider-measured input size of the latest
+// lead/main request so a new task's compaction trigger cannot under-estimate a
+// session that is already close to its window.
+func latestLeadInputTokens(records []UsageRecord, provider, profile string) int64 {
+	for index := len(records) - 1; index >= 0; index-- {
+		record := records[index]
+		if record.Usage.InputTokens <= 0 {
+			continue
+		}
+		if record.AgentID != "" && record.AgentID != "lead" {
+			continue
+		}
+		if record.Purpose != "" && record.Purpose != UsagePurposeMain {
+			continue
+		}
+		// A provider or model switch rebuilds the context from the transcript;
+		// the previous provider's measured size no longer describes this request.
+		if record.Provider != "" && provider != "" && record.Provider != provider {
+			continue
+		}
+		if record.ModelProfile != "" && profile != "" && record.ModelProfile != profile {
+			continue
+		}
+		return record.Usage.InputTokens
+	}
+	return 0
+}

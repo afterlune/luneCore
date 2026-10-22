@@ -111,6 +111,7 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 			Goal: effective.Goal, ContextWindow: effective.ContextWindow,
 			ReserveOutputTokens: effective.ReserveOutputTokens, AutoCompact: effective.AutoCompact,
 			AutoCompactThreshold:   effective.AutoCompactThreshold,
+			LastInputTokens:        latestLeadInputTokens(saved.UsageRequests, profile.Provider, settings.ModelProfile),
 			Execution:              agentExecutionOptions(mergeExecutionOptions(c.executionDefaults, request.executionOptions)),
 			PermissionOverride:     request.permissionOverride,
 			PlanAuthorization:      request.authorization,
