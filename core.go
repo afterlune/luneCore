@@ -139,6 +139,7 @@ type CommandReadOptions = coreruntime.CommandReadOptions
 type CommandStatus = coreruntime.CommandStatus
 type Config = coreruntime.Config
 type ContextCompactionDetails = coreruntime.ContextCompactionDetails
+type CompactionResult = coreruntime.CompactionResult
 type ContextDefaults = coreruntime.ContextDefaults
 type Core = coreruntime.Core
 type Event = coreruntime.Event
