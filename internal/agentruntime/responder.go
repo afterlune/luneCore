@@ -12,10 +12,7 @@ import (
 	graph "github.com/afterlune/luneGraph"
 )
 
-const (
-	activeRunID          = "lune-cli-active"
-	compactKeepUserTurns = 4
-)
+const activeRunID = "lune-cli-active"
 
 type Responder struct {
 	logger                *slog.Logger
