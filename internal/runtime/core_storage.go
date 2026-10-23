@@ -5,13 +5,10 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"time"
 
-	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
-	"github.com/afterlune/luneGraph/checkpoint"
 )
 
 func (c *Core) saveSession(ctx context.Context, saved Session) error {
@@ -69,45 +66,6 @@ func (c *Core) decodeSession(ctx context.Context, snapshot session.Snapshot) (Se
 		snapshot = *latest
 	}
 	return Session{}, fmt.Errorf("session %q changed repeatedly during data migration", snapshot.ID)
-}
-
-func (c *Core) migrateLegacySession(ctx context.Context) error {
-	latest, err := c.sessions.Latest(ctx, c.workspace)
-	if err != nil || latest != nil {
-		return err
-	}
-	if _, err := c.checkpoints.Load(ctx, legacyRunID); err != nil {
-		if errors.Is(err, checkpoint.ErrNotFound) {
-			return nil
-		}
-		return err
-	}
-	history, err := c.runtime.PendingHistoryFor(ctx, legacyRunID)
-	if err != nil {
-		return err
-	}
-	var encoded json.RawMessage = json.RawMessage("null")
-	if history != nil {
-		items := responseHistoryItems(history)
-		cut := len(items)
-		for index := len(items) - 1; index >= 0; index-- {
-			message, ok := items[index].(model.InputMessage)
-			if ok && message.Role == model.RoleUser {
-				cut = index
-				break
-			}
-		}
-		prior := model.NewResponseInputItems(items[:cut]...)
-		encoded, err = json.Marshal(prior)
-		if err != nil {
-			return err
-		}
-	}
-	saved := Session{
-		ID: legacyRunID, Workspace: c.workspace, UpdatedAt: time.Now(),
-		Settings: SessionSettings{ModelProfile: c.models.DefaultModel()}, History: encoded,
-	}
-	return c.saveSession(ctx, saved)
 }
 
 func newID() (string, error) {

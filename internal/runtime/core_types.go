@@ -6,7 +6,6 @@ import (
 )
 
 const (
-	legacyRunID                 = "lune-cli-active"
 	DefaultAutoCompactThreshold = projectconfig.DefaultAutoCompactThreshold
 	DefaultAttachmentMaxFiles   = projectconfig.DefaultAttachmentMaxFiles
 )

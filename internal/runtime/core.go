@@ -326,9 +326,6 @@ func New(config Config) (_ *Core, err error) {
 	registry.SetToolEventObserver(c.onToolEvent)
 	registry.SetToolCallController(c.executeToolCall)
 	registry.SetPermissionApprovalHandler(c.requestApproval)
-	if err := c.migrateLegacySession(context.Background()); err != nil {
-		return nil, err
-	}
 	closeCheckpoints, closeSessions, closeRegistry, closeMCPManager = false, false, false, false
 	return c, nil
 }
