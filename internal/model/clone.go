@@ -264,7 +264,6 @@ func cloneContentPart(part ContentPart) (ContentPart, error) {
 			return UnknownContentPart{Raw: json.RawMessage("null")}, nil
 		}
 		return clonePointer(part), nil
-		return part, nil
 	default:
 		encoded, err := json.Marshal(part)
 		if err != nil {
