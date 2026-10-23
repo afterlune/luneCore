@@ -19,6 +19,7 @@ import (
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
 	"github.com/afterlune/luneCore/internal/tool"
+	"github.com/afterlune/luneCore/internal/workspacememory"
 	publicmemory "github.com/afterlune/luneCore/memory"
 	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
@@ -92,6 +93,7 @@ type Core struct {
 	callbackLimiter      *graph.Limiter
 	personalInstructions string
 	memoryConfig         MemoryConfig
+	memory               *workspacememory.Service
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
@@ -250,6 +252,7 @@ func New(config Config) (_ *Core, err error) {
 		callbackLimiter:      callbackLimiter,
 		personalInstructions: config.PersonalInstructions,
 		memoryConfig:         config.Memory,
+		memory:               workspacememory.New(sessions, workspace, config.Memory.Embedder, logger),
 		liveExecutions:       make(map[string]*graph.Execution[agentgraph.State]),
 		active:               TaskState{Status: TaskIdle},
 		activeTasks:          make(map[string]TaskState),
@@ -269,7 +272,7 @@ func New(config Config) (_ *Core, err error) {
 	}
 	if !c.memoryConfig.Disabled {
 		registrations, err := tool.HostToolRegistrations([]publictool.Registration{{
-			Tool: memorySearchTool{core: c},
+			Tool: workspacememory.NewSearchTool(c.memory),
 			Metadata: publictool.Metadata{
 				Category:        publictool.Category{Name: "workspace_memory", Description: "Search saved workspace memories from earlier tasks."},
 				PermissionClass: publictool.PermissionWorkspaceRead,
