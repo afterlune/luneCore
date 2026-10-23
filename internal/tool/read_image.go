@@ -107,3 +107,8 @@ func imageMIME(data []byte) (string, error) {
 		return "", errors.New("unsupported image format; read_image accepts PNG, JPEG, and WebP")
 	}
 }
+
+func (ReadImageTool) InstructionDirectories(ctx context.Context, r *Registry, args json.RawMessage) ([]string, bool, error) {
+	return fileInstructionDirectoriesForPath(ctx, r, args, true)
+}
+

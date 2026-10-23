@@ -86,3 +86,8 @@ func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 	return result
 }
+
+func (WriteFileTool) InstructionDirectories(ctx context.Context, r *Registry, args json.RawMessage) ([]string, bool, error) {
+	return fileInstructionDirectoriesForPath(ctx, r, args, false)
+}
+

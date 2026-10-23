@@ -110,3 +110,8 @@ func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 	return Result{Output: output.String(pageFooter(nextOffset, more, scanLimited))}
 }
+
+func (ListDirTool) InstructionDirectories(ctx context.Context, r *Registry, args json.RawMessage) ([]string, bool, error) {
+	return listDirInstructionDirectories(ctx, r, args)
+}
+

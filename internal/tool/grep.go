@@ -236,3 +236,8 @@ func grepFile(ctx context.Context, file *os.File, expression *regexp.Regexp, vis
 	}
 	return nil
 }
+
+func (GrepTool) InstructionDirectories(ctx context.Context, r *Registry, args json.RawMessage) ([]string, bool, error) {
+	return grepInstructionDirectories(ctx, r, args)
+}
+

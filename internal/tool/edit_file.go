@@ -197,3 +197,8 @@ func replaceTextStream(ctx context.Context, source io.Reader, destination io.Wri
 		}
 	}
 }
+
+func (EditFileTool) InstructionDirectories(ctx context.Context, r *Registry, args json.RawMessage) ([]string, bool, error) {
+	return fileInstructionDirectoriesForPath(ctx, r, args, true)
+}
+

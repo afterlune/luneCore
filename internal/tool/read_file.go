@@ -190,3 +190,8 @@ func readBoundedLine(ctx context.Context, reader *bufio.Reader, maximum int) ([]
 		}
 	}
 }
+
+func (ReadFileTool) InstructionDirectories(ctx context.Context, r *Registry, args json.RawMessage) ([]string, bool, error) {
+	return fileInstructionDirectoriesForPath(ctx, r, args, true)
+}
+

@@ -227,3 +227,8 @@ func (matcher *globMatcher) expandDoubleStars(states []bool) {
 		}
 	}
 }
+
+func (GlobTool) InstructionDirectories(ctx context.Context, r *Registry, args json.RawMessage) ([]string, bool, error) {
+	return globInstructionDirectories(ctx, r, args)
+}
+
