@@ -141,6 +141,11 @@ type MemoryCredentialStorage = mcp.MemoryCredentialStorage
 type HeadlessBrowserOpener = mcp.HeadlessBrowserOpener
 type SystemBrowserOpener = mcp.SystemBrowserOpener
 
+// NewMemoryCredentialStorage creates an in-memory credential storage for testing and headless usage.
+func NewMemoryCredentialStorage() *MemoryCredentialStorage {
+	return mcp.NewMemoryCredentialStorage()
+}
+
 type ApprovalRequest = coreruntime.ApprovalRequest
 type AttachmentLimits = coreruntime.AttachmentLimits
 type BudgetReason = coreruntime.BudgetReason
