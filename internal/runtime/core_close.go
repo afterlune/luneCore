@@ -42,9 +42,7 @@ func (c *Core) Close() error {
 		c.closing = true
 		c.mu.Unlock()
 		c.queueDrainWG.Wait()
-		for !c.runtimeConfigMu.TryLock() {
-			time.Sleep(time.Millisecond)
-		}
+		c.runtimeConfigMu.Lock()
 		runtimeConfigLocked = true
 		closingAfterQueueDrain = true
 		c.mu.Lock()
@@ -66,23 +64,13 @@ func (c *Core) Close() error {
 		c.runtimeConfigMu.Unlock()
 		runtimeConfigLocked = false
 		c.queueDrainWG.Wait()
-		for !c.runtimeConfigMu.TryLock() {
-			time.Sleep(time.Millisecond)
-		}
+		c.runtimeConfigMu.Lock()
 		runtimeConfigLocked = true
 		closingAfterQueueDrain = true
 		c.mu.Lock()
 	}
-	for executionID, waiter := range c.turnWaiters {
-		delete(c.turnWaiters, executionID)
-		waiter <- turnResult{err: errors.New("core is closing")}
-	}
-	for id, pending := range c.approvals {
-		delete(c.approvals, id)
-		select {
-		case pending.response <- false:
-		default:
-		}
+	if c.coord != nil {
+		c.coord.Close(errors.New("core is closing"))
 	}
 	// Terminal command observers append events through Core and may need c.mu.
 	// Keep new work out via c.closing, but release the lock while joining them.
@@ -102,13 +90,6 @@ func (c *Core) Close() error {
 		closeMCP = c.mcpManager.Close()
 	}
 	c.mu.Lock()
-	for id, pending := range c.interactions {
-		delete(c.interactions, id)
-		select {
-		case pending.response <- userInteractionResult{Err: errors.New("core is closing")}:
-		default:
-		}
-	}
 	closeErr := errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.closeSessionLocksLocked())
 	c.closed = true
 	c.closing = false

@@ -304,7 +304,7 @@ func TestSessionRuntimeFinalizesCompletedCheckpointAfterRestartWithoutRerunning(
 	if err != nil {
 		t.Fatal(err)
 	}
-	sessionDB, err := sql.Open("sqlite", filepath.Join(stateDir, "sessions.db"))
+	sessionDB, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(stateDir, "sessions.db"))+"?_busy_timeout=5000")
 	if err != nil {
 		t.Fatal(err)
 	}

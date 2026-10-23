@@ -16,21 +16,32 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 		return nil, errors.New("session runtime and context are required")
 	}
 	c := r.core
-	c.mu.RLock()
 	var requests []PendingRequest
-	for _, pending := range c.approvals {
-		if pending.sessionID == r.sessionID {
+	if c.coord != nil {
+		for _, pending := range c.coord.ApprovalsForSession(r.sessionID) {
 			copy := cloneApproval(pending.request)
 			requests = append(requests, PendingRequest{Kind: PendingApproval, Approval: &copy})
 		}
-	}
-	for _, pending := range c.interactions {
-		if pending.sessionID == r.sessionID {
+		for _, pending := range c.coord.InteractionsForSession(r.sessionID) {
 			copy := cloneInteraction(pending.request)
 			requests = append(requests, PendingRequest{Kind: PendingUserInteraction, Interaction: &copy})
 		}
+	} else {
+		c.mu.RLock()
+		for _, pending := range c.approvals {
+			if pending.sessionID == r.sessionID {
+				copy := cloneApproval(pending.request)
+				requests = append(requests, PendingRequest{Kind: PendingApproval, Approval: &copy})
+			}
+		}
+		for _, pending := range c.interactions {
+			if pending.sessionID == r.sessionID {
+				copy := cloneInteraction(pending.request)
+				requests = append(requests, PendingRequest{Kind: PendingUserInteraction, Interaction: &copy})
+			}
+		}
+		c.mu.RUnlock()
 	}
-	c.mu.RUnlock()
 	question, hasQuestion, err := c.runtime.PendingUserQuestion(ctx, r.sessionID)
 	if err != nil {
 		return nil, err

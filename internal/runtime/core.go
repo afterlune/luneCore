@@ -104,6 +104,7 @@ type Core struct {
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
 	sessionLocks   map[string]*sessionLockEntry
+	coord          *sessionCoordinator
 
 	mu                  sync.RWMutex
 	eventHubMu          sync.Mutex
@@ -241,6 +242,7 @@ func New(config Config) (_ *Core, err error) {
 	if executionDefaults.MaxTeamDepth == 0 {
 		executionDefaults.MaxTeamDepth = agentgraph.DefaultMaxTeamDepth
 	}
+	coord := newSessionCoordinator()
 	c := &Core{
 		logger:           logger,
 		workspace:        workspace,
@@ -260,17 +262,18 @@ func New(config Config) (_ *Core, err error) {
 		memoryConfig:         config.Memory,
 		memory:               workspacememory.New(sessions, workspace, config.Memory.Embedder, logger),
 		liveExecutions:       make(map[string]*graph.Execution[agentgraph.State]),
+		coord:                coord,
 		active:               TaskState{Status: TaskIdle},
-		activeTasks:          make(map[string]TaskState),
-		taskCancels:          make(map[string]context.CancelFunc),
-		approvals:            make(map[string]pendingApproval),
-		interactions:         make(map[string]pendingInteraction),
-		interactiveSessions:  make(map[string]bool),
+		activeTasks:          coord.activeTasks,
+		taskCancels:          coord.taskCancels,
+		approvals:            coord.approvals,
+		interactions:         coord.interactions,
+		interactiveSessions:  coord.interactiveSessions,
 		eventHubs:            make(map[string]*sessionEventHub),
-		queueDraining:        make(map[string]bool),
-		turnWaiters:          make(map[string]chan turnResult),
-		executionRuns:        make(map[string]chan struct{}),
-		interruptRequests:    make(map[string]bool),
+		queueDraining:        coord.queueDraining,
+		turnWaiters:          coord.turnWaiters,
+		executionRuns:        coord.executionRuns,
+		interruptRequests:    coord.interruptRequests,
 		sessionLocks:         make(map[string]*sessionLockEntry),
 	}
 	if err := c.configureCommands(config); err != nil {
