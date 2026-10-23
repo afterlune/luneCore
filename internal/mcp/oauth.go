@@ -31,7 +31,7 @@ func (client *httpTransport) Authorize(ctx context.Context) error {
 	}
 	previous, err := client.loadOAuthRecord()
 	if err != nil {
-		return fmt.Errorf("load existing MCP OAuth credentials from the system keyring: %w", err)
+		return fmt.Errorf("load existing MCP OAuth credentials: %w", err)
 	}
 	if previous != nil && previous.Issuer == metadata.Issuer {
 		scopes = mergeScopes(strings.Fields(previous.Scope), scopes)
@@ -98,7 +98,11 @@ func (client *httpTransport) Authorize(ctx context.Context) error {
 	}
 	parsedAuthorization.RawQuery = authorizationQuery.Encode()
 	authorizationURL := parsedAuthorization.String()
-	if err := openOAuthBrowser(authorizationURL); err != nil {
+	opener := client.browser
+	if opener == nil {
+		opener = SystemBrowserOpener{}
+	}
+	if err := opener.Open(flowContext, authorizationURL); err != nil {
 		return fmt.Errorf("could not open the system browser; open this authorization URL manually: %s (%w)", authorizationURL, err)
 	}
 	var response oauthCallback

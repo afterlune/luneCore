@@ -65,6 +65,12 @@ type Config struct {
 	Memory               MemoryConfig
 	// MaxConcurrentCallbacks caps callback work across all sessions in this Core.
 	MaxConcurrentCallbacks int
+	// BrowserOpener customizes how authorization and interaction URLs are opened.
+	// When nil, Core defaults to the host operating system browser.
+	BrowserOpener mcp.BrowserOpener
+	// CredentialStorage customizes where OAuth credentials are saved and loaded.
+	// When nil, Core defaults to the operating system keyring.
+	CredentialStorage mcp.CredentialStorage
 }
 
 // MemoryConfig controls automatic workspace memory. Memory is enabled by
@@ -293,6 +299,8 @@ func New(config Config) (_ *Core, err error) {
 		Logger:             logger,
 		RequestInteraction: c.requestUserInteraction,
 		RestoreEnabled:     config.RestoreEnabledMCP,
+		Browser:            config.BrowserOpener,
+		Credentials:        config.CredentialStorage,
 	})
 	if err != nil {
 		return nil, err

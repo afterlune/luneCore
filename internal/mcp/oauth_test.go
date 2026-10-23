@@ -63,7 +63,7 @@ func TestDiscoverOAuthUsesResourceMetadataAndChallengeScopes(t *testing.T) {
 	}))
 	defer server.Close()
 	endpoint = server.URL
-	client := newHTTPTransport("test", structMCPHTTPConfig(endpoint+"/mcp"))
+	client := newHTTPTransport("test", structMCPHTTPConfig(endpoint+"/mcp"), nil, nil)
 	metadata, scopes, err := client.discoverOAuth(context.Background())
 	if err != nil {
 		t.Fatal(err)

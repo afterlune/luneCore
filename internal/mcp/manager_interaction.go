@@ -32,7 +32,11 @@ func (manager *Manager) OpenElicitationURL(serverName, target string) error {
 	if err != nil || parsed.Host == "" || parsed.User != nil || !strings.EqualFold(parsed.Scheme, "http") && !strings.EqualFold(parsed.Scheme, "https") {
 		return errors.New("MCP elicitation URL must be an absolute http or https URL without userinfo")
 	}
-	return openOAuthBrowser(target)
+	opener := manager.browser
+	if opener == nil {
+		opener = SystemBrowserOpener{}
+	}
+	return opener.Open(context.Background(), target)
 }
 
 func (remote *remoteTool) withMRTR(ctx context.Context, method string, originalParams map[string]any, name string, bindings []headerBinding, first json.RawMessage) (json.RawMessage, error) {

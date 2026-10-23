@@ -25,7 +25,7 @@ func TestHTTPTransportAcceptsRequestScopedSSE(t *testing.T) {
 		_, _ = fmt.Fprintf(writer, ": keep-alive\n\nevent: message\ndata: {\"jsonrpc\":\"2.0\",\"id\":%s,\"result\":{\"tools\":[]}}\n\n", message.ID)
 	}))
 	defer server.Close()
-	client := newHTTPTransport("sse", projectconfig.MCPServerConfig{URL: server.URL})
+	client := newHTTPTransport("sse", projectconfig.MCPServerConfig{URL: server.URL}, nil, nil)
 	defer client.Close()
 	response, err := client.Request(context.Background(), "tools/list", nil, "", nil)
 	if err != nil {
@@ -45,7 +45,7 @@ func TestHTTPTransportRejectsMismatchedResponseID(t *testing.T) {
 		_, _ = fmt.Fprint(writer, `{"jsonrpc":"2.0","id":999,"result":{}}`)
 	}))
 	defer server.Close()
-	client := newHTTPTransport("mismatch", projectconfig.MCPServerConfig{URL: server.URL})
+	client := newHTTPTransport("mismatch", projectconfig.MCPServerConfig{URL: server.URL}, nil, nil)
 	defer client.Close()
 	if _, err := client.Request(context.Background(), "tools/list", nil, "", nil); err == nil {
 		t.Fatal("mismatched JSON-RPC ID was accepted")

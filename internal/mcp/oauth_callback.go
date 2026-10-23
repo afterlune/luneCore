@@ -8,8 +8,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os/exec"
-	"runtime"
 	"time"
 )
 
@@ -72,25 +70,6 @@ func openOAuthCallbackListener(cimd bool) (net.Listener, string, error) {
 
 func oauthRedirectURI(port string) string {
 	return "http://127.0.0.1:" + port + oauthCallbackPath
-}
-
-func openOAuthBrowser(target string) error {
-	var command string
-	var args []string
-	switch runtime.GOOS {
-	case "windows":
-		command, args = "rundll32", []string{"url.dll,FileProtocolHandler", target}
-	case "darwin":
-		command, args = "open", []string{target}
-	default:
-		command, args = "xdg-open", []string{target}
-	}
-	process := exec.Command(command, args...)
-	if err := process.Start(); err != nil {
-		return err
-	}
-	go func() { _ = process.Wait() }()
-	return nil
 }
 
 func randomToken(size int) (string, error) {

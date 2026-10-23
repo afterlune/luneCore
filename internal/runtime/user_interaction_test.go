@@ -15,7 +15,7 @@ func TestUserInteractionFailsFastWithoutCapableFrontend(t *testing.T) {
 	client := &Core{}
 	for _, agentID := range []string{"lead", "lead/reader"} {
 		_, err := client.requestUserInteraction(context.Background(), agentID, "docs", json.RawMessage(`{"method":"elicitation/create"}`))
-		if err == nil || !strings.Contains(err.Error(), "use the TUI") {
+		if err == nil || (!errors.Is(err, ErrUserInteractionUnsupported) && !strings.Contains(err.Error(), "cannot display MCP user interaction")) {
 			t.Fatalf("headless interaction for %q error = %v", agentID, err)
 		}
 	}

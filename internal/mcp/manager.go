@@ -34,6 +34,8 @@ type Options struct {
 	Registry           *tool.Registry
 	Limits             Limits
 	RequestInteraction InteractionHandler
+	Browser            BrowserOpener
+	Credentials        CredentialStorage
 }
 
 type ServerStatus struct {
@@ -60,6 +62,8 @@ type Manager struct {
 	registry       *tool.Registry
 	limits         Limits
 	interact       InteractionHandler
+	browser        BrowserOpener
+	credentials    CredentialStorage
 	enabled        map[string]bool
 	instances      map[string]*serverInstance
 	errors         map[string]string
@@ -108,6 +112,14 @@ func NewManager(options Options) (*Manager, error) {
 	if options.Limits.MaxTotalBytes <= 0 {
 		options.Limits.MaxTotalBytes = 20 << 20
 	}
+	browser := options.Browser
+	if browser == nil {
+		browser = SystemBrowserOpener{}
+	}
+	credentials := options.Credentials
+	if credentials == nil {
+		credentials = KeyringStorage{}
+	}
 	manager := &Manager{
 		logger:      options.Logger,
 		connectGate: make(chan struct{}, 1),
@@ -116,7 +128,7 @@ func NewManager(options Options) (*Manager, error) {
 		workspace:   options.Workspace, stateFile: filepath.Join(options.StateDir, "mcp-enabled.json"),
 		restoreEnabled: options.RestoreEnabled,
 		servers:        options.Servers, registry: options.Registry, limits: options.Limits,
-		interact: options.RequestInteraction, enabled: make(map[string]bool),
+		interact: options.RequestInteraction, browser: browser, credentials: credentials, enabled: make(map[string]bool),
 		instances: make(map[string]*serverInstance), errors: make(map[string]string),
 	}
 	if manager.restoreEnabled {

@@ -3,6 +3,7 @@ package core
 
 import (
 	projectconfig "github.com/afterlune/luneCore/internal/config"
+	"github.com/afterlune/luneCore/internal/mcp"
 	coreruntime "github.com/afterlune/luneCore/internal/runtime"
 )
 
@@ -128,7 +129,17 @@ var (
 	ErrModelRetryNotReady        = coreruntime.ErrModelRetryNotReady
 	ErrSessionInUse              = coreruntime.ErrSessionInUse
 	ErrToolInvocationPersistence = coreruntime.ErrToolInvocationPersistence
+	ErrUserInteractionUnsupported = coreruntime.ErrUserInteractionUnsupported
+	ErrAuthorizationRequired     = mcp.ErrAuthorizationRequired
+	ErrCredentialNotFound        = mcp.ErrCredentialNotFound
 )
+
+type BrowserOpener = mcp.BrowserOpener
+type CredentialStorage = mcp.CredentialStorage
+type KeyringStorage = mcp.KeyringStorage
+type MemoryCredentialStorage = mcp.MemoryCredentialStorage
+type HeadlessBrowserOpener = mcp.HeadlessBrowserOpener
+type SystemBrowserOpener = mcp.SystemBrowserOpener
 
 type ApprovalRequest = coreruntime.ApprovalRequest
 type AttachmentLimits = coreruntime.AttachmentLimits

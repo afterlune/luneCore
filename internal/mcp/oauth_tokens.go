@@ -54,7 +54,7 @@ func (client *httpTransport) refresh(ctx context.Context, previous *oauthRecord)
 		return &copy, nil
 	}
 	if previous.RefreshToken == "" {
-		return nil, errors.New("no refresh token is available; run /mcp auth <name> again")
+		return nil, errors.New("no refresh token is available; re-authenticate this server")
 	}
 	form := url.Values{
 		"grant_type":    {"refresh_token"},
@@ -125,6 +125,13 @@ func postOAuthForm(ctx context.Context, endpoint string, form url.Values) (*http
 	return response, nil
 }
 
+func (client *httpTransport) credentialStorage() CredentialStorage {
+	if client.credentials != nil {
+		return client.credentials
+	}
+	return KeyringStorage{}
+}
+
 func (client *httpTransport) loadOAuthRecord() (*oauthRecord, error) {
 	client.oauthMu.Lock()
 	if client.oauthLoaded {
@@ -138,8 +145,8 @@ func (client *httpTransport) loadOAuthRecord() (*oauthRecord, error) {
 	}
 	client.oauthMu.Unlock()
 	account := oauthAccount(client.serverName, canonicalResource(client.endpoint))
-	data, err := keyring.Get(oauthKeyringService, account)
-	if errors.Is(err, keyring.ErrNotFound) {
+	data, err := client.credentialStorage().Get(oauthKeyringService, account)
+	if errors.Is(err, ErrCredentialNotFound) || errors.Is(err, keyring.ErrNotFound) {
 		client.oauthMu.Lock()
 		client.oauthLoaded = true
 		client.oauth = nil
@@ -151,10 +158,10 @@ func (client *httpTransport) loadOAuthRecord() (*oauthRecord, error) {
 	}
 	var record oauthRecord
 	if err := json.Unmarshal(data, &record); err != nil {
-		return nil, errors.New("system keyring contains an invalid MCP OAuth record")
+		return nil, errors.New("credential storage contains an invalid MCP OAuth record")
 	}
 	if record.AccessToken == "" || record.Resource != canonicalResource(client.endpoint) {
-		return nil, errors.New("system keyring MCP OAuth record does not match this server")
+		return nil, errors.New("credential storage MCP OAuth record does not match this server")
 	}
 	client.oauthMu.Lock()
 	client.oauthLoaded = true
@@ -175,8 +182,8 @@ func (client *httpTransport) saveOAuthRecordLocked(record *oauthRecord) error {
 	if err != nil {
 		return err
 	}
-	if err := keyring.Set(oauthKeyringService, oauthAccount(client.serverName, canonicalResource(client.endpoint)), data); err != nil {
-		return fmt.Errorf("store MCP OAuth credentials in the system keyring: %w", err)
+	if err := client.credentialStorage().Set(oauthKeyringService, oauthAccount(client.serverName, canonicalResource(client.endpoint)), data); err != nil {
+		return fmt.Errorf("store MCP OAuth credentials: %w", err)
 	}
 	client.oauth = record
 	client.oauthLoaded = true

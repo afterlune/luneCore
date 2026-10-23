@@ -86,7 +86,7 @@ func (manager *Manager) connectServer(ctx context.Context, name string, force bo
 		}
 		client = started
 	case projectconfig.MCPTransportStreamableHTTP:
-		client = newHTTPTransport(name, config)
+		client = newHTTPTransport(name, config, manager.browser, manager.credentials)
 	default:
 		return fmt.Errorf("MCP server %q has unsupported transport %q", name, config.Transport)
 	}
@@ -160,7 +160,7 @@ func (manager *Manager) Authorize(ctx context.Context, name string) error {
 		client, _ = instance.client.(*httpTransport)
 	}
 	if client == nil {
-		client = newHTTPTransport(name, config)
+		client = newHTTPTransport(name, config, manager.browser, manager.credentials)
 	}
 	return client.Authorize(ctx)
 }

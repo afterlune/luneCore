@@ -76,20 +76,31 @@ func responseResult(response rpcResponse) (json.RawMessage, error) {
 	return append(json.RawMessage(nil), response.Result...), nil
 }
 
+var ErrAuthorizationRequired = errors.New("MCP server requires authorization")
+
 type httpTransport struct {
 	endpoint          string
 	serverName        string
 	clientMetadataURL string
 	client            *http.Client
+	browser           BrowserOpener
+	credentials       CredentialStorage
 	sequence          atomic.Uint64
 	oauthMu           sync.Mutex
 	oauth             *oauthRecord
 	oauthLoaded       bool
 }
 
-func newHTTPTransport(serverName string, config projectconfig.MCPServerConfig) *httpTransport {
+func newHTTPTransport(serverName string, config projectconfig.MCPServerConfig, browser BrowserOpener, credentials CredentialStorage) *httpTransport {
+	if browser == nil {
+		browser = SystemBrowserOpener{}
+	}
+	if credentials == nil {
+		credentials = KeyringStorage{}
+	}
 	return &httpTransport{
 		endpoint: config.URL, serverName: serverName, clientMetadataURL: config.ClientMetadataURL,
+		browser: browser, credentials: credentials,
 		client: &http.Client{Timeout: requestTimeout, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }},
 	}
 }
@@ -120,7 +131,7 @@ func (client *httpTransport) Request(ctx context.Context, method string, params 
 			}
 		}
 		if token == nil {
-			return nil, errors.New("MCP server requires authorization; use /mcp auth <name> in the TUI")
+			return nil, fmt.Errorf("%w: server %q requires authorization", ErrAuthorizationRequired, client.serverName)
 		}
 		if token.ExpiresAt > 0 && time.Now().Unix() >= token.ExpiresAt {
 			token, err = client.refresh(ctx, token)

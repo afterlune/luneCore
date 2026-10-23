@@ -95,13 +95,16 @@ func (c *Core) OpenMCPURL(serverName, target string) error {
 	return c.mcpManager.OpenElicitationURL(serverName, target)
 }
 
+// ErrUserInteractionUnsupported indicates the host client does not support interactive MCP callbacks.
+var ErrUserInteractionUnsupported = errors.New("session client cannot display MCP user interaction")
+
 func (c *Core) requestUserInteraction(ctx context.Context, agentID, serverName string, request json.RawMessage) (json.RawMessage, error) {
 	identity := publictool.CallIdentityFromContext(ctx)
 	c.mu.RLock()
 	available := c.interactiveSessions[identity.SessionID]
 	c.mu.RUnlock()
 	if !available {
-		return nil, errors.New("this client cannot display MCP user interaction; use the TUI")
+		return nil, ErrUserInteractionUnsupported
 	}
 	id, err := newID()
 	if err != nil {
