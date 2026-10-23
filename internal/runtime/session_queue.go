@@ -25,7 +25,7 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 	if err != nil {
 		return TurnSubmission{}, nil, err
 	}
-	if err := validateTaskInputAttachments(input, c.attachmentLimits); err != nil {
+	if err := model.ValidateInputAttachments(input, c.attachmentLimits.Resolved()); err != nil {
 		return TurnSubmission{}, nil, err
 	}
 	if request.MaxToolRounds < 0 {

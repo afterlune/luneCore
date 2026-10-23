@@ -187,7 +187,7 @@ func New(config Config) (_ *Core, err error) {
 	registry, err := tool.NewDefaultRegistry(workspace, tool.RegistryOptions{
 		Tools: hostTools, CommandExecutor: config.CommandExecutor, AllowLocalCommands: config.AllowLocalCommand,
 		SandboxHelperPath: config.SandboxHelperPath, CommandToolchainPaths: config.CommandToolchainPaths,
-		ImageMaxBytes: attachmentImageLimit(projectConfig.Attachments), Logger: logger,
+		ImageMaxBytes: projectConfig.Attachments.ImageMaxBytes(), Logger: logger,
 	})
 	if err != nil {
 		return nil, err

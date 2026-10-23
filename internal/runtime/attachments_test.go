@@ -99,7 +99,7 @@ func TestValidateTaskInputAttachmentLimits(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			input := taskInputWithImages(test.images...)
-			err := validateTaskInputAttachments(input, test.limits)
+			err := model.ValidateInputAttachments(input, test.limits.Resolved())
 			if test.wantErr == "" && err != nil {
 				t.Fatalf("validateTaskInputAttachments: %v", err)
 			}
@@ -156,7 +156,7 @@ func TestProjectAttachmentLimitsExposeEffectiveProjectValues(t *testing.T) {
 func TestValidateTaskInputAttachmentsAppliesDefaultInlineImageByteLimit(t *testing.T) {
 	data := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x5a}, int(DefaultAttachmentMaxFileBytes+1)))
 	input := taskInputWithImages(model.InputImage{ImageURL: "data:image/png;base64," + data})
-	err := validateTaskInputAttachments(input, projectconfig.AttachmentLimits{})
+	err := model.ValidateInputAttachments(input, projectconfig.AttachmentLimits{}.Resolved())
 	if err == nil || !strings.Contains(err.Error(), "attachments.maxFileBytes") {
 		t.Fatalf("default inline image validation error = %v, want per-file limit", err)
 	}

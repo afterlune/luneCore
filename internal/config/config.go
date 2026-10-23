@@ -79,6 +79,35 @@ type AttachmentLimits struct {
 	MaxTotalBytes int64 `json:"maxTotalBytes,omitempty"`
 }
 
+// Resolved returns effective limits with default values applied.
+func (l AttachmentLimits) Resolved() model.AttachmentLimits {
+	maxFiles := l.MaxFiles
+	if maxFiles <= 0 {
+		maxFiles = DefaultAttachmentMaxFiles
+	}
+	maxFileBytes := l.MaxFileBytes
+	if maxFileBytes <= 0 {
+		maxFileBytes = DefaultAttachmentMaxFileBytes
+	}
+	maxTotalBytes := l.MaxTotalBytes
+	if maxTotalBytes <= 0 {
+		maxTotalBytes = DefaultAttachmentMaxTotalBytes
+	}
+	return model.AttachmentLimits{
+		MaxFiles:      maxFiles,
+		MaxFileBytes:  maxFileBytes,
+		MaxTotalBytes: maxTotalBytes,
+		Explicit:      l.MaxFileBytes > 0 || l.MaxTotalBytes > 0,
+	}
+}
+
+// ImageMaxBytes returns the maximum byte limit for a single attachment image.
+func (l AttachmentLimits) ImageMaxBytes() int64 {
+	resolved := l.Resolved()
+	return min(resolved.MaxFileBytes, resolved.MaxTotalBytes)
+}
+
+
 // Load reads and validates one project config file.
 func Load(path string) (Config, error) {
 	return load(path, true)
