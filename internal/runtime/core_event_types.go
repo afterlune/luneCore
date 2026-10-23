@@ -194,6 +194,7 @@ type UserQuestionRequest struct {
 	ExecutionID  string
 	Questions    []UserQuestionItem
 	Draft        *UserQuestionDraft
+	DraftPayload json.RawMessage
 }
 
 // UserQuestionAnswer resumes exactly one persisted clarification wait.

@@ -9,8 +9,9 @@ import (
 
 // UserQuestionDraft stores unsubmitted answers without resuming the model.
 type UserQuestionDraft struct {
-	CurrentQuestionID string                      `json:"current_question_id"`
-	Responses         []UserQuestionDraftResponse `json:"responses"`
+	CurrentQuestionID string                      `json:"current_question_id,omitempty"`
+	Responses         []UserQuestionDraftResponse `json:"responses,omitempty"`
+	RawPayload        json.RawMessage             `json:"raw_payload,omitempty"`
 }
 
 type UserQuestionDraftResponse struct {
@@ -33,7 +34,8 @@ func validateQuestionAnswers(questions []UserQuestionItem, answers []UserQuestio
 	return nil
 }
 
-func (r *SessionRuntime) SaveUserQuestionDraft(ctx context.Context, wait UserQuestionAnswer, draft UserQuestionDraft) error {
+// SaveUserQuestionDraftPayload stores an arbitrary opaque draft payload for the active wait.
+func (r *SessionRuntime) SaveUserQuestionDraftPayload(ctx context.Context, wait UserQuestionAnswer, payload []byte) error {
 	if r == nil || r.core == nil || ctx == nil {
 		return errors.New("session runtime and context are required")
 	}
@@ -67,27 +69,35 @@ func (r *SessionRuntime) SaveUserQuestionDraft(ctx context.Context, wait UserQue
 		return errors.New("question batch has already been submitted")
 	}
 
-	ids := map[string]UserQuestionItem{}
-	for _, item := range q.Questions {
-		ids[item.ID] = item
+	return c.sessions.SaveUserQuestionDraft(ctx, r.sessionID, wait.RunID, wait.InvocationID, wait.CallID, payload)
+}
+
+// SaveUserQuestionDraft serializes a structured draft and persists it without resuming the model.
+func (r *SessionRuntime) SaveUserQuestionDraft(ctx context.Context, wait UserQuestionAnswer, draft UserQuestionDraft) error {
+	if r == nil || r.core == nil || ctx == nil {
+		return errors.New("session runtime and context are required")
 	}
-	if _, ok := ids[draft.CurrentQuestionID]; !ok {
-		return errors.New("invalid current question")
+	// Sanity check: question IDs in responses must match known questions if questions exist.
+	q, pending, err := r.core.runtime.PendingUserQuestion(ctx, r.sessionID)
+	if err != nil {
+		return err
 	}
-	seen := map[string]bool{}
-	for _, a := range draft.Responses {
-		item, ok := ids[a.QuestionID]
-		if !ok || seen[a.QuestionID] || a.SelectedOption < 0 || a.SelectedOption > len(item.Options) {
-			return errors.New("invalid question draft")
+	if pending && len(q.Questions) > 0 {
+		ids := make(map[string]struct{}, len(q.Questions))
+		for _, item := range q.Questions {
+			ids[item.ID] = struct{}{}
 		}
-		seen[a.QuestionID] = true
-		if a.Confirmed && a.SelectedOption == len(item.Options) && strings.TrimSpace(a.CustomAnswer) == "" {
-			return errors.New("confirmed custom answer must not be empty")
+		for _, a := range draft.Responses {
+			if a.QuestionID != "" {
+				if _, ok := ids[a.QuestionID]; !ok {
+					return errors.New("invalid question draft: unknown question id")
+				}
+			}
 		}
 	}
 	encoded, err := json.Marshal(draft)
 	if err != nil {
 		return err
 	}
-	return c.sessions.SaveUserQuestionDraft(ctx, r.sessionID, wait.RunID, wait.InvocationID, wait.CallID, encoded)
+	return r.SaveUserQuestionDraftPayload(ctx, wait, encoded)
 }

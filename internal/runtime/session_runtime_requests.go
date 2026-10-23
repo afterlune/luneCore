@@ -42,9 +42,10 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 			return nil, draftErr
 		}
 		if len(draft) > 0 {
-			publicQuestion.Draft = &UserQuestionDraft{}
-			if err := json.Unmarshal(draft, publicQuestion.Draft); err != nil {
-				return nil, err
+			publicQuestion.DraftPayload = append(json.RawMessage(nil), draft...)
+			var parsed UserQuestionDraft
+			if err := json.Unmarshal(draft, &parsed); err == nil {
+				publicQuestion.Draft = &parsed
 			}
 		}
 		requests = append(requests, PendingRequest{Kind: PendingUserQuestion, UserQuestion: &publicQuestion})
