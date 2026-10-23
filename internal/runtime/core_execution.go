@@ -34,7 +34,7 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...Exec
 	}
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
-	events, err := runtime.subscribeEvents(streamCtx, cursor, false)
+	events, err := runtime.subscribeEvents(streamCtx, cursor, false, false)
 	if err != nil {
 		return TaskResult{}, err
 	}

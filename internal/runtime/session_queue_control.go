@@ -213,7 +213,7 @@ func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (TaskRes
 	}
 	streamCtx, cancelStream := context.WithCancel(ctx)
 	defer cancelStream()
-	events, err := runtime.subscribeEvents(streamCtx, cursor, false)
+	events, err := runtime.subscribeEvents(streamCtx, cursor, false, false)
 	if err != nil {
 		return TaskResult{}, err
 	}

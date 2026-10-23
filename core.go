@@ -43,6 +43,7 @@ const (
 	EventTaskDiscarded            = coreruntime.EventTaskDiscarded
 	EventTaskQueued               = coreruntime.EventTaskQueued
 	EventRuntimeStreamFailed      = coreruntime.EventRuntimeStreamFailed
+	EventRuntimeReplayComplete    = coreruntime.EventRuntimeReplayComplete
 	EventCommandStarted           = coreruntime.EventCommandStarted
 	EventCommandFinished          = coreruntime.EventCommandFinished
 	EventToolStarted              = coreruntime.EventToolStarted

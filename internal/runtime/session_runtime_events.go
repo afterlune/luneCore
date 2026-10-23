@@ -9,10 +9,17 @@ import (
 // SubscribeEvents replays durable events after afterCursor, then follows new
 // events. Model stream deltas are live-only and may be dropped if a consumer is slow.
 func (r *SessionRuntime) SubscribeEvents(ctx context.Context, afterCursor int64) (<-chan Event, error) {
-	return r.subscribeEvents(ctx, afterCursor, true)
+	return r.subscribeEvents(ctx, afterCursor, true, false)
 }
 
-func (r *SessionRuntime) subscribeEvents(ctx context.Context, afterCursor int64, schedule bool) (<-chan Event, error) {
+// SubscribeEventsWithReplayComplete behaves like SubscribeEvents and emits one
+// transient EventRuntimeReplayComplete after durable replay catches up. The marker
+// is sent before events observed after that replay boundary and is never persisted.
+func (r *SessionRuntime) SubscribeEventsWithReplayComplete(ctx context.Context, afterCursor int64) (<-chan Event, error) {
+	return r.subscribeEvents(ctx, afterCursor, true, true)
+}
+
+func (r *SessionRuntime) subscribeEvents(ctx context.Context, afterCursor int64, schedule, includeReplayComplete bool) (<-chan Event, error) {
 	if r == nil || r.core == nil || ctx == nil || afterCursor < 0 {
 		return nil, errors.New("session runtime, context, and a non-negative event cursor are required")
 	}
@@ -30,6 +37,7 @@ func (r *SessionRuntime) subscribeEvents(ctx context.Context, afterCursor int64,
 		defer close(output)
 		defer unsubscribe()
 		cursor := afterCursor
+		replayCompleteSent := !includeReplayComplete
 		for {
 			if hub.isClosed() {
 				return
@@ -65,6 +73,14 @@ func (r *SessionRuntime) subscribeEvents(ctx context.Context, afterCursor int64,
 			}
 			if hub.isClosed() {
 				return
+			}
+			if !replayCompleteSent {
+				select {
+				case output <- Event{Kind: EventRuntimeReplayComplete, SessionID: r.sessionID}:
+					replayCompleteSent = true
+				case <-ctx.Done():
+					return
+				}
 			}
 			select {
 			case event := <-live:

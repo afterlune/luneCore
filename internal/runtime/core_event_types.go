@@ -18,6 +18,7 @@ const (
 	EventTaskDiscarded            EventKind = "task_discarded"
 	EventTaskQueued               EventKind = "task_queued"
 	EventRuntimeStreamFailed      EventKind = "runtime_stream_failed"
+	EventRuntimeReplayComplete    EventKind = "runtime_replay_complete"
 	EventCommandStarted           EventKind = "command_started"
 	EventCommandFinished          EventKind = "command_finished"
 	EventToolStarted              EventKind = "tool_started"
