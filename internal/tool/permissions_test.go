@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/afterlune/luneCore/internal/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 type permissionTestTool struct {
@@ -322,10 +323,10 @@ func TestAutoModeModelReview(t *testing.T) {
 	ctx := WithSessionApprovalStore(context.Background(), store)
 
 	// 1. Safe review -> auto approved without interactive prompt
-	registry.SetPermissionAutoReviewHandler(func(_ context.Context, req PermissionRequest) (bool, error) {
-		return true, nil
+	registry.SetPermissionAutoReviewHandler(func(_ context.Context, req PermissionRequest) (AutoReviewResult, error) {
+		return AutoReviewResult{Decision: AutoReviewApprove, Reason: "safe dev test"}, nil
 	})
-	res1 := registry.Run(ctx, "command", json.RawMessage(`{"cmd": "go test"}`))
+	res1 := registry.Run(ctx, "command", json.RawMessage(`{"command": "echo test"}`))
 	if res1.Err != nil {
 		t.Fatalf("safe run failed: %v", res1.Err)
 	}
@@ -333,8 +334,8 @@ func TestAutoModeModelReview(t *testing.T) {
 		t.Fatalf("expected 0 interactive approvals for safe review, got %d", interactiveApprovals)
 	}
 
-	// Subsequent identical run is remembered in SessionApprovalStore
-	res1Repeat := registry.Run(ctx, "command", json.RawMessage(`{"cmd": "go test"}`))
+	// Subsequent run is also reviewed and auto approved without prompt
+	res1Repeat := registry.Run(ctx, "command", json.RawMessage(`{"command": "echo test"}`))
 	if res1Repeat.Err != nil {
 		t.Fatalf("repeated run failed: %v", res1Repeat.Err)
 	}
@@ -343,8 +344,8 @@ func TestAutoModeModelReview(t *testing.T) {
 	}
 
 	// 2. Unsafe review -> falls back to interactive approval
-	registry.SetPermissionAutoReviewHandler(func(_ context.Context, req PermissionRequest) (bool, error) {
-		return false, nil
+	registry.SetPermissionAutoReviewHandler(func(_ context.Context, req PermissionRequest) (AutoReviewResult, error) {
+		return AutoReviewResult{Decision: AutoReviewAskUser, Reason: "destructive operation"}, nil
 	})
 	res2 := registry.Run(ctx, "command", json.RawMessage(`{"cmd": "rm -rf /"}`))
 	if res2.Err != nil {
@@ -355,8 +356,8 @@ func TestAutoModeModelReview(t *testing.T) {
 	}
 
 	// 3. Error in review -> falls back to interactive approval
-	registry.SetPermissionAutoReviewHandler(func(_ context.Context, req PermissionRequest) (bool, error) {
-		return false, errors.New("timeout")
+	registry.SetPermissionAutoReviewHandler(func(_ context.Context, req PermissionRequest) (AutoReviewResult, error) {
+		return AutoReviewResult{Decision: AutoReviewAskUser, Reason: "review timeout"}, errors.New("timeout")
 	})
 	res3 := registry.Run(ctx, "command", json.RawMessage(`{"cmd": "git push --force"}`))
 	if res3.Err != nil {
@@ -364,5 +365,89 @@ func TestAutoModeModelReview(t *testing.T) {
 	}
 	if interactiveApprovals != 2 {
 		t.Fatalf("expected 2 interactive approvals after review error fallback, got %d", interactiveApprovals)
+	}
+}
+
+func TestApprovalDecisionAllowOnceDoesNotPersist(t *testing.T) {
+	workspace := t.TempDir()
+	registry, err := NewDefaultRegistry(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	if err := registry.SetPermissionMode(PermissionModeWorkspace); err != nil {
+		t.Fatal(err)
+	}
+
+	interactivePrompts := 0
+	decision := ApprovalAllowOnce
+	registry.SetPermissionApprovalDecisionHandler(func(_ context.Context, req PermissionRequest) ApprovalDecision {
+		interactivePrompts++
+		return decision
+	})
+
+	store := NewSessionApprovalStore(nil)
+	ctx := WithSessionApprovalStore(context.Background(), store)
+
+	// First call -> prompts user, allows once
+	res1 := registry.Run(ctx, "command", json.RawMessage(`{"command": "echo test"}`))
+	if res1.Err != nil {
+		t.Fatalf("first run failed: %v", res1.Err)
+	}
+	if interactivePrompts != 1 {
+		t.Fatalf("expected 1 prompt, got %d", interactivePrompts)
+	}
+	if len(store.Snapshot()) != 0 {
+		t.Fatalf("expected 0 saved approvals after allow_once, got %d", len(store.Snapshot()))
+	}
+
+	// Second identical call -> must prompt again because allow_once was not saved
+	res2 := registry.Run(ctx, "command", json.RawMessage(`{"command": "echo test"}`))
+	if res2.Err != nil {
+		t.Fatalf("second run failed: %v", res2.Err)
+	}
+	if interactivePrompts != 2 {
+		t.Fatalf("expected 2 prompts, got %d", interactivePrompts)
+	}
+
+	// Now switch decision to allow_session
+	decision = ApprovalAllowSession
+	res3 := registry.Run(ctx, "command", json.RawMessage(`{"command": "echo test"}`))
+	if res3.Err != nil {
+		t.Fatalf("third run failed: %v", res3.Err)
+	}
+	if interactivePrompts != 3 {
+		t.Fatalf("expected 3 prompts, got %d", interactivePrompts)
+	}
+	if len(store.Snapshot()) != 1 {
+		t.Fatalf("expected 1 saved approval after allow_session, got %d", len(store.Snapshot()))
+	}
+
+	// Fourth identical call -> automatically allowed without prompt
+	res4 := registry.Run(ctx, "command", json.RawMessage(`{"command": "echo test"}`))
+	if res4.Err != nil {
+		t.Fatalf("fourth run failed: %v", res4.Err)
+	}
+	if interactivePrompts != 3 {
+		t.Fatalf("expected still 3 prompts after session approval, got %d", interactivePrompts)
+	}
+}
+
+func TestApprovalFingerprintInvalidation(t *testing.T) {
+	store := NewSessionApprovalStore(nil)
+	store.Add(publictool.SessionApproval{
+		Tool:        "command",
+		Arguments:   NormalizeArguments(json.RawMessage(`{"command":"echo test"}`)),
+		Fingerprint: "ws=/first;mode=workspace;net=true",
+	})
+
+	// Matching fingerprint -> allows
+	if !store.Allows("command", json.RawMessage(`{"command":"echo test"}`), "ws=/first;mode=workspace;net=true") {
+		t.Fatal("expected store to allow identical fingerprint")
+	}
+
+	// Changed environment / fingerprint -> invalidates, does not allow
+	if store.Allows("command", json.RawMessage(`{"command":"echo test"}`), "ws=/second;mode=workspace;net=true") {
+		t.Fatal("expected store to reject when fingerprint changed")
 	}
 }

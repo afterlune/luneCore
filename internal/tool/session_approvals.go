@@ -58,15 +58,22 @@ func NormalizeArguments(raw json.RawMessage) string {
 }
 
 // Allows checks whether the given tool call with arguments was previously approved in this session.
-func (s *SessionApprovalStore) Allows(tool string, arguments json.RawMessage) bool {
+func (s *SessionApprovalStore) Allows(tool string, arguments json.RawMessage, fingerprint ...string) bool {
 	if s == nil || tool == "" {
 		return false
 	}
 	norm := NormalizeArguments(arguments)
+	fp := ""
+	if len(fingerprint) > 0 {
+		fp = fingerprint[0]
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, a := range s.approvals {
 		if a.Tool == tool && a.Arguments == norm {
+			if a.Fingerprint != "" && fp != "" && a.Fingerprint != fp {
+				continue
+			}
 			return true
 		}
 	}
@@ -82,13 +89,14 @@ func (s *SessionApprovalStore) Add(approval publictool.SessionApproval) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, a := range s.approvals {
-		if a.Tool == approval.Tool && a.Arguments == norm {
+		if a.Tool == approval.Tool && a.Arguments == norm && a.Fingerprint == approval.Fingerprint {
 			return
 		}
 	}
 	s.approvals = append(s.approvals, publictool.SessionApproval{
-		Tool:      approval.Tool,
-		Arguments: norm,
+		Tool:        approval.Tool,
+		Arguments:   norm,
+		Fingerprint: approval.Fingerprint,
 	})
 }
 

@@ -65,9 +65,19 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 		}
 		pathGrant = grant
 	}
+	var fingerprint string
+	if r.workspaceRoot != nil && r.workspaceRoot.root != nil {
+		ws := r.workspaceRoot.root.Name()
+		var toolchains []string
+		if cmdTool, ok := registeredTool.(CommandTool); ok {
+			toolchains = cmdTool.CommandToolchainPaths
+		}
+		fingerprint = ComputeExecutionFingerprint(ws, string(mode), "powershell", toolchains, true)
+	}
 	permissionRequest := PermissionRequest{
 		Tool: name, AgentID: model.AgentIDFromContext(ctx), Arguments: append(json.RawMessage(nil), arguments...), Metadata: metadata,
 		PathGrant: pathGrant,
+		Fingerprint: fingerprint,
 	}
 	if err := permissions.authorize(ctx, permissionRequest); err != nil {
 		return nil, ctx, err

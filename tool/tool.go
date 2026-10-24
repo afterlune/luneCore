@@ -149,10 +149,20 @@ type PathGrant struct {
 	Access PathAccess `json:"access"`
 }
 
+// ApprovalDecision represents the user's explicit decision for a permission request.
+type ApprovalDecision string
+
+const (
+	ApprovalAllowOnce    ApprovalDecision = "allow_once"
+	ApprovalAllowSession ApprovalDecision = "allow_session"
+	ApprovalDeny         ApprovalDecision = "deny"
+)
+
 // SessionApproval records an approved tool operation for the lifetime of a session.
 type SessionApproval struct {
-	Tool      string `json:"tool"`
-	Arguments string `json:"arguments,omitempty"`
+	Tool        string `json:"tool"`
+	Arguments   string `json:"arguments,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
 }
 
 // PlanAuthorization records the host-approved capabilities for one plan run.

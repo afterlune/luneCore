@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/afterlune/luneCore/internal/model"
@@ -51,20 +53,48 @@ func PermissionModeDescription(mode PermissionMode) string {
 	}
 }
 
-// PermissionRequest contains the exact tool input shown before one-time approval.
-type PermissionRequest struct {
-	Tool      string
-	AgentID   string
-	Arguments json.RawMessage
-	Metadata  model.ToolMetadata
-	PathGrant *publictool.PathGrant
+// AutoReviewDecision is the model's structured verdict for an auto-review check.
+type AutoReviewDecision string
+
+const (
+	AutoReviewApprove AutoReviewDecision = "approve"
+	AutoReviewAskUser AutoReviewDecision = "ask_user"
+)
+
+// AutoReviewResult contains the structured decision and rationale from the auto-review model.
+type AutoReviewResult struct {
+	Decision AutoReviewDecision `json:"decision"`
+	Reason   string             `json:"reason"`
 }
 
-// PermissionApprovalHandler asks the user to allow one tool call.
+// PermissionRequest contains the exact tool input shown before one-time approval.
+type PermissionRequest struct {
+	Tool             string
+	AgentID          string
+	Arguments        json.RawMessage
+	Metadata         model.ToolMetadata
+	PathGrant        *publictool.PathGrant
+	AutoReviewReason string
+	Fingerprint      string
+}
+
+// ApprovalDecision aliases publictool.ApprovalDecision
+type ApprovalDecision = publictool.ApprovalDecision
+
+const (
+	ApprovalAllowOnce    = publictool.ApprovalAllowOnce
+	ApprovalAllowSession = publictool.ApprovalAllowSession
+	ApprovalDeny         = publictool.ApprovalDeny
+)
+
+// PermissionApprovalHandler asks the user to allow one tool call (boolean backward-compatibility).
 type PermissionApprovalHandler func(context.Context, PermissionRequest) bool
 
+// PermissionApprovalDecisionHandler asks the user for an explicit decision (AllowOnce, AllowSession, Deny).
+type PermissionApprovalDecisionHandler func(context.Context, PermissionRequest) ApprovalDecision
+
 // PermissionAutoReviewHandler evaluates whether a tool request is safe to execute without user prompt.
-type PermissionAutoReviewHandler func(context.Context, PermissionRequest) (bool, error)
+type PermissionAutoReviewHandler func(context.Context, PermissionRequest) (AutoReviewResult, error)
 
 type permissionModeContextKey struct{}
 
@@ -99,10 +129,11 @@ const (
 )
 
 type permissionSettings struct {
-	mu         sync.RWMutex
-	mode       PermissionMode
-	approve    PermissionApprovalHandler
-	autoReview PermissionAutoReviewHandler
+	mu              sync.RWMutex
+	mode            PermissionMode
+	approve         PermissionApprovalHandler
+	approveDecision PermissionApprovalDecisionHandler
+	autoReview      PermissionAutoReviewHandler
 }
 
 func newPermissionSettings(mode PermissionMode) *permissionSettings {
@@ -157,7 +188,7 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	mode, approve, autoReview, disposition := p.policy(request.Metadata)
+	mode, approve, approveDecision, autoReview, disposition := p.policy(request.Metadata)
 	if override, ok := permissionModeFromContext(ctx); ok {
 		mode = override
 		disposition = permissionPolicy(mode, request.Metadata.PermissionClass)
@@ -174,7 +205,7 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 
 	operationNeedsApproval := disposition == permissionNeedsApproval && !planAuthorizes(ctx, request)
 	if operationNeedsApproval {
-		if store := SessionApprovalStoreFromContext(ctx); store != nil && store.Allows(request.Tool, request.Arguments) {
+		if store := SessionApprovalStoreFromContext(ctx); store != nil && store.Allows(request.Tool, request.Arguments, request.Fingerprint) {
 			operationNeedsApproval = false
 		}
 	}
@@ -202,23 +233,17 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 
 	// In auto mode, try model auto-review first.
 	if (mode == PermissionModeAuto || mode == PermissionModeAsk) && autoReview != nil {
-		if safe, err := autoReview(ctx, approvalRequest); err == nil && safe {
-			if store := SessionApprovalStoreFromContext(ctx); store != nil {
-				store.Add(publictool.SessionApproval{
-					Tool:      approvalRequest.Tool,
-					Arguments: NormalizeArguments(approvalRequest.Arguments),
-				})
-			}
-			if approvalRequest.PathGrant != nil {
-				if grantStore := SessionPathGrantStoreFromContext(ctx); grantStore != nil {
-					grantStore.Add(*approvalRequest.PathGrant)
-				}
-			}
+		res, err := autoReview(ctx, approvalRequest)
+		if err == nil && res.Decision == AutoReviewApprove {
+			// Auto-review approves THIS invocation only. It NEVER automatically forms session-wide approvals or persistent directory grants.
 			return nil
+		}
+		if res.Reason != "" {
+			approvalRequest.AutoReviewReason = res.Reason
 		}
 	}
 
-	return requestApproval(ctx, approve, approvalRequest)
+	return requestApproval(ctx, approve, approveDecision, approvalRequest)
 }
 
 func planAuthorizes(ctx context.Context, request PermissionRequest) bool {
@@ -236,18 +261,27 @@ func permissionModeFromRegistry(ctx context.Context, permissions *permissionSett
 	if permissions == nil {
 		return PermissionModeFullAccess
 	}
-	mode, _, _, _ := permissions.policy(metadata)
+	mode, _, _, _, _ := permissions.policy(metadata)
 	return mode
 }
 
-func (p *permissionSettings) policy(metadata model.ToolMetadata) (PermissionMode, PermissionApprovalHandler, PermissionAutoReviewHandler, permissionDisposition) {
+func (p *permissionSettings) setApprovalDecisionHandler(handler PermissionApprovalDecisionHandler) {
 	if p == nil {
-		return PermissionModeFullAccess, nil, nil, permissionAllowed
+		return
+	}
+	p.mu.Lock()
+	p.approveDecision = handler
+	p.mu.Unlock()
+}
+
+func (p *permissionSettings) policy(metadata model.ToolMetadata) (PermissionMode, PermissionApprovalHandler, PermissionApprovalDecisionHandler, PermissionAutoReviewHandler, permissionDisposition) {
+	if p == nil {
+		return PermissionModeFullAccess, nil, nil, nil, permissionAllowed
 	}
 	p.mu.RLock()
-	mode, approve, autoReview := p.mode, p.approve, p.autoReview
+	mode, approve, approveDecision, autoReview := p.mode, p.approve, p.approveDecision, p.autoReview
 	p.mu.RUnlock()
-	return mode, approve, autoReview, permissionPolicy(mode, metadata.PermissionClass)
+	return mode, approve, approveDecision, autoReview, permissionPolicy(mode, metadata.PermissionClass)
 }
 
 func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) permissionDisposition {
@@ -294,22 +328,51 @@ func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) perm
 	}
 }
 
-func requestApproval(ctx context.Context, approve PermissionApprovalHandler, request PermissionRequest) error {
-	if approve == nil {
+func requestApproval(ctx context.Context, approve PermissionApprovalHandler, approveDecision PermissionApprovalDecisionHandler, request PermissionRequest) error {
+	if approve == nil && approveDecision == nil {
 		return fmt.Errorf("tool %q requires approval, but no interactive approval handler is available; use /permissions full-access to allow it without prompting", request.Tool)
 	}
-	approved := approve(ctx, request)
+	var decision ApprovalDecision
+	if approveDecision != nil {
+		decision = approveDecision(ctx, request)
+	} else {
+		if approve(ctx, request) {
+			decision = ApprovalAllowSession
+		} else {
+			decision = ApprovalDeny
+		}
+	}
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !approved {
+	if decision == ApprovalDeny {
 		return fmt.Errorf("permission denied for tool %q", request.Tool)
 	}
-	if store := SessionApprovalStoreFromContext(ctx); store != nil {
-		store.Add(publictool.SessionApproval{
-			Tool:      request.Tool,
-			Arguments: NormalizeArguments(request.Arguments),
-		})
+	if decision == ApprovalAllowSession {
+		if store := SessionApprovalStoreFromContext(ctx); store != nil {
+			store.Add(publictool.SessionApproval{
+				Tool:        request.Tool,
+				Arguments:   NormalizeArguments(request.Arguments),
+				Fingerprint: request.Fingerprint,
+			})
+		}
+		if request.PathGrant != nil {
+			if grantStore := SessionPathGrantStoreFromContext(ctx); grantStore != nil {
+				grantStore.Add(*request.PathGrant)
+			}
+		}
 	}
 	return ctx.Err()
+}
+
+// ComputeExecutionFingerprint computes a stable fingerprint for execution boundaries.
+func ComputeExecutionFingerprint(workspace, sandboxMode, shell string, toolchains []string, network bool) string {
+	parts := []string{
+		"ws=" + filepath.Clean(workspace),
+		"mode=" + sandboxMode,
+		"shell=" + shell,
+		"toolchains=" + strings.Join(toolchains, ","),
+		fmt.Sprintf("net=%t", network),
+	}
+	return strings.Join(parts, ";")
 }

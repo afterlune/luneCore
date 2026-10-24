@@ -373,24 +373,25 @@ func (c *Core) autoReviewProfileID(sessionID string) string {
 	return ""
 }
 
-type autoReviewResult struct {
-	Safe   bool   `json:"safe"`
-	Reason string `json:"reason"`
+type autoReviewModelOutput struct {
+	Decision string `json:"decision"`
+	Safe     *bool  `json:"safe,omitempty"`
+	Reason   string `json:"reason"`
 }
 
-func (c *Core) autoReviewToolRequest(ctx context.Context, request tool.PermissionRequest) (bool, error) {
+func (c *Core) autoReviewToolRequest(ctx context.Context, request tool.PermissionRequest) (tool.AutoReviewResult, error) {
 	if c == nil || ctx == nil || c.models == nil {
-		return false, nil
+		return tool.AutoReviewResult{Decision: tool.AutoReviewAskUser, Reason: "auto-review model client is unavailable"}, nil
 	}
 	identity := publictool.CallIdentityFromContext(ctx)
 	profileID := c.autoReviewProfileID(identity.SessionID)
 	if profileID == "" {
-		return false, nil
+		return tool.AutoReviewResult{Decision: tool.AutoReviewAskUser, Reason: "model profile for auto-review is unconfigured"}, nil
 	}
 	client, err := c.models.NewClient(profileID, c.registry, c.logger)
 	if err != nil {
 		c.logger.Warn("auto-review client creation failed", "error", err)
-		return false, nil
+		return tool.AutoReviewResult{Decision: tool.AutoReviewAskUser, Reason: fmt.Sprintf("create auto-review client: %v", err)}, nil
 	}
 
 	reviewCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
@@ -413,15 +414,16 @@ func (c *Core) autoReviewToolRequest(ctx context.Context, request tool.Permissio
 
 	modelReq := model.ModelRequest{
 		Instructions: "You are a security auditor reviewing agent tool invocations in a software development environment. " +
-			"Evaluate whether the requested tool operation is standard, benign, and safe to execute automatically, or if it carries risk (destructive file changes outside workspace, dangerous command execution like rm -rf, git push --force, system alterations, privilege escalation, credential theft) that warrants interactive user approval. " +
-			"Respond ONLY with a JSON object: {\"safe\": true, \"reason\": \"...\"} or {\"safe\": false, \"reason\": \"...\"}.",
+			"Evaluate whether the requested tool operation is standard, benign, and safe to execute automatically (such as standard test runs, builds, file inspections within workspace), or if it carries risk (destructive actions outside workspace, dangerous command execution like rm -rf, git push --force, system alterations, privilege escalation, credential access, or unverified external access). " +
+			"If information is insufficient or you are uncertain, you MUST decide \"ask_user\". " +
+			"Respond ONLY with a JSON object: {\"decision\": \"approve\"|\"ask_user\", \"reason\": \"...\"}.",
 		Input: model.NewResponseInputText(sb.String()),
 	}
 	reviewCtx = model.WithUsagePurpose(reviewCtx, model.UsagePurposeValidation)
 	resp, err := client.CreateResponse(reviewCtx, modelReq)
 	if err != nil {
 		c.logger.Warn("auto-review model request failed, falling back to interactive approval", "error", err)
-		return false, nil
+		return tool.AutoReviewResult{Decision: tool.AutoReviewAskUser, Reason: "auto-review request failed: " + err.Error()}, nil
 	}
 	var outputText string
 	if resp != nil {
@@ -448,27 +450,23 @@ func (c *Core) autoReviewToolRequest(ctx context.Context, request tool.Permissio
 			trimmed = strings.TrimSpace(strings.Join(lines, "\n"))
 		}
 	}
-	var res autoReviewResult
+	var res autoReviewModelOutput
 	if err := json.Unmarshal([]byte(trimmed), &res); err != nil {
 		c.logger.Warn("auto-review unmarshal failed, falling back to interactive approval", "error", err, "raw", outputText)
-		return false, nil
+		return tool.AutoReviewResult{Decision: tool.AutoReviewAskUser, Reason: "review model response was invalid JSON"}, nil
 	}
 
-	if res.Safe {
+	isApproved := res.Decision == "approve" || (res.Decision == "" && res.Safe != nil && *res.Safe)
+	if isApproved {
 		c.logger.Info("auto-review approved tool invocation", "tool", request.Tool, "reason", res.Reason)
-		if identity.SessionID != "" {
-			item := publictool.SessionApproval{
-				Tool:      request.Tool,
-				Arguments: tool.NormalizeArguments(request.Arguments),
-			}
-			_ = c.addSessionApproval(context.Background(), identity.SessionID, item)
-			if request.PathGrant != nil {
-				_ = c.addSessionPathGrant(context.Background(), identity.SessionID, *request.PathGrant)
-			}
-		}
-		return true, nil
+		// Model auto-review authorizes this single invocation only; do not persist session approvals.
+		return tool.AutoReviewResult{Decision: tool.AutoReviewApprove, Reason: res.Reason}, nil
 	}
 
-	c.logger.Info("auto-review flagged tool invocation for user approval", "tool", request.Tool, "reason", res.Reason)
-	return false, nil
+	reason := res.Reason
+	if reason == "" {
+		reason = "model flagged potential risk or requested interactive confirmation"
+	}
+	c.logger.Info("auto-review flagged tool invocation for user decision", "tool", request.Tool, "reason", reason)
+	return tool.AutoReviewResult{Decision: tool.AutoReviewAskUser, Reason: reason}, nil
 }

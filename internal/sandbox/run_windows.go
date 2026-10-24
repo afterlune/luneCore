@@ -106,6 +106,11 @@ func runPlatform(ctx context.Context, request publictool.CommandRequest, _ io.Wr
 			return err
 		}
 	}
+	for _, path := range request.Sandbox.CommandToolchainPaths {
+		if err := grant(path, publictool.PathRead, false); err != nil {
+			return err
+		}
+	}
 	// A workspace-rooted provider drive avoids PowerShell inspecting private
 	// ancestors merely to resolve a location. Native programs use the real cwd.
 	escapedWorkspace := strings.ReplaceAll(workspace, "'", "''")

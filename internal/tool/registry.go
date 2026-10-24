@@ -177,6 +177,16 @@ func (r *Registry) SetPermissionApprovalHandler(handler PermissionApprovalHandle
 	permissions.setApprovalHandler(handler)
 }
 
+func (r *Registry) SetPermissionApprovalDecisionHandler(handler PermissionApprovalDecisionHandler) {
+	if r == nil {
+		return
+	}
+	r.mu.RLock()
+	permissions := r.permissions
+	r.mu.RUnlock()
+	permissions.setApprovalDecisionHandler(handler)
+}
+
 // SetPermissionAutoReviewHandler configures the evaluator for auto mode review.
 func (r *Registry) SetPermissionAutoReviewHandler(handler PermissionAutoReviewHandler) {
 	if r == nil {
@@ -342,7 +352,7 @@ func (r *Registry) ToolVisibleForMode(name, mode string) bool {
 	r.mu.RUnlock()
 	var disposition permissionDisposition
 	if mode == "" {
-		_, _, _, disposition = permissions.policy(metadata)
+		_, _, _, _, disposition = permissions.policy(metadata)
 	} else {
 		disposition = permissionPolicy(PermissionMode(mode), metadata.PermissionClass)
 	}

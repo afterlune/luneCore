@@ -114,40 +114,35 @@ func TestAutoReviewToolRequest(t *testing.T) {
 
 	ctx := publictool.WithCallIdentity(context.Background(), publictool.CallIdentity{SessionID: session.ID})
 
-	// 1. Safe tool call -> auto-review returns safe=true and saves approval
+	// 1. Safe tool call -> auto-review returns Decision=approve (single invocation, no persistent approval)
 	toolReq := runtimepermission.PermissionRequest{
 		Tool:      "command",
 		Arguments: json.RawMessage(`{"command": "go build ./..."}`),
 	}
-	safe, err := client.autoReviewToolRequest(ctx, toolReq)
+	reviewRes, err := client.autoReviewToolRequest(ctx, toolReq)
 	if err != nil {
 		t.Fatalf("autoReviewToolRequest failed: %v", err)
 	}
-	if !safe {
-		t.Fatal("expected auto-review to approve safe tool call")
+	if reviewRes.Decision != runtimepermission.AutoReviewApprove {
+		t.Fatalf("expected auto-review to approve safe tool call, got %s", reviewRes.Decision)
 	}
 
 	saved, err := client.GetSession(context.Background(), session.ID)
-	if err != nil || len(saved.Approvals) != 1 || saved.Approvals[0].Tool != "command" {
-		t.Fatalf("saved approvals after safe review = %#v, error %v", saved.Approvals, err)
+	if err != nil || len(saved.Approvals) != 0 {
+		t.Fatalf("saved approvals should be empty after auto review, got %#v", saved.Approvals)
 	}
 
-	// 2. Unsafe tool call -> auto-review returns safe=false and does NOT save approval
+	// 2. Unsafe tool call -> auto-review returns Decision=ask_user
 	unsafeToolReq := runtimepermission.PermissionRequest{
 		Tool:      "command",
 		Arguments: json.RawMessage(`{"command": "rm -rf /"}`),
 	}
-	safe, err = client.autoReviewToolRequest(ctx, unsafeToolReq)
+	reviewRes, err = client.autoReviewToolRequest(ctx, unsafeToolReq)
 	if err != nil {
 		t.Fatalf("autoReviewToolRequest failed: %v", err)
 	}
-	if safe {
-		t.Fatal("expected auto-review to reject unsafe tool call")
-	}
-
-	saved, err = client.GetSession(context.Background(), session.ID)
-	if err != nil || len(saved.Approvals) != 1 {
-		t.Fatalf("approvals count should remain 1, got %#v", saved.Approvals)
+	if reviewRes.Decision != runtimepermission.AutoReviewAskUser {
+		t.Fatalf("expected auto-review to ask user for unsafe tool call, got %s", reviewRes.Decision)
 	}
 }
 
