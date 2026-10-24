@@ -141,7 +141,7 @@ func TestReadFileDirectoryErrorIsDistinctFromEscape(t *testing.T) {
 		t.Fatalf("directory read error = %v", directory.Err)
 	}
 	escape := (ReadFileTool{Workspace: root}).Run(context.Background(), json.RawMessage(`{"path":"../outside"}`))
-	if escape.Err == nil || escape.Err.Error() != "path escapes the workspace" {
+	if escape.Err == nil || !strings.Contains(escape.Err.Error(), "escapes the workspace") {
 		t.Fatalf("escape read error = %v", escape.Err)
 	}
 }

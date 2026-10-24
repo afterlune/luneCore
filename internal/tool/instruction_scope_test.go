@@ -64,3 +64,22 @@ func TestCleanProjectInstructionPath(t *testing.T) {
 		t.Fatalf("CleanProjectInstructionPath returned %q, %v", got, err)
 	}
 }
+
+func TestProjectInstructionPathEscapeGuidance(t *testing.T) {
+	workspace := t.TempDir()
+	traversal := filepath.Join("..", "outside")
+	_, _, err := ProjectInstructionPath(workspace, traversal, true)
+	if err == nil {
+		t.Fatal("expected traversal error, got nil")
+	}
+	expectedAbs := filepath.Clean(filepath.Join(workspace, traversal))
+	if !strings.Contains(err.Error(), "escapes the workspace root") {
+		t.Fatalf("error %q does not contain 'escapes the workspace root'", err.Error())
+	}
+	if !strings.Contains(err.Error(), filepath.Base(expectedAbs)) {
+		t.Fatalf("error %q does not contain expected derived abs %q", err.Error(), expectedAbs)
+	}
+	if !strings.Contains(err.Error(), "session directory grant") {
+		t.Fatalf("error %q does not contain guidance 'session directory grant'", err.Error())
+	}
+}

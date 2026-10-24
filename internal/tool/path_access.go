@@ -47,7 +47,7 @@ func resolveToolPath(workspace, requested string, kind pathKind, mustExist bool)
 	if !filepath.IsAbs(requested) {
 		abs = filepath.Clean(filepath.Join(root, requested))
 		if !pathWithin(root, abs) {
-			return resolvedToolPath{}, errors.New("path escapes the workspace")
+			return resolvedToolPath{}, fmt.Errorf("path %q escapes the workspace root %q; relative paths cannot access outside files. Please derive and provide the full absolute path (e.g. %q) to request a session directory grant", requested, root, abs)
 		}
 	} else {
 		abs = filepath.Clean(requested)

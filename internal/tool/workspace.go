@@ -145,7 +145,7 @@ func resolveWorkspacePathAtRoot(root, requestedPath string, mustExist bool) (str
 
 	candidate := filepath.Clean(filepath.Join(root, requestedPath))
 	if !pathWithin(root, candidate) {
-		return "", errors.New("path escapes the workspace")
+		return "", fmt.Errorf("path %q escapes the workspace root %q; relative paths cannot access outside files. Please derive and provide the full absolute path (e.g. %q) to request a session directory grant", requestedPath, root, candidate)
 	}
 	if candidate == root {
 		return "", errors.New("path refers to a directory; use list_dir to inspect it")
@@ -214,7 +214,7 @@ func resolveWorkspaceEntryAtRoot(root, requestedPath string) (string, fs.FileInf
 
 	candidate := filepath.Clean(filepath.Join(root, requestedPath))
 	if !pathWithin(root, candidate) {
-		return "", nil, errors.New("path escapes the workspace")
+		return "", nil, fmt.Errorf("path %q escapes the workspace root %q; relative paths cannot access outside files. Please derive and provide the full absolute path (e.g. %q) to request a session directory grant", requestedPath, root, candidate)
 	}
 	resolved, err := filepath.EvalSymlinks(candidate)
 	if err != nil {

@@ -12,6 +12,8 @@ import (
 
 const maxWorkspaceInstructionGlobMatches = 500
 
+var errWorkspacePathEscapesRoot = errors.New("workspace path escapes the root")
+
 // ReadWorkspaceFile reads a bounded regular file through the registry's
 // pinned workspace root.
 func (r *Registry) ReadWorkspaceFile(ctx context.Context, relativePath string, maxBytes int64) ([]byte, error) {
@@ -241,7 +243,7 @@ func cleanWorkspaceRelativePath(value string, allowDot bool) (string, error) {
 		return "", errors.New("workspace path must name a file")
 	}
 	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
-		return "", errors.New("workspace path escapes the root")
+		return "", errWorkspacePathEscapesRoot
 	}
 	clean = filepath.ToSlash(clean)
 	if !fs.ValidPath(clean) {

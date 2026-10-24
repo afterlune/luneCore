@@ -109,6 +109,10 @@ func ProjectInstructionPath(workspace, requested string, allowDot bool) (string,
 	}
 	clean, err := cleanWorkspaceRelativePath(requested, allowDot)
 	if err != nil {
+		if errors.Is(err, errWorkspacePathEscapesRoot) {
+			abs := filepath.Clean(filepath.Join(workspace, requested))
+			return "", false, fmt.Errorf("path %q escapes the workspace root %q; relative paths cannot access outside files. Please derive and provide the full absolute path (e.g. %q) to request a session directory grant", requested, workspace, abs)
+		}
 		return "", false, err
 	}
 	return clean, true, nil

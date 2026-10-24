@@ -188,7 +188,7 @@ func TestRelativeTraversalAndWorkspaceSymlinkEscapeAreRejected(t *testing.T) {
 	if _, err := reader.PathAccessRequest(context.Background(), json.RawMessage(`{"path":`+quoteJSON(traversal)+`}`)); err == nil || !strings.Contains(err.Error(), "escapes the workspace") {
 		t.Fatalf("relative traversal request error = %v", err)
 	}
-	if result := reader.Run(context.Background(), json.RawMessage(`{"path":`+quoteJSON(traversal)+`}`)); result.Err == nil || !strings.Contains(result.Err.Error(), "escapes the workspace") {
+	if result := reader.Run(context.Background(), json.RawMessage(`{"path":`+quoteJSON(traversal)+`}`)); result.Err == nil || !strings.Contains(result.Err.Error(), "escapes the workspace") || !strings.Contains(result.Err.Error(), "session directory grant") {
 		t.Fatalf("relative traversal result = %#v", result)
 	}
 	grant, err := reader.PathAccessRequest(context.Background(), json.RawMessage(`{"path":`+quoteJSON(secret)+`}`))
