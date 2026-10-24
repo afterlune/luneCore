@@ -108,6 +108,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		ExecutionID: taskOptions.ExecutionID, AgentID: "lead",
 	})
 	ctx = runtimepermission.WithSessionPathGrantStore(ctx, runtimepermission.NewSessionPathGrantStore(saved.PathGrants))
+	ctx = runtimepermission.WithSessionApprovalStore(ctx, runtimepermission.NewSessionApprovalStore(saved.Approvals))
 	ctx = runtimepermission.WithPermissionMode(ctx, taskOptions.PermissionOverride)
 	ctx = publictool.WithPlanAuthorization(ctx, taskOptions.PlanAuthorization)
 	ctx = publictool.WithNoInteractiveDecisions(ctx, taskOptions.NoInteractiveDecisions)

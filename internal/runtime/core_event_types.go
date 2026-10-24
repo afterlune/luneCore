@@ -218,10 +218,11 @@ type userInteractionResult struct {
 }
 
 type pendingApproval struct {
-	response    chan bool
-	request     ApprovalRequest
-	pathGrants  *runtimepermission.SessionPathGrantStore
-	sessionID   string
+	response         chan bool
+	request          ApprovalRequest
+	pathGrants       *runtimepermission.SessionPathGrantStore
+	sessionApprovals *runtimepermission.SessionApprovalStore
+	sessionID        string
 	taskID      string
 	executionID string
 }

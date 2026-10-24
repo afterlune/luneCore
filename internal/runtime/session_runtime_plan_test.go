@@ -314,7 +314,7 @@ func TestPlanModeHandoffStartsPlanOnlySession(t *testing.T) {
 		hostTextResponse("Done."),
 	}}
 	client := newProgrammaticCore(t, provider)
-	if err := client.SetPermissionMode(PermissionAsk); err != nil {
+	if err := client.SetPermissionMode(PermissionAuto); err != nil {
 		t.Fatal(err)
 	}
 	source, err := client.CreateSession(context.Background(), json.RawMessage("null"))
@@ -361,8 +361,8 @@ func TestPlanModeHandoffStartsPlanOnlySession(t *testing.T) {
 	if !strings.Contains(string(encodedInput), "Only update the README") || strings.Contains(string(encodedInput), "Old conversation context") {
 		t.Fatalf("new-context input = %s", encodedInput)
 	}
-	if client.PermissionMode() != PermissionAsk {
-		t.Fatalf("global permission mode = %q, want ask preserved", client.PermissionMode())
+	if client.PermissionMode() != PermissionAuto {
+		t.Fatalf("global permission mode = %q, want auto preserved", client.PermissionMode())
 	}
 }
 

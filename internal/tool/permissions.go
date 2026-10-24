@@ -18,8 +18,11 @@ type PermissionMode string
 const (
 	PermissionModeReadOnly   PermissionMode = "read-only"
 	PermissionModeWorkspace  PermissionMode = "workspace"
-	PermissionModeAsk        PermissionMode = "ask"
+	PermissionModeAuto       PermissionMode = "auto"
 	PermissionModeFullAccess PermissionMode = "full-access"
+
+	// PermissionModeAsk is an alias for PermissionModeAuto for backwards compatibility.
+	PermissionModeAsk        PermissionMode = "ask"
 )
 
 // PermissionModes returns the supported permission modes in UI order.
@@ -27,7 +30,7 @@ func PermissionModes() []PermissionMode {
 	return []PermissionMode{
 		PermissionModeReadOnly,
 		PermissionModeWorkspace,
-		PermissionModeAsk,
+		PermissionModeAuto,
 		PermissionModeFullAccess,
 	}
 }
@@ -36,11 +39,11 @@ func PermissionModes() []PermissionMode {
 func PermissionModeDescription(mode PermissionMode) string {
 	switch mode {
 	case PermissionModeReadOnly:
-		return "Read workspace files; ask before external directories and web; block writes and commands"
+		return "Read workspace files; ask before external directories, web, and unclassified tools; block writes and commands"
 	case PermissionModeWorkspace:
-		return "Read and write workspace files; ask before external directories, commands, and web"
-	case PermissionModeAsk:
-		return "Read workspace files; ask before every other operation and external directory"
+		return "Read and write workspace files; ask before external directories, commands, web, and unclassified tools"
+	case PermissionModeAuto, PermissionModeAsk:
+		return "Read and write workspace files; auto-review commands and external operations, asking only when needed"
 	case PermissionModeFullAccess:
 		return "Allow registered tools and current-user files without prompts; extremely dangerous commands remain blocked"
 	default:
@@ -59,6 +62,9 @@ type PermissionRequest struct {
 
 // PermissionApprovalHandler asks the user to allow one tool call.
 type PermissionApprovalHandler func(context.Context, PermissionRequest) bool
+
+// PermissionAutoReviewHandler evaluates whether a tool request is safe to execute without user prompt.
+type PermissionAutoReviewHandler func(context.Context, PermissionRequest) (bool, error)
 
 type permissionModeContextKey struct{}
 
@@ -93,9 +99,10 @@ const (
 )
 
 type permissionSettings struct {
-	mu      sync.RWMutex
-	mode    PermissionMode
-	approve PermissionApprovalHandler
+	mu         sync.RWMutex
+	mode       PermissionMode
+	approve    PermissionApprovalHandler
+	autoReview PermissionAutoReviewHandler
 }
 
 func newPermissionSettings(mode PermissionMode) *permissionSettings {
@@ -116,7 +123,9 @@ func (p *permissionSettings) setMode(mode PermissionMode) error {
 		return errors.New("permission settings are unavailable")
 	}
 	switch mode {
-	case PermissionModeReadOnly, PermissionModeWorkspace, PermissionModeAsk, PermissionModeFullAccess:
+	case PermissionModeAsk:
+		mode = PermissionModeAuto
+	case PermissionModeReadOnly, PermissionModeWorkspace, PermissionModeAuto, PermissionModeFullAccess:
 	default:
 		return fmt.Errorf("unknown permission mode %q", mode)
 	}
@@ -135,11 +144,20 @@ func (p *permissionSettings) setApprovalHandler(handler PermissionApprovalHandle
 	p.mu.Unlock()
 }
 
+func (p *permissionSettings) setAutoReviewHandler(handler PermissionAutoReviewHandler) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	p.autoReview = handler
+	p.mu.Unlock()
+}
+
 func (p *permissionSettings) authorize(ctx context.Context, request PermissionRequest) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	mode, approve, disposition := p.policy(request.Metadata)
+	mode, approve, autoReview, disposition := p.policy(request.Metadata)
 	if override, ok := permissionModeFromContext(ctx); ok {
 		mode = override
 		disposition = permissionPolicy(mode, request.Metadata.PermissionClass)
@@ -151,13 +169,15 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 		if mode == PermissionModeReadOnly {
 			return fmt.Errorf("tool %q is disabled in read-only mode", request.Tool)
 		}
-		if mode == PermissionModeWorkspace && !request.Metadata.PermissionClass.Valid() {
-			return fmt.Errorf("tool %q is unclassified and disabled in workspace mode", request.Tool)
-		}
 		return fmt.Errorf("unknown permission mode %q", mode)
 	}
 
 	operationNeedsApproval := disposition == permissionNeedsApproval && !planAuthorizes(ctx, request)
+	if operationNeedsApproval {
+		if store := SessionApprovalStoreFromContext(ctx); store != nil && store.Allows(request.Tool, request.Arguments) {
+			operationNeedsApproval = false
+		}
+	}
 	pathNeedsApproval := request.PathGrant != nil && mode != PermissionModeFullAccess &&
 		!PathGrantAllows(publictool.PlanAuthorizationFromContext(ctx).Paths, *request.PathGrant) &&
 		!SessionPathGrantStoreFromContext(ctx).Allows(*request.PathGrant)
@@ -179,6 +199,25 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 	if !pathNeedsApproval {
 		approvalRequest.PathGrant = nil
 	}
+
+	// In auto mode, try model auto-review first.
+	if (mode == PermissionModeAuto || mode == PermissionModeAsk) && autoReview != nil {
+		if safe, err := autoReview(ctx, approvalRequest); err == nil && safe {
+			if store := SessionApprovalStoreFromContext(ctx); store != nil {
+				store.Add(publictool.SessionApproval{
+					Tool:      approvalRequest.Tool,
+					Arguments: NormalizeArguments(approvalRequest.Arguments),
+				})
+			}
+			if approvalRequest.PathGrant != nil {
+				if grantStore := SessionPathGrantStoreFromContext(ctx); grantStore != nil {
+					grantStore.Add(*approvalRequest.PathGrant)
+				}
+			}
+			return nil
+		}
+	}
+
 	return requestApproval(ctx, approve, approvalRequest)
 }
 
@@ -197,22 +236,24 @@ func permissionModeFromRegistry(ctx context.Context, permissions *permissionSett
 	if permissions == nil {
 		return PermissionModeFullAccess
 	}
-	mode, _, _ := permissions.policy(metadata)
+	mode, _, _, _ := permissions.policy(metadata)
 	return mode
 }
 
-func (p *permissionSettings) policy(metadata model.ToolMetadata) (PermissionMode, PermissionApprovalHandler, permissionDisposition) {
+func (p *permissionSettings) policy(metadata model.ToolMetadata) (PermissionMode, PermissionApprovalHandler, PermissionAutoReviewHandler, permissionDisposition) {
 	if p == nil {
-		return PermissionModeFullAccess, nil, permissionAllowed
+		return PermissionModeFullAccess, nil, nil, permissionAllowed
 	}
 	p.mu.RLock()
-	mode, approve := p.mode, p.approve
+	mode, approve, autoReview := p.mode, p.approve, p.autoReview
 	p.mu.RUnlock()
-	return mode, approve, permissionPolicy(mode, metadata.PermissionClass)
+	return mode, approve, autoReview, permissionPolicy(mode, metadata.PermissionClass)
 }
 
 func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) permissionDisposition {
-	if class == model.ToolPermissionSessionControl && (mode == PermissionModeReadOnly || mode == PermissionModeWorkspace || mode == PermissionModeAsk || mode == PermissionModeFullAccess) { return permissionAllowed }
+	if class == model.ToolPermissionSessionControl && (mode == PermissionModeReadOnly || mode == PermissionModeWorkspace || mode == PermissionModeAuto || mode == PermissionModeAsk || mode == PermissionModeFullAccess) {
+		return permissionAllowed
+	}
 	switch mode {
 	case PermissionModeReadOnly:
 		switch class {
@@ -220,8 +261,11 @@ func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) perm
 			return permissionAllowed
 		case model.ToolPermissionNetwork:
 			return permissionNeedsApproval
-		default:
+		case model.ToolPermissionWorkspaceWrite, model.ToolPermissionCommand:
 			return permissionDenied
+		default:
+			// Unclassified tools prompt for approval
+			return permissionNeedsApproval
 		}
 	case PermissionModeWorkspace:
 		switch class {
@@ -230,13 +274,19 @@ func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) perm
 		case model.ToolPermissionCommand, model.ToolPermissionNetwork:
 			return permissionNeedsApproval
 		default:
-			return permissionDenied
+			// Unclassified tools prompt for approval
+			return permissionNeedsApproval
 		}
-	case PermissionModeAsk:
-		if class == model.ToolPermissionWorkspaceRead {
+	case PermissionModeAuto, PermissionModeAsk:
+		switch class {
+		case model.ToolPermissionWorkspaceRead, model.ToolPermissionWorkspaceWrite:
 			return permissionAllowed
+		case model.ToolPermissionCommand, model.ToolPermissionNetwork:
+			return permissionNeedsApproval
+		default:
+			// Unclassified tools prompt for approval (goes through auto-review first)
+			return permissionNeedsApproval
 		}
-		return permissionNeedsApproval
 	case PermissionModeFullAccess:
 		return permissionAllowed
 	default:
@@ -254,6 +304,12 @@ func requestApproval(ctx context.Context, approve PermissionApprovalHandler, req
 	}
 	if !approved {
 		return fmt.Errorf("permission denied for tool %q", request.Tool)
+	}
+	if store := SessionApprovalStoreFromContext(ctx); store != nil {
+		store.Add(publictool.SessionApproval{
+			Tool:      request.Tool,
+			Arguments: NormalizeArguments(request.Arguments),
+		})
 	}
 	return ctx.Err()
 }

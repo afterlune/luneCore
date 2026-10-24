@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
@@ -90,7 +91,22 @@ func (c *Core) resolveApproval(sessionID, id string, allowed bool) error {
 			pending.response <- false
 			return fmt.Errorf("save session path grant: %w", err)
 		}
-		pending.pathGrants.Add(*pending.request.PathGrant)
+		if pending.pathGrants != nil {
+			pending.pathGrants.Add(*pending.request.PathGrant)
+		}
+	}
+	if allowed && pending.request.Tool != "" {
+		item := publictool.SessionApproval{
+			Tool:      pending.request.Tool,
+			Arguments: tool.NormalizeArguments(pending.request.Arguments),
+		}
+		if err := c.addSessionApproval(context.Background(), sessionID, item); err != nil {
+			pending.response <- false
+			return fmt.Errorf("save session approval: %w", err)
+		}
+		if pending.sessionApprovals != nil {
+			pending.sessionApprovals.Add(item)
+		}
 	}
 	pending.response <- allowed
 	return nil
@@ -321,7 +337,15 @@ func (c *Core) requestApproval(ctx context.Context, request tool.PermissionReque
 		pathGrant = &grant
 	}
 	approval := ApprovalRequest{ID: id, AgentID: request.AgentID, Tool: request.Tool, Arguments: append(json.RawMessage(nil), request.Arguments...), PathGrant: pathGrant}
-	c.approvals[id] = pendingApproval{response: response, request: approval, pathGrants: tool.SessionPathGrantStoreFromContext(ctx), sessionID: identity.SessionID, taskID: identity.TaskID, executionID: identity.ExecutionID}
+	c.approvals[id] = pendingApproval{
+		response:         response,
+		request:          approval,
+		pathGrants:       tool.SessionPathGrantStoreFromContext(ctx),
+		sessionApprovals: tool.SessionApprovalStoreFromContext(ctx),
+		sessionID:        identity.SessionID,
+		taskID:           identity.TaskID,
+		executionID:      identity.ExecutionID,
+	}
 	c.mu.Unlock()
 	c.emit(Event{Kind: EventApprovalRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 		AgentID: request.AgentID, Approval: &approval})
@@ -335,4 +359,116 @@ func (c *Core) requestApproval(ctx context.Context, request tool.PermissionReque
 		c.emit(Event{Kind: EventApprovalCancelled, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, ApprovalID: id})
 		return false
 	}
+}
+
+func (c *Core) autoReviewProfileID(sessionID string) string {
+	if sessionID != "" {
+		if state, ok := c.StateForSession(sessionID); ok && state.ModelProfile != "" {
+			return state.ModelProfile
+		}
+	}
+	if c.models != nil {
+		return c.models.DefaultModel()
+	}
+	return ""
+}
+
+type autoReviewResult struct {
+	Safe   bool   `json:"safe"`
+	Reason string `json:"reason"`
+}
+
+func (c *Core) autoReviewToolRequest(ctx context.Context, request tool.PermissionRequest) (bool, error) {
+	if c == nil || ctx == nil || c.models == nil {
+		return false, nil
+	}
+	identity := publictool.CallIdentityFromContext(ctx)
+	profileID := c.autoReviewProfileID(identity.SessionID)
+	if profileID == "" {
+		return false, nil
+	}
+	client, err := c.models.NewClient(profileID, c.registry, c.logger)
+	if err != nil {
+		c.logger.Warn("auto-review client creation failed", "error", err)
+		return false, nil
+	}
+
+	reviewCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+
+	var sb strings.Builder
+	sb.WriteString("Tool: ")
+	sb.WriteString(request.Tool)
+	sb.WriteString("\nWorkspace: ")
+	sb.WriteString(c.workspace)
+	sb.WriteString("\n")
+	if len(request.Arguments) > 0 {
+		sb.WriteString("Arguments: ")
+		sb.Write(request.Arguments)
+		sb.WriteString("\n")
+	}
+	if request.PathGrant != nil {
+		sb.WriteString(fmt.Sprintf("Path Grant Request: Path=%q, Access=%q\n", request.PathGrant.Path, request.PathGrant.Access))
+	}
+
+	modelReq := model.ModelRequest{
+		Instructions: "You are a security auditor reviewing agent tool invocations in a software development environment. " +
+			"Evaluate whether the requested tool operation is standard, benign, and safe to execute automatically, or if it carries risk (destructive file changes outside workspace, dangerous command execution like rm -rf, git push --force, system alterations, privilege escalation, credential theft) that warrants interactive user approval. " +
+			"Respond ONLY with a JSON object: {\"safe\": true, \"reason\": \"...\"} or {\"safe\": false, \"reason\": \"...\"}.",
+		Input: model.NewResponseInputText(sb.String()),
+	}
+	reviewCtx = model.WithUsagePurpose(reviewCtx, model.UsagePurposeValidation)
+	resp, err := client.CreateResponse(reviewCtx, modelReq)
+	if err != nil {
+		c.logger.Warn("auto-review model request failed, falling back to interactive approval", "error", err)
+		return false, nil
+	}
+	var outputText string
+	if resp != nil {
+		for _, item := range resp.Output {
+			if msg, ok := item.(model.OutputMessage); ok {
+				for _, part := range msg.Content {
+					if text, ok := part.(model.OutputText); ok {
+						outputText += text.Text
+					}
+				}
+			}
+		}
+	}
+	trimmed := strings.TrimSpace(outputText)
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 2 {
+			if strings.HasPrefix(lines[0], "```") {
+				lines = lines[1:]
+			}
+			if len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[len(lines)-1]), "```") {
+				lines = lines[:len(lines)-1]
+			}
+			trimmed = strings.TrimSpace(strings.Join(lines, "\n"))
+		}
+	}
+	var res autoReviewResult
+	if err := json.Unmarshal([]byte(trimmed), &res); err != nil {
+		c.logger.Warn("auto-review unmarshal failed, falling back to interactive approval", "error", err, "raw", outputText)
+		return false, nil
+	}
+
+	if res.Safe {
+		c.logger.Info("auto-review approved tool invocation", "tool", request.Tool, "reason", res.Reason)
+		if identity.SessionID != "" {
+			item := publictool.SessionApproval{
+				Tool:      request.Tool,
+				Arguments: tool.NormalizeArguments(request.Arguments),
+			}
+			_ = c.addSessionApproval(context.Background(), identity.SessionID, item)
+			if request.PathGrant != nil {
+				_ = c.addSessionPathGrant(context.Background(), identity.SessionID, *request.PathGrant)
+			}
+		}
+		return true, nil
+	}
+
+	c.logger.Info("auto-review flagged tool invocation for user approval", "tool", request.Tool, "reason", res.Reason)
+	return false, nil
 }

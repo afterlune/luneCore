@@ -78,8 +78,7 @@ func TestAutomaticDiscoveryPreservesPermissionsAndArguments(t *testing.T) {
 	}{
 		{tool.PermissionModeReadOnly, false, true, 0, 0},
 		{tool.PermissionModeWorkspace, false, true, 1, 0},
-		{tool.PermissionModeAsk, false, true, 1, 1},
-		{tool.PermissionModeAsk, false, false, 0, 1},
+		{tool.PermissionModeAuto, false, true, 1, 0},
 		{tool.PermissionModeFullAccess, false, true, 1, 0},
 		{tool.PermissionModeFullAccess, true, true, 0, 0},
 	} {

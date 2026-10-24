@@ -9,6 +9,7 @@ const (
 	UsagePurposeCompaction UsagePurpose = "compaction"
 	UsagePurposeMemory     UsagePurpose = "memory"
 	UsagePurposeTeam       UsagePurpose = "team"
+	UsagePurposeValidation UsagePurpose = "validation"
 )
 
 type usagePurposeContextKey struct{}

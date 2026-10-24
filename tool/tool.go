@@ -149,6 +149,12 @@ type PathGrant struct {
 	Access PathAccess `json:"access"`
 }
 
+// SessionApproval records an approved tool operation for the lifetime of a session.
+type SessionApproval struct {
+	Tool      string `json:"tool"`
+	Arguments string `json:"arguments,omitempty"`
+}
+
 // PlanAuthorization records the host-approved capabilities for one plan run.
 // Paths and high-risk commands are exact grants; an empty value grants nothing.
 type PlanAuthorization struct {

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-const CurrentSessionDataVersion = 4
+const CurrentSessionDataVersion = 5
 
 func migrateSessionData(saved Session) (Session, bool, error) {
 	if saved.DataVersion < 0 {
@@ -26,12 +26,21 @@ func migrateSessionData(saved Session) (Session, bool, error) {
 			saved = migrateSessionDataV2ToV3(saved)
 		case 3:
 			saved = migrateSessionDataV3ToV4(saved)
+		case 4:
+			saved = migrateSessionDataV4ToV5(saved)
 		default:
 			return Session{}, false, fmt.Errorf("no migration exists from data version %d", saved.DataVersion)
 		}
 		changed = true
 	}
 	return saved, changed, nil
+}
+
+func migrateSessionDataV4ToV5(saved Session) Session {
+	// Older sessions start with no tool approvals.
+	saved.Approvals = nil
+	saved.DataVersion = 5
+	return saved
 }
 
 func migrateSessionDataV3ToV4(saved Session) Session {

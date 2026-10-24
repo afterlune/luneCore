@@ -2,6 +2,7 @@ package tool
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -43,20 +44,26 @@ func TestPermissionModesAuthorizeToolsAsDesigned(t *testing.T) {
 		{
 			name:          "read-only",
 			mode:          PermissionModeReadOnly,
-			allowed:       map[string]bool{"read_file": true, "web_fetch": true},
-			needsApproval: map[string]bool{"web_fetch": true},
+			allowed:       map[string]bool{"read_file": true, "web_fetch": true, "custom_tool": true},
+			needsApproval: map[string]bool{"web_fetch": true, "custom_tool": true},
 		},
 		{
 			name:          "workspace",
 			mode:          PermissionModeWorkspace,
-			allowed:       map[string]bool{"read_file": true, "write_file": true, "command": true, "web_fetch": true},
-			needsApproval: map[string]bool{"command": true, "web_fetch": true},
+			allowed:       map[string]bool{"read_file": true, "write_file": true, "command": true, "web_fetch": true, "custom_tool": true},
+			needsApproval: map[string]bool{"command": true, "web_fetch": true, "custom_tool": true},
 		},
 		{
-			name:          "ask",
+			name:          "auto",
+			mode:          PermissionModeAuto,
+			allowed:       map[string]bool{"read_file": true, "write_file": true, "command": true, "web_fetch": true, "custom_tool": true},
+			needsApproval: map[string]bool{"command": true, "web_fetch": true, "custom_tool": true},
+		},
+		{
+			name:          "ask-alias",
 			mode:          PermissionModeAsk,
 			allowed:       map[string]bool{"read_file": true, "write_file": true, "command": true, "web_fetch": true, "custom_tool": true},
-			needsApproval: map[string]bool{"write_file": true, "command": true, "web_fetch": true, "custom_tool": true},
+			needsApproval: map[string]bool{"command": true, "web_fetch": true, "custom_tool": true},
 		},
 		{
 			name:    "full-access",
@@ -181,31 +188,35 @@ func TestTaskPermissionOverrideIsScopedToOneCall(t *testing.T) {
 	}
 }
 
-func TestWorkspaceModeRejectsUnclassifiedToolWithoutPrompting(t *testing.T) {
-	registeredTool := &permissionTestTool{name: "custom_tool"}
-	registry, err := NewRegistry(ToolRegistration{Tool: registeredTool})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := registry.SetPermissionMode(PermissionModeWorkspace); err != nil {
-		t.Fatal(err)
-	}
-	approvals := 0
-	registry.SetPermissionApprovalHandler(func(context.Context, PermissionRequest) bool {
-		approvals++
-		return true
-	})
+func TestUnclassifiedToolRequestsApprovalInWorkspaceAndReadOnlyModes(t *testing.T) {
+	for _, mode := range []PermissionMode{PermissionModeWorkspace, PermissionModeReadOnly} {
+		t.Run(string(mode), func(t *testing.T) {
+			registeredTool := &permissionTestTool{name: "custom_tool"}
+			registry, err := NewRegistry(ToolRegistration{Tool: registeredTool})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := registry.SetPermissionMode(mode); err != nil {
+				t.Fatal(err)
+			}
+			approvals := 0
+			registry.SetPermissionApprovalHandler(func(context.Context, PermissionRequest) bool {
+				approvals++
+				return true
+			})
 
-	result := registry.Run(context.Background(), "custom_tool", json.RawMessage(`{}`))
-	if result.Err == nil || !strings.Contains(result.Err.Error(), "unclassified") {
-		t.Fatalf("error = %v, want an unclassified-tool rejection", result.Err)
-	}
-	if approvals != 0 || registeredTool.calls != 0 {
-		t.Fatalf("approvals = %d, calls = %d, want both zero", approvals, registeredTool.calls)
+			result := registry.Run(context.Background(), "custom_tool", json.RawMessage(`{}`))
+			if result.Err != nil {
+				t.Fatalf("error = %v, want successful approved execution", result.Err)
+			}
+			if approvals != 1 || registeredTool.calls != 1 {
+				t.Fatalf("approvals = %d, calls = %d, want both 1", approvals, registeredTool.calls)
+			}
+		})
 	}
 }
 
-func TestAskModeDenialAndMissingApprovalHandlerBlockTool(t *testing.T) {
+func TestAutoModeDenialAndMissingApprovalHandlerBlockTool(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		handler  PermissionApprovalHandler
@@ -215,20 +226,20 @@ func TestAskModeDenialAndMissingApprovalHandlerBlockTool(t *testing.T) {
 		{name: "no handler", wantText: "requires approval"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			registeredTool := &permissionTestTool{name: "write_file"}
+			registeredTool := &permissionTestTool{name: "command"}
 			registry, err := NewRegistry(ToolRegistration{
 				Tool:     registeredTool,
-				Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionWorkspaceWrite},
+				Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionCommand},
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := registry.SetPermissionMode(PermissionModeAsk); err != nil {
+			if err := registry.SetPermissionMode(PermissionModeAuto); err != nil {
 				t.Fatal(err)
 			}
 			registry.SetPermissionApprovalHandler(test.handler)
 
-			result := registry.Run(context.Background(), "write_file", json.RawMessage(`{}`))
+			result := registry.Run(context.Background(), "command", json.RawMessage(`{}`))
 			if result.Err == nil || !strings.Contains(result.Err.Error(), test.wantText) {
 				t.Fatalf("error = %v, want text %q", result.Err, test.wantText)
 			}
@@ -236,5 +247,122 @@ func TestAskModeDenialAndMissingApprovalHandlerBlockTool(t *testing.T) {
 				t.Fatalf("tool ran %d times after approval was unavailable", registeredTool.calls)
 			}
 		})
+	}
+}
+
+func TestSessionApprovalStoreRemembersApprovals(t *testing.T) {
+	registeredTool := &permissionTestTool{name: "command"}
+	registry, err := NewRegistry(ToolRegistration{
+		Tool:     registeredTool,
+		Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionCommand},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(PermissionModeWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	approvals := 0
+	registry.SetPermissionApprovalHandler(func(_ context.Context, _ PermissionRequest) bool {
+		approvals++
+		return true
+	})
+
+	store := NewSessionApprovalStore(nil)
+	ctx := WithSessionApprovalStore(context.Background(), store)
+
+	// First call requires approval
+	res1 := registry.Run(ctx, "command", json.RawMessage(`{"cmd": "git status"}`))
+	if res1.Err != nil {
+		t.Fatalf("first run failed: %v", res1.Err)
+	}
+	if approvals != 1 {
+		t.Fatalf("expected 1 approval, got %d", approvals)
+	}
+
+	// Second call with identical arguments (different whitespace/formatting) should NOT require approval
+	res2 := registry.Run(ctx, "command", json.RawMessage(`{  "cmd":   "git status"  }`))
+	if res2.Err != nil {
+		t.Fatalf("second run failed: %v", res2.Err)
+	}
+	if approvals != 1 {
+		t.Fatalf("expected approvals to stay 1, got %d", approvals)
+	}
+
+	// Third call with different argument requires fresh approval
+	res3 := registry.Run(ctx, "command", json.RawMessage(`{"cmd": "git log"}`))
+	if res3.Err != nil {
+		t.Fatalf("third run failed: %v", res3.Err)
+	}
+	if approvals != 2 {
+		t.Fatalf("expected 2 approvals for new argument, got %d", approvals)
+	}
+}
+
+func TestAutoModeModelReview(t *testing.T) {
+	registeredTool := &permissionTestTool{name: "command"}
+	registry, err := NewRegistry(ToolRegistration{
+		Tool:     registeredTool,
+		Metadata: model.ToolMetadata{PermissionClass: model.ToolPermissionCommand},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.SetPermissionMode(PermissionModeAuto); err != nil {
+		t.Fatal(err)
+	}
+
+	interactiveApprovals := 0
+	registry.SetPermissionApprovalHandler(func(_ context.Context, _ PermissionRequest) bool {
+		interactiveApprovals++
+		return true
+	})
+
+	store := NewSessionApprovalStore(nil)
+	ctx := WithSessionApprovalStore(context.Background(), store)
+
+	// 1. Safe review -> auto approved without interactive prompt
+	registry.SetPermissionAutoReviewHandler(func(_ context.Context, req PermissionRequest) (bool, error) {
+		return true, nil
+	})
+	res1 := registry.Run(ctx, "command", json.RawMessage(`{"cmd": "go test"}`))
+	if res1.Err != nil {
+		t.Fatalf("safe run failed: %v", res1.Err)
+	}
+	if interactiveApprovals != 0 {
+		t.Fatalf("expected 0 interactive approvals for safe review, got %d", interactiveApprovals)
+	}
+
+	// Subsequent identical run is remembered in SessionApprovalStore
+	res1Repeat := registry.Run(ctx, "command", json.RawMessage(`{"cmd": "go test"}`))
+	if res1Repeat.Err != nil {
+		t.Fatalf("repeated run failed: %v", res1Repeat.Err)
+	}
+	if interactiveApprovals != 0 {
+		t.Fatalf("expected 0 interactive approvals for repeated run, got %d", interactiveApprovals)
+	}
+
+	// 2. Unsafe review -> falls back to interactive approval
+	registry.SetPermissionAutoReviewHandler(func(_ context.Context, req PermissionRequest) (bool, error) {
+		return false, nil
+	})
+	res2 := registry.Run(ctx, "command", json.RawMessage(`{"cmd": "rm -rf /"}`))
+	if res2.Err != nil {
+		t.Fatalf("unsafe run failed: %v", res2.Err)
+	}
+	if interactiveApprovals != 1 {
+		t.Fatalf("expected 1 interactive approval for unsafe review fallback, got %d", interactiveApprovals)
+	}
+
+	// 3. Error in review -> falls back to interactive approval
+	registry.SetPermissionAutoReviewHandler(func(_ context.Context, req PermissionRequest) (bool, error) {
+		return false, errors.New("timeout")
+	})
+	res3 := registry.Run(ctx, "command", json.RawMessage(`{"cmd": "git push --force"}`))
+	if res3.Err != nil {
+		t.Fatalf("error review run failed: %v", res3.Err)
+	}
+	if interactiveApprovals != 2 {
+		t.Fatalf("expected 2 interactive approvals after review error fallback, got %d", interactiveApprovals)
 	}
 }

@@ -330,6 +330,7 @@ func New(config Config) (_ *Core, err error) {
 	registry.SetToolEventObserver(c.onToolEvent)
 	registry.SetToolCallController(c.executeToolCall)
 	registry.SetPermissionApprovalHandler(c.requestApproval)
+	registry.SetPermissionAutoReviewHandler(c.autoReviewToolRequest)
 	closeCheckpoints, closeSessions, closeRegistry, closeMCPManager = false, false, false, false
 	return c, nil
 }

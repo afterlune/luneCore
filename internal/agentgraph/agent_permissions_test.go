@@ -69,17 +69,15 @@ func TestToolVisibilityFollowsPermissionMode(t *testing.T) {
 			visible[function.Name] = true
 		}
 	}
-	for _, name := range []string{"custom_read", "network_lookup"} {
+	for _, name := range []string{"custom_read", "network_lookup", "unclassified_read"} {
 		if !visible[name] {
 			t.Errorf("read-only mode did not expose usable tool %q", name)
 		}
 	}
-	for _, name := range []string{"custom_write", "unclassified_read"} {
-		if visible[name] {
-			t.Errorf("read-only mode exposed denied tool %q", name)
-		}
+	if visible["custom_write"] {
+		t.Errorf("read-only mode exposed denied tool %q", "custom_write")
 	}
-	if err := registry.SetPermissionMode(tool.PermissionModeAsk); err != nil {
+	if err := registry.SetPermissionMode(tool.PermissionModeAuto); err != nil {
 		t.Fatal(err)
 	}
 	definitions, _, err = agent.visibleTools(State{AgentID: "lead"}, "")

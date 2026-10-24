@@ -66,6 +66,8 @@ type ModelOption struct {
 	ContextWindow int64  `json:"contextWindow,omitempty"`
 }
 
+type SessionApproval = publictool.SessionApproval
+
 // Session contains durable conversation state, not TUI transcript caches.
 type Session struct {
 	ID          string          `json:"id"`
@@ -77,6 +79,8 @@ type Session struct {
 	Settings    SessionSettings `json:"settings"`
 	// PathGrants are explicit, session-scoped grants for built-in filesystem tools.
 	PathGrants []publictool.PathGrant `json:"path_grants,omitempty"`
+	// Approvals are explicit, session-scoped approvals for tool executions.
+	Approvals []publictool.SessionApproval `json:"approvals,omitempty"`
 	// History is the complete provider-neutral conversation shown to clients.
 	History json.RawMessage `json:"history,omitempty"`
 	// ModelContext is a cached provider-specific request context when it differs

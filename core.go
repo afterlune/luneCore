@@ -83,6 +83,7 @@ const (
 const (
 	PermissionReadOnly   = coreruntime.PermissionReadOnly
 	PermissionWorkspace  = coreruntime.PermissionWorkspace
+	PermissionAuto       = coreruntime.PermissionAuto
 	PermissionAsk        = coreruntime.PermissionAsk
 	PermissionFullAccess = coreruntime.PermissionFullAccess
 )
@@ -198,6 +199,7 @@ type RuntimeState = coreruntime.RuntimeState
 type Session = coreruntime.Session
 type SessionRuntime = coreruntime.SessionRuntime
 type SessionSettings = coreruntime.SessionSettings
+type SessionApproval = coreruntime.SessionApproval
 type Goal = coreruntime.Goal
 type GoalStatus = coreruntime.GoalStatus
 type GoalCreateOptions = coreruntime.GoalCreateOptions
