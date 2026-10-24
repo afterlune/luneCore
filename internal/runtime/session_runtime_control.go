@@ -19,7 +19,9 @@ func (r *SessionRuntime) State(ctx context.Context) (RuntimeState, error) {
 	if err != nil {
 		return RuntimeState{}, err
 	}
-	result := RuntimeState{Task: state}
+	goal, err := r.GetGoal(ctx)
+	if err != nil { return RuntimeState{}, err }
+	result := RuntimeState{Task: state, Goal:goal}
 	for _, item := range queued {
 		result.Queue = append(result.Queue, QueuedTurnState{QueueID: item.QueueID, Position: item.Position, ExecutionID: item.ExecutionID, Status: item.Status, CreatedAt: item.CreatedAt})
 		if result.Task.Status != TaskRunning && item.Status == session.QueuedTurnPaused {
@@ -44,7 +46,7 @@ func (r *SessionRuntime) State(ctx context.Context) (RuntimeState, error) {
 				}
 			}
 			if !recoveryQueued {
-				result.Task = TaskState{SessionID: r.sessionID, ExecutionID: pending.ExecutionID, Status: TaskPaused}
+				result.Task = TaskState{SessionID: r.sessionID, ExecutionID: pending.ExecutionID, Status: TaskPaused, GoalID:pending.GoalID, GoalRevision:pending.GoalRevision, AutomaticGoal:pending.AutomaticGoal}
 			}
 		}
 	}
@@ -52,6 +54,10 @@ func (r *SessionRuntime) State(ctx context.Context) (RuntimeState, error) {
 }
 
 func (r *SessionRuntime) Interrupt(executionID string) bool {
+	if r != nil && r.core != nil && r.core.goalRun(executionID).ID != "" {
+		_, err := r.pauseGoal(context.Background(), false)
+		return err == nil
+	}
 	return r != nil && r.core != nil && executionID != "" && r.core.interruptExecution(r.sessionID, executionID)
 }
 

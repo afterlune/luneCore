@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 13
+const currentSchemaVersion = 14
 
 func Open(path string) (*Store, error) {
 	absolute, err := filepath.Abs(path)
@@ -148,6 +148,17 @@ func Open(path string) (*Store, error) {
 		_ = tx.Rollback()
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize runtime event index: %w", err)
+	}
+	if _, err := tx.Exec(`
+CREATE TABLE IF NOT EXISTS session_goals(session_id TEXT PRIMARY KEY, goal_id TEXT NOT NULL UNIQUE, data BLOB NOT NULL);
+CREATE TABLE IF NOT EXISTS goal_usage(goal_id TEXT NOT NULL, request_key TEXT NOT NULL, PRIMARY KEY(goal_id, request_key));
+CREATE TRIGGER IF NOT EXISTS delete_session_goals BEFORE DELETE ON sessions BEGIN
+ DELETE FROM goal_usage WHERE goal_id IN (SELECT goal_id FROM session_goals WHERE session_id=OLD.id);
+ DELETE FROM session_goals WHERE session_id=OLD.id;
+END;`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize goals: %w", err)
 	}
 	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS turn_results (
 		session_id TEXT NOT NULL,
@@ -305,6 +316,21 @@ func Open(path string) (*Store, error) {
 		_ = tx.Rollback()
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize execution token reservation index: %w", err)
+	}
+	if version < 14 {
+		if _, err := tx.Exec(`INSERT INTO session_goals(session_id, goal_id, data)
+SELECT id, lower(hex(randomblob(16))), json_object('id', '', 'revision', 1,
+'objective', trim(json_extract(CAST(data AS TEXT), '$.settings.goal')), 'status', 'paused',
+'stop_reason', 'Migrated session goal; use /goal resume', 'tokens_used', 0, 'cached_tokens', 0,
+'run_milliseconds', 0, 'created_at', strftime('%Y-%m-%dT%H:%M:%fZ','now'), 'updated_at', strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+FROM sessions WHERE trim(coalesce(json_extract(CAST(data AS TEXT), '$.settings.goal'), '')) <> ''
+ON CONFLICT(session_id) DO NOTHING;
+UPDATE session_goals SET data = json_set(CAST(data AS TEXT), '$.id', goal_id);
+UPDATE sessions SET data = CAST(json_remove(CAST(data AS TEXT), '$.settings.goal') AS BLOB)
+WHERE json_type(CAST(data AS TEXT), '$.settings.goal') IS NOT NULL;`); err != nil {
+			_ = tx.Rollback(); _ = db.Close()
+			return nil, fmt.Errorf("migrate legacy goals: %w", err)
+		}
 	}
 	if version < currentSchemaVersion {
 		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, currentSchemaVersion)); err != nil {

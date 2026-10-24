@@ -92,6 +92,7 @@ type AgentOptions struct {
 	MemoryWriter               func(context.Context, State, []memory.Candidate) ([]string, error)
 	MemoryObserver             func(State, string, []string, error)
 	ProjectInstructionsForTask func(context.Context, State) ([]ProjectInstruction, error)
+	GoalForTask func(context.Context, State) (string,error)
 	ProjectInstructionsForTool func(context.Context, State, model.OutputFunctionCall) ([]ProjectInstruction, error)
 	BlockerObserver            func(context.Context, State, string, string)
 	// ToolVisible filters registered tools for each model request.
@@ -147,6 +148,9 @@ type State struct {
 	BlockerTool              string                       `json:"blocker_tool,omitempty"`
 	BlockerReason            string                       `json:"blocker_reason,omitempty"`
 	Goal                     string                       `json:"goal,omitempty"`
+	GoalID string `json:"goal_id,omitempty"`
+	GoalRevision int64 `json:"goal_revision,omitempty"`
+	AutomaticGoal bool `json:"automatic_goal,omitempty"`
 	PersonalInstructions     string                       `json:"personal_instructions,omitempty"`
 	ProjectInstructionsReady bool                         `json:"project_instructions_ready,omitempty"`
 	ProjectInstructions      []ProjectInstruction         `json:"project_instructions,omitempty"`
@@ -209,6 +213,9 @@ type TaskOptions struct {
 	Model                    string
 	ReasoningEffort          string
 	Goal                     string
+	GoalID string
+	GoalRevision int64
+	AutomaticGoal bool
 	PersonalInstructions     string
 	ProjectInstructionsReady bool
 	ProjectInstructions      []ProjectInstruction

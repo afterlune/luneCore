@@ -56,6 +56,12 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		MemoryWriter:               c.saveExtractedMemories,
 		MemoryObserver:             c.onMemoryEvent,
 		ProjectInstructionsForTask: c.projectInstructionsForTask,
+		GoalForTask:func(ctx context.Context,state agentgraph.State)(string,error){
+			goal,err:=c.sessions.Goal(ctx,taskState.SessionID)
+			if err!=nil { return "",err }
+			if goal==nil || goal.ID!=state.GoalID || goal.Revision!=state.GoalRevision { return "",errStaleGoal }
+			return goalInstructions(goal),nil
+		},
 		ProjectInstructionsForTool: c.projectInstructionsForTool,
 		ToolVisibleForMode:         c.registry.ToolVisibleForMode,
 		ToolReadOnly: func(name string) bool {

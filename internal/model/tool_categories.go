@@ -27,6 +27,7 @@ type ToolCategory struct {
 type ToolPermissionClass string
 
 const (
+	ToolPermissionSessionControl ToolPermissionClass = "session-control"
 	ToolPermissionWorkspaceRead  ToolPermissionClass = "workspace-read"
 	ToolPermissionWorkspaceWrite ToolPermissionClass = "workspace-write"
 	ToolPermissionCommand        ToolPermissionClass = "command"
@@ -85,7 +86,7 @@ func DeferredDefinitions(executor ToolExecutor, definitions []ResponseTool) []Re
 // Valid reports whether the class is recognized by the permission system.
 func (c ToolPermissionClass) Valid() bool {
 	switch c {
-	case ToolPermissionWorkspaceRead, ToolPermissionWorkspaceWrite, ToolPermissionCommand, ToolPermissionNetwork:
+	case ToolPermissionSessionControl, ToolPermissionWorkspaceRead, ToolPermissionWorkspaceWrite, ToolPermissionCommand, ToolPermissionNetwork:
 		return true
 	default:
 		return false

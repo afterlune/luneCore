@@ -73,6 +73,9 @@ type TaskRequest struct {
 }
 
 type TaskState struct {
+	GoalID string
+	GoalRevision int64
+	AutomaticGoal bool
 	Status    TaskStatus
 	SessionID string
 	TaskID    string

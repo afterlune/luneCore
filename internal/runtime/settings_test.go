@@ -272,14 +272,13 @@ func TestSessionTaskSettingsInheritProjectDefaultsAndPersistOverrides(t *testing
 	}
 
 	settings := SessionSettings{
-		ModelProfile: "review", Goal: "  inspect the provider boundary  ",
+		ModelProfile: "review",
 		ContextWindow: int64Pointer(0), ReserveOutputTokens: int64Pointer(0),
 		AutoCompact: boolPointer(false), AutoCompactThreshold: float64Pointer(0.6),
 	}
 	if err := client.SetSessionSettings(context.Background(), saved.ID, settings); err != nil {
 		t.Fatalf("SetSessionSettings: %v", err)
 	}
-	settings.Goal = "inspect the provider boundary"
 	restored, err := client.GetSession(context.Background(), saved.ID)
 	if err != nil {
 		t.Fatalf("GetSession: %v", err)
@@ -291,7 +290,7 @@ func TestSessionTaskSettingsInheritProjectDefaultsAndPersistOverrides(t *testing
 	if err != nil {
 		t.Fatalf("resolve overrides: %v", err)
 	}
-	wantOverrides := taskSettings{Goal: "inspect the provider boundary", ContextWindow: 0, ReserveOutputTokens: 0, AutoCompact: false, AutoCompactThreshold: 0.6}
+	wantOverrides := taskSettings{ContextWindow: 0, ReserveOutputTokens: 0, AutoCompact: false, AutoCompactThreshold: 0.6}
 	if effective != wantOverrides {
 		t.Fatalf("effective overrides = %#v, want %#v", effective, wantOverrides)
 	}
@@ -444,7 +443,7 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	}
 	initial := SessionSettings{
 		ModelProfile: "primary", ReasoningEffort: model.ReasoningEffortLow,
-		Goal: "preserve this goal", ContextWindow: int64Pointer(32000), ReserveOutputTokens: int64Pointer(2048),
+		ContextWindow: int64Pointer(32000), ReserveOutputTokens: int64Pointer(2048),
 		AutoCompact: boolPointer(true), AutoCompactThreshold: float64Pointer(0.7),
 	}
 	if err := client.SetSessionSettings(context.Background(), saved.ID, initial); err != nil {
@@ -491,12 +490,12 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 		t.Fatal("paused checkpoint has no stable task execution ID")
 	}
 	assertTaskSettingsSnapshot(t, pausedState, taskSettings{
-		Goal: "preserve this goal", ContextWindow: 32000, ReserveOutputTokens: 2048,
+		ContextWindow: 32000, ReserveOutputTokens: 2048,
 		AutoCompact: true, AutoCompactThreshold: 0.7,
 	})
 	if err := client.SetSessionSettings(context.Background(), saved.ID, SessionSettings{
 		ModelProfile: "review", ReasoningEffort: model.ReasoningEffortHigh,
-		Goal: "changed after pause", ContextWindow: int64Pointer(16000), ReserveOutputTokens: int64Pointer(1024),
+		ContextWindow: int64Pointer(16000), ReserveOutputTokens: int64Pointer(1024),
 		AutoCompact: boolPointer(false), AutoCompactThreshold: float64Pointer(0.9),
 	}); err != nil {
 		t.Fatal(err)
@@ -520,7 +519,7 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 		Goal: resumedState.Goal, ContextWindow: resumedState.ContextWindow, ReserveOutputTokens: resumedState.ReserveOutputTokens,
 		AutoCompact: resumedState.AutoCompact, AutoCompactThreshold: resumedState.AutoCompactThreshold,
 	}, taskSettings{
-		Goal: "preserve this goal", ContextWindow: 32000, ReserveOutputTokens: 2048,
+		ContextWindow: 32000, ReserveOutputTokens: 2048,
 		AutoCompact: true, AutoCompactThreshold: 0.7,
 	})
 	if resumedState.ModelOverride != taskModel {

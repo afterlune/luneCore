@@ -52,7 +52,13 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 	if err != nil {
 		return TurnSubmission{}, nil, err
 	}
+	goal, err := c.sessions.Goal(ctx, sessionID)
+	if err != nil { return TurnSubmission{}, nil, err }
+	goalID := ""
+	var goalRevision int64
+	if goal != nil && goal.Status == GoalActive && !request.PlanMode { goalID, goalRevision = goal.ID, goal.Revision }
 	storedRequest, err := json.Marshal(storedTurnRequest{
+		GoalID:goalID, GoalRevision:goalRevision, AutomaticGoal:request.automaticGoal,
 		Input: append(json.RawMessage(nil), request.Input.Raw...),
 		Model: request.Model, MaxToolRounds: request.MaxToolRounds, Execution: request.Execution,
 		PermissionOverride: permissionOverride, PlanMode: request.PlanMode, PlanAuthorization: request.PlanAuthorization,
@@ -109,7 +115,7 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 	}
 	queued, _, err := c.sessions.EnqueueTurn(ctx, session.QueuedTurn{
 		SessionID: sessionID, QueueID: queueID, ExecutionID: executionID, Request: storedRequest, Status: session.QueuedTurnQueued,
-	}, mustMarshalEvent(Event{Kind: EventTaskQueued, SessionID: sessionID, ExecutionID: executionID, QueueID: queueID, Status: TaskQueued}))
+	}, mustMarshalEvent(Event{Kind: EventTaskQueued, SessionID: sessionID, ExecutionID: executionID, QueueID: queueID, Status: TaskQueued, GoalID:goalID, GoalRevision:goalRevision, AutomaticGoal:request.automaticGoal}))
 	if err != nil {
 		c.mu.Unlock()
 		return TurnSubmission{}, nil, err

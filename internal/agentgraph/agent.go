@@ -189,6 +189,10 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.LastRequest = taskOptions.Conversation.LastRequest
 	state.ContextAtTaskStart = true
 	inputItems, _ := responseInputItems(input)
+	if taskOptions.AutomaticGoal {
+		// Continuation inputs guide the model but are not user-authored messages.
+		state.Transcript.Items = state.Transcript.Items[:len(state.Transcript.Items)-len(inputItems)]
+	}
 	state.ContextInsertIndex = len(state.History.Items) - len(inputItems)
 	state.RunID = runID
 	state.ExecutionID = taskOptions.ExecutionID
@@ -208,6 +212,7 @@ func (a *Agent) StartWithTranscript(ctx context.Context, runID string, history, 
 	state.MaxToolRounds = taskOptions.MaxToolRounds
 	state.TaskSettingsVersion = CurrentTaskSettingsVersion
 	state.Goal = taskOptions.Goal
+	state.GoalID, state.GoalRevision, state.AutomaticGoal = taskOptions.GoalID, taskOptions.GoalRevision, taskOptions.AutomaticGoal
 	state.PersonalInstructions = taskOptions.PersonalInstructions
 	state.ProjectInstructionsReady = taskOptions.ProjectInstructionsReady
 	state.ProjectInstructions = cloneProjectInstructions(taskOptions.ProjectInstructions)

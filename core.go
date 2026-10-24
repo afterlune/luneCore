@@ -198,6 +198,20 @@ type RuntimeState = coreruntime.RuntimeState
 type Session = coreruntime.Session
 type SessionRuntime = coreruntime.SessionRuntime
 type SessionSettings = coreruntime.SessionSettings
+type Goal = coreruntime.Goal
+type GoalStatus = coreruntime.GoalStatus
+type GoalCreateOptions = coreruntime.GoalCreateOptions
+type GoalResumeOptions = coreruntime.GoalResumeOptions
+
+const (
+	GoalActive = coreruntime.GoalActive
+	GoalPaused = coreruntime.GoalPaused
+	GoalBlocked = coreruntime.GoalBlocked
+	GoalBudgetLimited = coreruntime.GoalBudgetLimited
+	GoalComplete = coreruntime.GoalComplete
+	EventGoalUpdated = coreruntime.EventGoalUpdated
+	EventGoalCleared = coreruntime.EventGoalCleared
+)
 type SubmissionMode = coreruntime.SubmissionMode
 type SubmissionStatus = coreruntime.SubmissionStatus
 type TaskInput = coreruntime.TaskInput

@@ -183,7 +183,6 @@ func (c *Core) normalizeSessionSettings(settings SessionSettings) (SessionSettin
 	if err != nil {
 		return SessionSettings{}, err
 	}
-	settings.Goal = strings.TrimSpace(settings.Goal)
 	if settings.ContextWindow != nil && *settings.ContextWindow < 0 {
 		return SessionSettings{}, errors.New("contextWindow override must not be negative")
 	}
@@ -202,7 +201,6 @@ func (c *Core) normalizeSessionSettings(settings SessionSettings) (SessionSettin
 
 func (c *Core) resolveTaskSettings(settings SessionSettings) (taskSettings, error) {
 	effective := c.taskDefaults
-	effective.Goal = strings.TrimSpace(settings.Goal)
 	if settings.ContextWindow != nil {
 		effective.ContextWindow = *settings.ContextWindow
 	}
@@ -240,6 +238,7 @@ func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 		ExecutionID:   state.ExecutionID,
 		MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
 		Goal: state.Goal, PersonalInstructions: state.PersonalInstructions,
+		GoalID:state.GoalID, GoalRevision:state.GoalRevision, AutomaticGoal:state.AutomaticGoal,
 		ProjectInstructionsReady: state.ProjectInstructionsReady,
 		ProjectInstructions:      append([]agentgraph.ProjectInstruction(nil), state.ProjectInstructions...),
 		ContextWindow:            state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,

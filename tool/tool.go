@@ -14,6 +14,7 @@ import (
 type PermissionClass string
 
 const (
+	PermissionSessionControl PermissionClass = "session-control"
 	PermissionWorkspaceRead  PermissionClass = "workspace-read"
 	PermissionWorkspaceWrite PermissionClass = "workspace-write"
 	PermissionCommand        PermissionClass = "command"
@@ -38,7 +39,7 @@ type Metadata struct {
 
 func (m Metadata) Valid() bool {
 	switch m.PermissionClass {
-	case PermissionWorkspaceRead, PermissionWorkspaceWrite, PermissionCommand, PermissionNetwork:
+	case PermissionSessionControl, PermissionWorkspaceRead, PermissionWorkspaceWrite, PermissionCommand, PermissionNetwork:
 		return true
 	default:
 		return false

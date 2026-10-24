@@ -95,7 +95,7 @@ func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool, 
 			c.mu.Unlock()
 			return TurnSubmission{}, nil, idErr
 		}
-		resumeRequest := storedTurnRequest{Input: json.RawMessage("null"), Resume: true}
+		resumeRequest := storedTurnRequest{Input: json.RawMessage("null"), Resume: true, GoalID:pending.GoalID, GoalRevision:pending.GoalRevision, AutomaticGoal:pending.AutomaticGoal}
 		if len(executionOverride) == 1 {
 			resumeRequest.Execution, resumeRequest.ExecutionOverride = executionOverride[0], true
 		}

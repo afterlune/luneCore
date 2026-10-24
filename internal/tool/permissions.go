@@ -212,6 +212,7 @@ func (p *permissionSettings) policy(metadata model.ToolMetadata) (PermissionMode
 }
 
 func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) permissionDisposition {
+	if class == model.ToolPermissionSessionControl && (mode == PermissionModeReadOnly || mode == PermissionModeWorkspace || mode == PermissionModeAsk || mode == PermissionModeFullAccess) { return permissionAllowed }
 	switch mode {
 	case PermissionModeReadOnly:
 		switch class {

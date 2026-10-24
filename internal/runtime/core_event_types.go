@@ -13,6 +13,8 @@ import (
 type EventKind string
 
 const (
+	EventGoalUpdated EventKind = "goal_updated"
+	EventGoalCleared EventKind = "goal_cleared"
 	EventTaskStarted              EventKind = "task_started"
 	EventTaskFinished             EventKind = "task_finished"
 	EventTaskDiscarded            EventKind = "task_discarded"
@@ -48,6 +50,10 @@ const (
 // Event is a structured runtime notification. Arguments and response payloads
 // are transient; clients should not persist or log them without sanitizing.
 type Event struct {
+	Goal *Goal
+	GoalID string
+	GoalRevision int64
+	AutomaticGoal bool
 	RequestID       string
 	RequestAttempt  int
 	RequestChanges  []string

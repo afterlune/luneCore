@@ -11,6 +11,11 @@ import (
 
 func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
 	ensureTranscript(&state)
+	if a.options.GoalForTask!=nil && state.GoalID!="" {
+		goal,err:=a.options.GoalForTask(ctx,state)
+		if err!=nil { return a.failTask(state,err) }
+		state.Goal=goal
+	}
 	loadProjectInstructions := !state.ProjectInstructionsReady && a.options.ProjectInstructionsForTask != nil
 	if loadProjectInstructions {
 		instructions, err := a.options.ProjectInstructionsForTask(ctx, state)

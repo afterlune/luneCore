@@ -131,7 +131,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		c.finishTaskState(sessionID, TaskFailed, err)
 		return nil, err
 	}
-	ctx = agentruntime.WithTokenBudget(ctx, &executionTokenBudget{store: c.sessions, executionID: taskOptions.ExecutionID})
+	ctx = agentruntime.WithTokenBudget(ctx, &executionTokenBudget{store: c.sessions, executionID: taskOptions.ExecutionID, guard:func(ctx context.Context) error { return c.goalBeforeRequest(ctx, sessionID, taskOptions.ExecutionID) }})
 	if !resume {
 		if err := c.resetTaskUsage(ctx, sessionID); err != nil {
 			c.finishTaskState(sessionID, TaskFailed, err)

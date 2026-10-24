@@ -49,6 +49,7 @@ const (
 )
 
 type TurnRequest struct {
+	automaticGoal bool
 	// PermissionMode pins this turn to a host-selected mode. Empty uses Core defaults.
 	PermissionMode         PermissionMode
 	Input                  TaskInput
@@ -76,6 +77,7 @@ type QueuedTurnState struct {
 }
 
 type RuntimeState struct {
+	Goal *Goal
 	Task  TaskState
 	Queue []QueuedTurnState
 }
@@ -126,6 +128,9 @@ type SessionRuntime struct {
 }
 
 type storedTurnRequest struct {
+	GoalID string `json:"goal_id,omitempty"`
+	GoalRevision int64 `json:"goal_revision,omitempty"`
+	AutomaticGoal bool `json:"automatic_goal,omitempty"`
 	Input                  json.RawMessage              `json:"input"`
 	Model                  string                       `json:"model,omitempty"`
 	MaxToolRounds          int                          `json:"max_tool_rounds,omitempty"`
@@ -190,6 +195,7 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (_ *Ses
 		c.removeEventHub(sessionID, hub)
 		return nil, err
 	}
+	if err := c.restoreGoal(ctx, sessionID); err != nil { return nil, err }
 	c.mu.RLock()
 	closing := c.closed || c.closing
 	c.mu.RUnlock()

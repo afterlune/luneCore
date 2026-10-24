@@ -140,6 +140,7 @@ func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, setting
 		return "", err
 	}
 	state := TaskState{
+		GoalID:taskOptions.GoalID, GoalRevision:taskOptions.GoalRevision, AutomaticGoal:taskOptions.AutomaticGoal,
 		Status: TaskRunning, SessionID: sessionID, TaskID: id, ExecutionID: taskOptions.ExecutionID, QueueID: queueID, ContextWindow: taskOptions.ContextWindow,
 		ReserveOutputTokens: taskOptions.ReserveOutputTokens, AutoCompact: taskOptions.AutoCompact,
 		AutoCompactThreshold: taskOptions.AutoCompactThreshold, Goal: taskOptions.Goal, MaxToolRounds: taskOptions.MaxToolRounds,
@@ -159,6 +160,7 @@ func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, setting
 	c.active = state
 	c.mu.Unlock()
 	c.emit(Event{Kind: EventTaskStarted, TaskID: id, ExecutionID: taskOptions.ExecutionID, QueueID: queueID, SessionID: sessionID, Status: TaskRunning, ContextWindow: taskOptions.ContextWindow,
+		GoalID:taskOptions.GoalID, GoalRevision:taskOptions.GoalRevision, AutomaticGoal:taskOptions.AutomaticGoal,
 		ModelProfile: settings.ModelProfile, Provider: profile.Provider, Model: modelName})
 	return id, nil
 }
@@ -215,6 +217,14 @@ func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
 }
 
 func (c *Core) onToolEvent(event tool.ToolEvent) {
+	if !event.Started && !event.Failed && !event.Canceled {
+		metadata, _ := c.registry.ToolMetadata(event.Name)
+		if metadata.PermissionClass != model.ToolPermissionSessionControl {
+			c.goalMu.Lock()
+			if ref, ok := c.goalRuns[event.ExecutionID]; ok { ref.ToolProgress = true; c.goalRuns[event.ExecutionID] = ref }
+			c.goalMu.Unlock()
+		}
+	}
 	kind := EventToolFinished
 	if event.Started {
 		kind = EventToolStarted
@@ -271,6 +281,7 @@ func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, a
 		CachedTokens: usage.InputTokensDetails.CachedTokens, CacheCreationTokens: usage.InputTokensDetails.CacheCreationTokens,
 	},
 		OutputTokens: usage.OutputTokens, OutputTokensDetails: TokenOutputDetails{ReasoningTokens: usage.OutputTokensDetails.ReasoningTokens}, TotalTokens: totalTokens}
+	c.accountGoalUsage(state, value, agentID, estimatedInputTokens, trace)
 	contextWindow := state.ContextWindow
 	if agentID != "" && agentID != "lead" {
 		if workerProfile, ok := c.models.Profile(profile); ok {

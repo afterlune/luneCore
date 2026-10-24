@@ -141,6 +141,13 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 		}
 	}
 	if !request.resume {
+		ref := c.goalRun(taskOptions.ExecutionID)
+		if ref.ID != "" {
+			goal, goalErr := c.sessions.Goal(ctx, request.sessionID)
+			if goalErr != nil { return taskRunSetup{}, goalErr }
+			if goal == nil || goal.ID != ref.ID || goal.Revision != ref.Revision { return taskRunSetup{}, errStaleGoal }
+			taskOptions.Goal, taskOptions.GoalID, taskOptions.GoalRevision, taskOptions.AutomaticGoal = goalInstructions(goal), goal.ID, goal.Revision, ref.Automatic
+		}
 		instructions, instructionErr := c.initialProjectInstructions(ctx)
 		if instructionErr != nil {
 			return taskRunSetup{}, fmt.Errorf("load workspace AGENTS.md: %w", instructionErr)

@@ -12,7 +12,6 @@ import (
 type SessionSettings struct {
 	ModelProfile         string   `json:"model_profile"`
 	ReasoningEffort      string   `json:"reasoning_effort,omitempty"`
-	Goal                 string   `json:"goal,omitempty"`
 	ContextWindow        *int64   `json:"context_window,omitempty"`
 	ReserveOutputTokens  *int64   `json:"reserve_output_tokens,omitempty"`
 	AutoCompact          *bool    `json:"auto_compact,omitempty"`

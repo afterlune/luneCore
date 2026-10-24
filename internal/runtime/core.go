@@ -107,6 +107,9 @@ type Core struct {
 	coord          *sessionCoordinator
 
 	mu                  sync.RWMutex
+	goalMu              sync.Mutex
+	goalArmed           map[string]bool
+	goalRuns            map[string]goalExecution
 	eventHubMu          sync.Mutex
 	runtimeConfigMu     sync.RWMutex
 	usageMu             sync.Mutex
@@ -323,6 +326,7 @@ func New(config Config) (_ *Core, err error) {
 	team := &teamExecutor{core: c, models: models, tools: registry}
 	c.team = team
 	c.runtime = agentruntime.NewResponder(checkpoints, callbackLimiter, c.logger)
+	if err := c.registerGoalTools(); err != nil { return nil, err }
 	registry.SetToolEventObserver(c.onToolEvent)
 	registry.SetToolCallController(c.executeToolCall)
 	registry.SetPermissionApprovalHandler(c.requestApproval)

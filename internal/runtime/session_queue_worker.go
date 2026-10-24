@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
@@ -58,6 +59,7 @@ func (c *Core) drainQueue(sessionID string) {
 				return
 			}
 		}
+		c.enqueueGoalContinuation(context.Background(), sessionID)
 	}()
 	ctx := context.Background()
 	if err := c.reconcileQueuedTurns(ctx, sessionID); err != nil {
@@ -97,6 +99,7 @@ func (c *Core) drainQueue(sessionID string) {
 			return
 		}
 		if !claimed {
+			if c.enqueueGoalContinuation(ctx, sessionID) { continue }
 			return
 		}
 		c.mu.RLock()
@@ -114,6 +117,17 @@ func (c *Core) drainQueue(sessionID string) {
 			c.failQueuedTurn(ctx, queued, err)
 			continue
 		}
+		if err := c.admitGoalExecution(ctx, sessionID, queued.ExecutionID, request); err != nil {
+			if errors.Is(err, errStaleGoal) {
+				goal, _ := c.sessions.Goal(ctx, sessionID)
+				if goal != nil && goal.ID == request.GoalID && goal.Status != GoalActive {
+					_ = c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnPaused)
+					return
+				}
+			}
+			c.failQueuedTurn(ctx, queued, err)
+			continue
+		}
 		input, err := model.NewResponseInput(request.Input)
 		if err != nil {
 			c.failQueuedTurn(ctx, queued, err)
@@ -123,7 +137,12 @@ func (c *Core) drainQueue(sessionID string) {
 		c.mu.Lock()
 		c.executionRuns[queued.ExecutionID] = runDone
 		c.mu.Unlock()
+		goalStarted := time.Now()
 		response, runErr := c.run(ctx, sessionID, request.MaxToolRounds, request.Model, request.Execution, request.ExecutionOverride, request.PermissionOverride, request.PlanMode, request.PlanAuthorization, request.NoInteractiveDecisions, request.Resume, input, queued.QueueID, queued.ExecutionID)
+		c.finishGoalExecution(sessionID, queued.ExecutionID, response, runErr, time.Since(goalStarted))
+		c.goalMu.Lock()
+		delete(c.goalRuns, queued.ExecutionID)
+		c.goalMu.Unlock()
 		c.mu.Lock()
 		if c.executionRuns[queued.ExecutionID] == runDone {
 			delete(c.executionRuns, queued.ExecutionID)
