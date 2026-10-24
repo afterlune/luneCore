@@ -170,11 +170,13 @@ type ToolRecoveryRequest struct {
 type ToolRecoveryRequiredError = agentruntime.ToolRecoveryRequiredError
 
 type ApprovalRequest struct {
-	ID        string
-	AgentID   string
-	Tool      string
-	Arguments json.RawMessage
-	PathGrant *publictool.PathGrant
+	ID               string
+	AgentID          string
+	Tool             string
+	Arguments        json.RawMessage
+	PathGrant        *publictool.PathGrant
+	AutoReviewReason string
+	Fingerprint      string
 }
 
 // UserInteractionRequest is a transient server request that needs a human
@@ -218,7 +220,7 @@ type userInteractionResult struct {
 }
 
 type pendingApproval struct {
-	response         chan bool
+	response         chan publictool.ApprovalDecision
 	request          ApprovalRequest
 	pathGrants       *runtimepermission.SessionPathGrantStore
 	sessionApprovals *runtimepermission.SessionApprovalStore

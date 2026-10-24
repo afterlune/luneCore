@@ -410,3 +410,21 @@ func cloneFunctionTool(definition model.FunctionTool) model.FunctionTool {
 	}
 	return definition
 }
+
+func (r *Registry) SetCommandToolchainPaths(paths []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if cmdTool, ok := r.tools["command"].(CommandTool); ok {
+		cmdTool.CommandToolchainPaths = append([]string(nil), paths...)
+		r.tools["command"] = cmdTool
+	}
+}
+
+func (r *Registry) CommandToolchainPaths() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if cmdTool, ok := r.tools["command"].(CommandTool); ok {
+		return append([]string(nil), cmdTool.CommandToolchainPaths...)
+	}
+	return nil
+}

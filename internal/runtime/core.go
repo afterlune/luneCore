@@ -125,6 +125,7 @@ type Core struct {
 	turnWaiters         map[string]chan turnResult
 	executionRuns       map[string]chan struct{}
 	interruptRequests   map[string]bool
+	commandToolchainPaths []string
 	queueDrainWG        sync.WaitGroup
 	sessionOps          sync.WaitGroup
 	closed              bool
@@ -278,6 +279,7 @@ func New(config Config) (_ *Core, err error) {
 		executionRuns:        coord.executionRuns,
 		interruptRequests:    coord.interruptRequests,
 		sessionLocks:         make(map[string]*sessionLockEntry),
+		commandToolchainPaths: config.CommandToolchainPaths,
 	}
 	if err := c.configureCommands(config); err != nil {
 		return nil, err
@@ -329,7 +331,7 @@ func New(config Config) (_ *Core, err error) {
 	if err := c.registerGoalTools(); err != nil { return nil, err }
 	registry.SetToolEventObserver(c.onToolEvent)
 	registry.SetToolCallController(c.executeToolCall)
-	registry.SetPermissionApprovalHandler(c.requestApproval)
+	registry.SetPermissionApprovalDecisionHandler(c.requestApprovalDecision)
 	registry.SetPermissionAutoReviewHandler(c.autoReviewToolRequest)
 	closeCheckpoints, closeSessions, closeRegistry, closeMCPManager = false, false, false, false
 	return c, nil
@@ -350,4 +352,24 @@ func (c *Core) ExecutionDefaults() ExecutionOptions {
 		return ExecutionOptions{}
 	}
 	return c.executionDefaults
+}
+
+func (c *Core) SetCommandToolchainPaths(paths []string) error {
+	normalized, err := normalizeCommandToolchainPaths(paths)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	c.commandToolchainPaths = normalized
+	c.mu.Unlock()
+	if c.registry != nil {
+		c.registry.SetCommandToolchainPaths(normalized)
+	}
+	return nil
+}
+
+func (c *Core) CommandToolchainPaths() []string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return append([]string(nil), c.commandToolchainPaths...)
 }

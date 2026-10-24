@@ -74,7 +74,7 @@ func (c *Core) sessionIsRunningLocked(sessionID string) bool {
 	return c.active.Status == TaskRunning && c.active.SessionID == sessionID
 }
 
-func (c *Core) resolveApproval(sessionID, id string, allowed bool) error {
+func (c *Core) resolveApprovalDecision(sessionID, id string, decision publictool.ApprovalDecision) error {
 	c.mu.Lock()
 	pending, ok := c.approvals[id]
 	if ok && pending.sessionID == sessionID {
@@ -86,30 +86,38 @@ func (c *Core) resolveApproval(sessionID, id string, allowed bool) error {
 	if !ok {
 		return fmt.Errorf("approval request %q is no longer pending in this session", id)
 	}
-	if allowed && pending.request.PathGrant != nil {
+	if decision == publictool.ApprovalAllowSession && pending.request.PathGrant != nil {
 		if err := c.addSessionPathGrant(context.Background(), sessionID, *pending.request.PathGrant); err != nil {
-			pending.response <- false
+			pending.response <- publictool.ApprovalDeny
 			return fmt.Errorf("save session path grant: %w", err)
 		}
 		if pending.pathGrants != nil {
 			pending.pathGrants.Add(*pending.request.PathGrant)
 		}
 	}
-	if allowed && pending.request.Tool != "" {
+	if decision == publictool.ApprovalAllowSession && pending.request.Tool != "" {
 		item := publictool.SessionApproval{
-			Tool:      pending.request.Tool,
-			Arguments: tool.NormalizeArguments(pending.request.Arguments),
+			Tool:        pending.request.Tool,
+			Arguments:   tool.NormalizeArguments(pending.request.Arguments),
+			Fingerprint: pending.request.Fingerprint,
 		}
 		if err := c.addSessionApproval(context.Background(), sessionID, item); err != nil {
-			pending.response <- false
+			pending.response <- publictool.ApprovalDeny
 			return fmt.Errorf("save session approval: %w", err)
 		}
 		if pending.sessionApprovals != nil {
 			pending.sessionApprovals.Add(item)
 		}
 	}
-	pending.response <- allowed
+	pending.response <- decision
 	return nil
+}
+
+func (c *Core) resolveApproval(sessionID, id string, allowed bool) error {
+	if allowed {
+		return c.resolveApprovalDecision(sessionID, id, publictool.ApprovalAllowSession)
+	}
+	return c.resolveApprovalDecision(sessionID, id, publictool.ApprovalDeny)
 }
 
 func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, settings SessionSettings, profile model.ModelProfile, modelName string, taskOptions agentgraph.TaskOptions, expectedUpdatedAt time.Time, cancel context.CancelFunc) (string, error) {
@@ -316,27 +324,35 @@ func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, a
 		EstimatedInputTokens: estimatedInputTokensIfMissing(value.InputTokens, estimatedInputTokens)})
 }
 
-func (c *Core) requestApproval(ctx context.Context, request tool.PermissionRequest) bool {
+func (c *Core) requestApprovalDecision(ctx context.Context, request tool.PermissionRequest) publictool.ApprovalDecision {
 	if ctx.Err() != nil {
-		return false
+		return publictool.ApprovalDeny
 	}
 	id, err := newID()
 	if err != nil {
-		return false
+		return publictool.ApprovalDeny
 	}
-	response := make(chan bool, 1)
+	response := make(chan publictool.ApprovalDecision, 1)
 	identity := publictool.CallIdentityFromContext(ctx)
 	c.mu.Lock()
 	if c.closed || c.closing {
 		c.mu.Unlock()
-		return false
+		return publictool.ApprovalDeny
 	}
 	var pathGrant *publictool.PathGrant
 	if request.PathGrant != nil {
 		grant := *request.PathGrant
 		pathGrant = &grant
 	}
-	approval := ApprovalRequest{ID: id, AgentID: request.AgentID, Tool: request.Tool, Arguments: append(json.RawMessage(nil), request.Arguments...), PathGrant: pathGrant}
+	approval := ApprovalRequest{
+		ID:               id,
+		AgentID:          request.AgentID,
+		Tool:             request.Tool,
+		Arguments:        append(json.RawMessage(nil), request.Arguments...),
+		PathGrant:        pathGrant,
+		AutoReviewReason: request.AutoReviewReason,
+		Fingerprint:      request.Fingerprint,
+	}
 	c.approvals[id] = pendingApproval{
 		response:         response,
 		request:          approval,
@@ -350,15 +366,19 @@ func (c *Core) requestApproval(ctx context.Context, request tool.PermissionReque
 	c.emit(Event{Kind: EventApprovalRequired, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID,
 		AgentID: request.AgentID, Approval: &approval})
 	select {
-	case allowed := <-response:
-		return allowed
+	case decision := <-response:
+		return decision
 	case <-ctx.Done():
 		c.mu.Lock()
 		delete(c.approvals, id)
 		c.mu.Unlock()
 		c.emit(Event{Kind: EventApprovalCancelled, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, ApprovalID: id})
-		return false
+		return publictool.ApprovalDeny
 	}
+}
+
+func (c *Core) requestApproval(ctx context.Context, request tool.PermissionRequest) bool {
+	return c.requestApprovalDecision(ctx, request) != publictool.ApprovalDeny
 }
 
 func (c *Core) autoReviewProfileID(sessionID string) string {

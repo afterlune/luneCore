@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 // sessionCoordinator manages ephemeral concurrency state and synchronization
@@ -273,7 +275,7 @@ func (sc *sessionCoordinator) Close(err error) {
 	for id, pending := range sc.approvals {
 		delete(sc.approvals, id)
 		select {
-		case pending.response <- false:
+		case pending.response <- publictool.ApprovalDeny:
 		default:
 		}
 	}

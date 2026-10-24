@@ -30,3 +30,15 @@ func TestNormalizeCommandToolchainPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestCoreCommandToolchainPaths(t *testing.T) {
+	c := &Core{}
+	path := t.TempDir()
+	if err := c.SetCommandToolchainPaths([]string{path}); err != nil {
+		t.Fatal(err)
+	}
+	got := c.CommandToolchainPaths()
+	if len(got) != 1 {
+		t.Fatalf("CommandToolchainPaths = %v, want 1 entry", got)
+	}
+}

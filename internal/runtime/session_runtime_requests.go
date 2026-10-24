@@ -6,6 +6,8 @@ import (
 	"errors"
 	"sort"
 
+	publictool "github.com/afterlune/luneCore/tool"
+
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	graph "github.com/afterlune/luneGraph"
 	"github.com/afterlune/luneGraph/checkpoint"
@@ -142,11 +144,18 @@ func pendingRequestID(request PendingRequest) string {
 	return ""
 }
 
-func (r *SessionRuntime) ResolveApproval(id string, allowed bool) error {
+func (r *SessionRuntime) ResolveApprovalDecision(id string, decision publictool.ApprovalDecision) error {
 	if r == nil || r.core == nil || id == "" {
 		return errors.New("session runtime and approval id are required")
 	}
-	return r.core.resolveApproval(r.sessionID, id, allowed)
+	return r.core.resolveApprovalDecision(r.sessionID, id, decision)
+}
+
+func (r *SessionRuntime) ResolveApproval(id string, allowed bool) error {
+	if allowed {
+		return r.ResolveApprovalDecision(id, publictool.ApprovalAllowSession)
+	}
+	return r.ResolveApprovalDecision(id, publictool.ApprovalDeny)
 }
 
 // ResolveUserQuestion stores an answer and resumes the exact graph continuation.

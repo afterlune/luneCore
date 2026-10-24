@@ -5,6 +5,8 @@ import (
 	"errors"
 	"sync"
 	"testing"
+
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func TestSessionCoordinatorTasks(t *testing.T) {
@@ -53,7 +55,7 @@ func TestSessionCoordinatorCancels(t *testing.T) {
 func TestSessionCoordinatorApprovals(t *testing.T) {
 	sc := newSessionCoordinator()
 
-	resp := make(chan bool, 1)
+	resp := make(chan publictool.ApprovalDecision, 1)
 	sc.AddApproval("app-1", pendingApproval{
 		response:  resp,
 		sessionID: "s1",
@@ -84,7 +86,7 @@ func TestSessionCoordinatorClose(t *testing.T) {
 	waiterCh := make(chan turnResult, 1)
 	sc.SetTurnWaiter("exec-1", waiterCh)
 
-	appResp := make(chan bool, 1)
+	appResp := make(chan publictool.ApprovalDecision, 1)
 	sc.AddApproval("app-1", pendingApproval{response: appResp})
 
 	interResp := make(chan userInteractionResult, 1)
@@ -106,7 +108,7 @@ func TestSessionCoordinatorClose(t *testing.T) {
 	// Approval receives false
 	select {
 	case granted := <-appResp:
-		if granted {
+		if granted != publictool.ApprovalDeny {
 			t.Fatal("expected false for closed approval")
 		}
 	default:
