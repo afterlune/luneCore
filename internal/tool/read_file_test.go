@@ -74,3 +74,16 @@ func TestReadFileRejectsInvalidLineRanges(t *testing.T) {
 		}
 	}
 }
+
+func TestReadFileExplainsLimitNumberField(t *testing.T) {
+	result := (ReadFileTool{Workspace: t.TempDir()}).Run(context.Background(), json.RawMessage(`{"path":"file.txt","limit_number":10}`))
+	if result.Err == nil {
+		t.Fatal("read_file accepted the unsupported limit_number field")
+	}
+	message := result.Err.Error()
+	for _, expected := range []string{`unknown field "limit_number"`, `use "limit"`, `"path"`, `"start_line"`} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("read_file error %q does not explain %q", message, expected)
+		}
+	}
+}

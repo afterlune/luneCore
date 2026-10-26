@@ -35,7 +35,7 @@ func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		Limit     *int   `json:"limit"`
 	}
 	if err := decodeArguments(raw, &args); err != nil {
-		return Result{Err: fmt.Errorf("invalid read_file arguments: %w", err)}
+		return Result{Err: fmt.Errorf("invalid read_file arguments: %w", explainReadFileArgumentError(err))}
 	}
 	startLine := 1
 	if args.StartLine != nil {
@@ -151,6 +151,19 @@ func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	return Result{Output: output.String(footer)}
 }
 
+func explainReadFileArgumentError(err error) error {
+	const unknownFieldPrefix = "json: unknown field "
+	message := err.Error()
+	if !strings.HasPrefix(message, unknownFieldPrefix) {
+		return err
+	}
+	field := strings.Trim(strings.TrimPrefix(message, unknownFieldPrefix), `"`)
+	if field == "limit_number" {
+		return fmt.Errorf("unknown field %q; use \"limit\" for the maximum number of lines; accepted fields are \"path\", \"start_line\", and \"limit\"", field)
+	}
+	return fmt.Errorf("unknown field %q; accepted fields are \"path\", \"start_line\", and \"limit\"", field)
+}
+
 func readBoundedLine(ctx context.Context, reader *bufio.Reader, maximum int) ([]byte, bool, bool, bool, error) {
 	line := make([]byte, 0, min(maximum, 4096))
 	truncated := false
@@ -194,4 +207,3 @@ func readBoundedLine(ctx context.Context, reader *bufio.Reader, maximum int) ([]
 func (ReadFileTool) InstructionDirectories(ctx context.Context, r *Registry, args json.RawMessage) ([]string, bool, error) {
 	return fileInstructionDirectoriesForPath(ctx, r, args, true)
 }
-

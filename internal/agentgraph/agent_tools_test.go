@@ -257,6 +257,66 @@ func TestDefaultCommonToolsAreVisibleOnFirstRequest(t *testing.T) {
 	}
 }
 
+func TestReadFileArgumentErrorGuidesModelRetry(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "main.go"), []byte("package main\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry, err := tool.NewDefaultRegistry(workspace)
+	if err != nil {
+		t.Fatalf("NewDefaultRegistry: %v", err)
+	}
+	defer registry.Close()
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"bad_read","name":"read_file","arguments":"{\"path\":\"main.go\",\"limit_number\":10}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"function_call","call_id":"retry_read","name":"read_file","arguments":"{\"path\":\"main.go\",\"limit\":10}"}]}`),
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
+	}}
+	agent, err := NewWithOptions(requester, registry, AgentOptions{
+		ToolVisibleForMode: registry.ToolVisibleForMode,
+		ToolReadOnly: func(name string) bool {
+			metadata, ok := registry.ToolMetadata(name)
+			return ok && metadata.ReadOnly
+		},
+		CurrentPermissionMode: func() string { return string(registry.PermissionMode()) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input, err := model.NewResponseInput("read main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.Start(context.Background(), "read-file-argument-retry", nil, input, TaskOptions{}, store, graph.Options{})
+	if err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("result = %#v, want a completed task", result)
+	}
+	if len(requester.requests) != 3 {
+		t.Fatalf("model requests = %d, want error feedback, corrected retry, and final response", len(requester.requests))
+	}
+	for requestIndex, expected := range map[int][]string{
+		1: {`unknown field \"limit_number\"`, `use \"limit\"`},
+		2: {"1 | package main"},
+	} {
+		encoded, err := json.Marshal(requester.requests[requestIndex].Input)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, fragment := range expected {
+			if !strings.Contains(string(encoded), fragment) {
+				t.Errorf("request %d input %s does not include %q", requestIndex+1, encoded, fragment)
+			}
+		}
+	}
+}
+
 func TestAlwaysVisibleToolsRemainPermissionAndPlanFiltered(t *testing.T) {
 	registry, err := tool.NewDefaultRegistry(t.TempDir())
 	if err != nil {
