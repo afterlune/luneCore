@@ -63,7 +63,11 @@ func (r *Responder) Compact(ctx context.Context) (agentgraph.CompactionResult, e
 		}
 		result, localErr := r.compactLocally(ctx, request)
 		result.Fallback = true
-		result.FallbackReason = err.Error()
+		fallbackReason := err.Error()
+		if result.FallbackReason != "" {
+			fallbackReason += "; " + result.FallbackReason
+		}
+		result.FallbackReason = fallbackReason
 		return result, localErr
 	}
 	return r.compactLocally(ctx, request)

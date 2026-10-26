@@ -31,6 +31,7 @@ func (a *Agent) handleModelResponse(ctx context.Context, state State, request mo
 	}
 	if serverCompactionRequested {
 		if responseContainsCompaction(response.Output) {
+			a.notifyCompaction(ContextCompactionEvent{Stage: "started", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold})
 			a.notifyCompaction(ContextCompactionEvent{Stage: "completed", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold})
 		} else if response.Usage.InputTokens >= compactionThreshold || response.Usage.InputTokens <= 0 && model.EstimateInputTokens(request) >= compactionThreshold {
 			state.ServerCompactionFallback = true
@@ -38,8 +39,6 @@ func (a *Agent) handleModelResponse(ctx context.Context, state State, request mo
 				Stage: "fallback", Mode: "server", BeforeTokens: response.Usage.InputTokens, Threshold: compactionThreshold,
 				Error: errors.New("provider did not return a compaction state; local compaction will be used on the next request"),
 			})
-		} else {
-			a.notifyCompaction(ContextCompactionEvent{Stage: "skipped", Mode: "server", BeforeTokens: response.Usage.InputTokens, Threshold: compactionThreshold})
 		}
 	}
 

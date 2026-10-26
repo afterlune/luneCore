@@ -328,6 +328,43 @@ func TestResponsesServerCompactionFallsBackOnlyWhenEndpointRejectsCapability(t *
 	}
 }
 
+func TestResponsesServerCompactionBelowThresholdEmitsNoCompactionEvents(t *testing.T) {
+	registry, err := tool.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"normal response"}]}],"usage":{"input_tokens":500,"output_tokens":10}}`),
+	}}
+	var events []ContextCompactionEvent
+	agent, err := NewWithOptions(requester, registry, AgentOptions{
+		ID: "lead", Profile: "openai", Provider: "openai", Protocol: model.ProtocolResponses,
+		ServerCompaction: true, Model: "gpt-test",
+		CompactionObserver: func(event ContextCompactionEvent) { events = append(events, event) },
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := model.NewResponseInputText("a simple question")
+	store, err := memory.New[State](graph.JSONClone[State])
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, result, err := agent.StartWithTranscript(context.Background(), "server-compact-below-threshold", nil, nil, input,
+		TaskOptions{ContextWindow: 100_000, ReserveOutputTokens: 1000, AutoCompact: true, AutoCompactThreshold: 0.8},
+		store, graph.Options{})
+	if err != nil || result.Status != graph.StatusCompleted || result.Final == nil {
+		t.Fatalf("StartWithTranscript: %v", err)
+	}
+	if len(requester.requests) != 1 || len(requester.requests[0].ContextManagement) != 1 {
+		t.Fatalf("expected 1 request with context_management threshold, got %#v", requester.requests)
+	}
+	if len(events) != 0 {
+		t.Fatalf("expected 0 compaction events when below threshold, got: %#v", events)
+	}
+}
+
 type failFirstRequester struct {
 	inner *scriptedRequester
 	err   error

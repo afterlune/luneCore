@@ -130,9 +130,6 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 		if useServerCompaction {
 			request.ContextManagement = []model.ContextManagementItem{{Type: "compaction", CompactThreshold: compactionThreshold}}
 			serverCompactionRequested = true
-			a.notifyCompaction(ContextCompactionEvent{
-				Stage: "started", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold,
-			})
 		} else {
 			var compacted bool
 			state, request, compacted, err = a.prepareCompaction(requestCtx, state, request, "threshold", false)
@@ -241,7 +238,7 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 			"model", request.Model,
 			"error", responseErr,
 		)
-		if serverCompactionRequested {
+		if serverCompactionRequested && (model.EstimateInputTokens(request) >= compactionThreshold || (state.LastInputTokens > 0 && state.LastInputTokens >= compactionThreshold)) {
 			a.notifyCompaction(ContextCompactionEvent{Stage: "failed", Mode: "server", BeforeTokens: model.EstimateInputTokens(request), Threshold: compactionThreshold, Error: responseErr})
 		}
 		if errors.Is(responseErr, model.ErrTokenBudgetExceeded) {

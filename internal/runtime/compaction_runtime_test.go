@@ -284,6 +284,9 @@ func TestCoreManualCompactFallsBackWhenStandaloneEndpointIsUnsupported(t *testin
 	if compactRequests != 1 || summaryRequests != 1 || result.Backend != "local" || !result.Fallback || !result.Compacted {
 		t.Fatalf("compact requests=%d summary requests=%d result=%#v", compactRequests, summaryRequests, result)
 	}
+	if !strings.Contains(result.FallbackReason, "provider compaction is unsupported") {
+		t.Fatalf("fallback reason = %q, want the server endpoint rejection", result.FallbackReason)
+	}
 	var fallback, completed bool
 	for {
 		select {
