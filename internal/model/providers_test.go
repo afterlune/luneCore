@@ -3,6 +3,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -213,6 +214,57 @@ func TestResponsesProviderSendsServerCompactionConfiguration(t *testing.T) {
 	compaction, ok := response.Output[0].(OutputCompaction)
 	if !ok || compaction.ID != "cmp_1" || compaction.EncryptedContent != "opaque-state" || compaction.CreatedBy != "responses.compact" {
 		t.Fatalf("compaction output = %#v", response.Output[0])
+	}
+}
+
+func TestResponsesProviderCompactResponseUsesStandaloneEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/responses/compact" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer compact-key" {
+			t.Errorf("authorization = %q", got)
+		}
+		var request struct {
+			Model        string          `json:"model"`
+			Input        json.RawMessage `json:"input"`
+			Instructions string          `json:"instructions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatal(err)
+		}
+		if request.Model != "gpt-test" || !strings.Contains(string(request.Input), "continue this work") || !strings.Contains(request.Instructions, "context checkpoint") {
+			t.Errorf("compact request = %#v", request)
+		}
+		_, _ = fmt.Fprint(w, `{"id":"compact-response","object":"response.compaction","status":"completed","model":"gpt-test","output":[{"type":"compaction","id":"cmp-1","encrypted_content":"opaque-state","created_by":"responses.compact"}],"usage":{"input_tokens":12000,"output_tokens":30,"total_tokens":12030}}`)
+	}))
+	defer server.Close()
+	provider := newResponsesProvider(ProviderOpenAI, "compact-key", server.URL+"/v1/responses", server.Client())
+	response, err := provider.CompactResponse(context.Background(), ModelRequest{
+		Input:        NewResponseInputText("continue this work"),
+		Instructions: "Create a context checkpoint.",
+	}, ModelProfile{Provider: ProviderOpenAI, Model: "gpt-test"})
+	if err != nil {
+		t.Fatalf("CompactResponse: %v", err)
+	}
+	if response.ID != "compact-response" || len(response.Output) != 1 {
+		t.Fatalf("response = %#v", response)
+	}
+	compaction, ok := response.Output[0].(OutputCompaction)
+	if !ok || compaction.EncryptedContent != "opaque-state" {
+		t.Fatalf("compaction output = %#v", response.Output[0])
+	}
+}
+
+func TestResponsesProviderCompactResponseReportsUnsupportedEndpoint(t *testing.T) {
+	server := httptest.NewServer(http.NotFoundHandler())
+	defer server.Close()
+	provider := newResponsesProvider(ProviderOpenAI, "compact-key", server.URL+"/responses", server.Client())
+	_, err := provider.CompactResponse(context.Background(), ModelRequest{
+		Model: "gpt-test", Input: NewResponseInputText("continue this work"),
+	}, ModelProfile{Provider: ProviderOpenAI, Model: "gpt-test"})
+	if !errors.Is(err, ErrCompactionUnsupported) {
+		t.Fatalf("CompactResponse error = %v, want ErrCompactionUnsupported", err)
 	}
 }
 

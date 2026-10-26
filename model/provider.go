@@ -5,6 +5,7 @@ package model
 import (
 	"context"
 	"encoding/json"
+	"errors"
 )
 
 // Provider sends one model request. The runtime owns conversation history and
@@ -17,6 +18,18 @@ type Provider interface {
 	Name() string
 	CreateResponse(context.Context, ModelRequest, ModelProfile) (*ModelResponse, error)
 	StreamResponse(context.Context, ModelRequest, ModelProfile, func(ModelStreamEvent) error) (*ModelResponse, error)
+}
+
+// ErrCompactionUnsupported indicates that a provider does not expose the
+// standalone Responses compaction endpoint. Callers may fall back to local
+// compaction when they receive this error.
+var ErrCompactionUnsupported = errors.New("provider compaction is unsupported")
+
+// CompactionProvider is an optional provider capability for explicit,
+// provider-side compaction. Automatic context_management remains part of
+// CreateResponse; this interface is used by user-requested compaction.
+type CompactionProvider interface {
+	CompactResponse(context.Context, ModelRequest, ModelProfile) (*ModelResponse, error)
 }
 
 // ModelStreamEventType identifies a normalized provider streaming event.

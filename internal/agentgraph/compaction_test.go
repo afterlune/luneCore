@@ -14,7 +14,7 @@ import (
 	"github.com/afterlune/luneGraph/checkpoint/memory"
 )
 
-func TestAutomaticCompactionClearsOldToolOutputAndKeepsTranscript(t *testing.T) {
+func TestAutomaticCompactionSummarizesOldToolOutputAndKeepsTranscript(t *testing.T) {
 	registry, err := tool.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -29,6 +29,7 @@ func TestAutomaticCompactionClearsOldToolOutputAndKeepsTranscript(t *testing.T) 
 		)},
 	)
 	requester := &scriptedRequester{responses: []*model.Response{
+		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"call-old read the requested file; preserve the image reference."}]}]}`),
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"done"}]}]}`),
 	}}
 	agent, err := NewWithOptions(requester, registry, AgentOptions{ID: "lead", Profile: "main", Provider: "vendor", Protocol: model.ProtocolAnthropicMessages, Model: "claude-test"})
@@ -49,34 +50,29 @@ func TestAutomaticCompactionClearsOldToolOutputAndKeepsTranscript(t *testing.T) 
 	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v", result)
 	}
-	if len(requester.requests) != 1 {
-		t.Fatalf("model requests = %d, want one after clearing the tool result", len(requester.requests))
+	if len(requester.requests) != 2 {
+		t.Fatalf("model requests = %d, want one summary and one task request", len(requester.requests))
 	}
-	requestJSON, err := json.Marshal(requester.requests[0].Input)
+	summaryRequestJSON, err := json.Marshal(requester.requests[0].Input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(requestJSON), "call-old") || !strings.Contains(string(requestJSON), "Earlier tool output cleared") {
-		t.Fatalf("request lost the tool pair or clearing marker: %s", requestJSON)
+	if !strings.Contains(string(summaryRequestJSON), "call-old") || !strings.Contains(string(summaryRequestJSON), largeResult) {
+		t.Fatalf("summary request did not receive the original tool result: %s", summaryRequestJSON)
+	}
+	requestJSON, err := json.Marshal(requester.requests[1].Input)
+	if err != nil {
+		t.Fatal(err)
 	}
 	var compactedInput model.ResponseInput
 	if err := json.Unmarshal(requestJSON, &compactedInput); err != nil {
 		t.Fatal(err)
 	}
-	var preservedStatus bool
-	for _, item := range compactedInput.Items {
-		if output, ok := item.(model.InputFunctionCallOutput); ok && output.CallID == "call-old" {
-			preservedStatus = output.Status == "completed"
-		}
-	}
-	if !preservedStatus {
-		t.Fatal("tool output status was not preserved")
-	}
 	if strings.Contains(string(requestJSON), largeResult) {
 		t.Fatal("compacted model context still contains the large tool output")
 	}
-	if !strings.Contains(string(requestJSON), "data:image/png;base64,AA==") {
-		t.Fatal("tool-result compaction removed a non-text image part")
+	if !strings.Contains(string(requestJSON), "call-old read the requested file") {
+		t.Fatal("compacted model context lost the tool-result summary")
 	}
 	transcriptJSON, err := json.Marshal(result.Final.Transcript)
 	if err != nil {
@@ -514,7 +510,77 @@ func TestPlanLocalCompactionRetainsRecentTurns(t *testing.T) {
 	}
 }
 
-func TestAutomaticCompactionFallsBackToPrunedHistoryWhenSummaryFails(t *testing.T) {
+func TestPlanLocalCompactionTailBudgetUsesCurrentInputSize(t *testing.T) {
+	var items []model.InputItem
+	for turn := 0; turn < 40; turn++ {
+		items = append(items,
+			model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("request")},
+			model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText(strings.Repeat("detail ", 500))},
+		)
+	}
+	request := model.ModelRequest{Input: model.NewResponseInputItems(items...)}
+	before := model.EstimateInputTokens(request)
+	plan, err := planLocalCompaction(request, 1_600_000, 2_000_000, before)
+	if err != nil {
+		t.Fatalf("planLocalCompaction: %v", err)
+	}
+	if plan.tailTok >= before/2 {
+		t.Fatalf("retained tail is %d/%d tokens despite a much larger model window", plan.tailTok, before)
+	}
+}
+
+func TestLocalCompactionSummarizesLargeRecentToolOutputsByCallID(t *testing.T) {
+	largeResult := strings.Repeat("tool-output-data ", 8000)
+	request := model.ModelRequest{Model: "test-model", Input: model.NewResponseInputItems(
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("initial request")},
+		model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText(strings.Repeat("prior detail ", 3000))},
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("inspect the command result")},
+		model.InputFunctionCall{CallID: "call-large", Name: "command", Arguments: `{"cmd":"inspect"}`},
+		model.InputFunctionCallOutput{ID: "output-large", Status: "completed", CallID: "call-large", Output: model.NewToolOutputText(largeResult)},
+	)}
+	before := model.EstimateInputTokens(request)
+	var summaryRequests int
+	result, err := CompactHistory(context.Background(), request, CompactionOptions{
+		ContextWindow: before * 4, Ratio: 0.8, Force: true, Reason: "manual",
+	}, func(_ context.Context, summaryRequest model.ModelRequest) (string, error) {
+		summaryRequests++
+		encoded := string(mustMarshal(t, summaryRequest.Input))
+		if !strings.Contains(encoded, largeResult) || !strings.Contains(encoded, "call-large") {
+			t.Fatal("summary request did not receive the original tool call and output")
+		}
+		if !strings.Contains(encoded, "tool_results") || !strings.Contains(encoded, "call-large") {
+			t.Fatal("summary request did not request per-call result summaries")
+		}
+		return `{"handoff":"Continue inspecting the command result.","tool_results":{"call-large":"The command found the requested entry and completed without errors."}}`, nil
+	})
+	if err != nil {
+		t.Fatalf("CompactHistory: %v", err)
+	}
+	if !result.Compacted || result.Backend != "local" || result.After >= result.Before/2 {
+		t.Fatalf("compaction result = %#v; want local result at or below half", result)
+	}
+	if summaryRequests != 1 {
+		t.Fatalf("summary requests = %d, want 1", summaryRequests)
+	}
+	var call, output bool
+	for _, item := range result.Items {
+		switch value := item.(type) {
+		case model.InputFunctionCall:
+			call = value.CallID == "call-large"
+		case model.InputFunctionCallOutput:
+			if value.CallID == "call-large" {
+				output = value.ID == "output-large" && value.Status == "completed" &&
+					value.Output.Text != nil && strings.Contains(*value.Output.Text, "The command found the requested entry") &&
+					!strings.Contains(*value.Output.Text, largeResult)
+			}
+		}
+	}
+	if !call || !output {
+		t.Fatalf("compaction did not preserve the call/result pair with a concise result: %#v", result.Items)
+	}
+}
+
+func TestAutomaticCompactionDoesNotClearToolOutputBeforeFailedSummary(t *testing.T) {
 	registry, err := tool.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -549,24 +615,27 @@ func TestAutomaticCompactionFallsBackToPrunedHistoryWhenSummaryFails(t *testing.
 	if result.Status != graph.StatusCompleted || result.Final == nil {
 		t.Fatalf("result = %#v", result)
 	}
-	if len(requester.requests) != 2 {
-		t.Fatalf("expected one summary attempt and one task request, requests=%d", len(requester.requests))
+	if len(requester.requests) != 1 {
+		t.Fatalf("expected only the failed summary request, requests=%d", len(requester.requests))
 	}
-	var fallback bool
+	if !strings.Contains(string(mustMarshal(t, requester.requests[0].Input)), largeResult) {
+		t.Fatal("summary request did not receive the complete original tool output")
+	}
+	var failed bool
 	for _, event := range events {
-		if event.Stage == "fallback" {
-			fallback = true
+		if event.Stage == "failed" {
+			failed = true
 		}
 	}
-	if !fallback {
-		t.Fatalf("summary failure did not emit a fallback event: %#v", events)
+	if !failed {
+		t.Fatalf("summary failure did not emit a failure event: %#v", events)
 	}
 	contextJSON, err := json.Marshal(result.Final.History)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(contextJSON), largeResult) || !strings.Contains(string(contextJSON), "Earlier tool output cleared") {
-		t.Fatalf("fallback did not keep the pruned history: %s", contextJSON)
+	if !strings.Contains(string(contextJSON), largeResult) {
+		t.Fatalf("failed summary changed model context: %s", contextJSON)
 	}
 }
 

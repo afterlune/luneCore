@@ -63,6 +63,26 @@ func (p hostProvider) CreateResponse(ctx context.Context, request ModelRequest, 
 	return responseCopy, requestErr
 }
 
+func (p hostProvider) CompactResponse(ctx context.Context, request ModelRequest, profile ModelProfile) (*ModelResponse, error) {
+	provider, ok := p.inner.(publicmodel.CompactionProvider)
+	if !ok {
+		return nil, publicmodel.ErrCompactionUnsupported
+	}
+	hostRequest, err := cloneModelRequestForHost(request)
+	if err != nil {
+		return nil, fmt.Errorf("copy request for host provider compaction: %w", err)
+	}
+	response, err := provider.CompactResponse(ctx, hostRequest, profile)
+	if response == nil {
+		return nil, err
+	}
+	responseCopy, copyErr := cloneForHost(response)
+	if copyErr != nil {
+		return nil, fmt.Errorf("copy compacted response from host provider: %w", copyErr)
+	}
+	return responseCopy, err
+}
+
 func (p hostProvider) StreamResponse(ctx context.Context, request ModelRequest, profile ModelProfile, emit func(ModelStreamEvent) error) (*ModelResponse, error) {
 	hostRequest, err := cloneModelRequestForHost(request)
 	if err != nil {

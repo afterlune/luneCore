@@ -84,6 +84,7 @@ func (c *Core) compactOwned(ctx context.Context, sessionID string) (agentgraph.C
 		ReasoningEffort: settings.ReasoningEffort, Goal: effective.Goal,
 		ContextWindow: effective.ContextWindow, ReserveOutputTokens: effective.ReserveOutputTokens,
 		AutoCompact: effective.AutoCompact, AutoCompactThreshold: effective.AutoCompactThreshold,
+		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 	}
 	taskID, err := c.beginTask(ctx, sessionID, "", settings, profile, profile.Model, compactOptions, saved.UpdatedAt, nil)
 	if err != nil {
@@ -110,7 +111,11 @@ func (c *Core) compactOwned(ctx context.Context, sessionID string) (agentgraph.C
 	}
 	taskRuntime.SetTaskOptions(compactOptions)
 	taskRuntime.SetSessionState(sessionID, transcript, modelContext, contextKey)
-	c.emit(Event{Kind: EventContextCompaction, TaskID: taskID, SessionID: sessionID, Compaction: &ContextCompactionDetails{Stage: "started", Mode: "local", Reason: "manual"}})
+	startMode := "local"
+	if providerConfig.Protocol == model.ProtocolResponses && providerConfig.ServerCompaction {
+		startMode = "server"
+	}
+	c.emit(Event{Kind: EventContextCompaction, TaskID: taskID, SessionID: sessionID, Compaction: &ContextCompactionDetails{Stage: "started", Mode: startMode, Reason: "manual"}})
 	compacted, err := taskRuntime.Compact(ctx)
 	if err == nil {
 		err = c.saveHistoryUsage(ctx, sessionID, taskRuntime)
@@ -124,12 +129,23 @@ func (c *Core) compactOwned(ctx context.Context, sessionID string) (agentgraph.C
 	}
 	c.finishTaskState(sessionID, status, err)
 	if err != nil {
-		c.emit(Event{Kind: EventContextCompaction, TaskID: taskID, SessionID: sessionID, Err: err.Error(), Compaction: &ContextCompactionDetails{Stage: "failed", Mode: "local", Reason: "manual", Err: err.Error()}})
+		failedMode := compacted.Backend
+		if failedMode == "" {
+			failedMode = startMode
+		}
+		c.emit(Event{Kind: EventContextCompaction, TaskID: taskID, SessionID: sessionID, Err: err.Error(), Compaction: &ContextCompactionDetails{Stage: "failed", Mode: failedMode, Reason: "manual", Err: err.Error()}})
 		return compacted, err
+	}
+	if compacted.Fallback {
+		c.emit(Event{Kind: EventContextCompaction, TaskID: taskID, SessionID: sessionID, Compaction: &ContextCompactionDetails{
+			Stage: "fallback", Mode: startMode, Reason: "manual", BeforeTokens: compacted.Before,
+			AfterTokens: compacted.After, Threshold: compacted.Threshold, Turns: compacted.Turns,
+			Err: compacted.FallbackReason,
+		}})
 	}
 	if compacted.Compacted {
 		c.emit(Event{Kind: EventContextCompaction, TaskID: taskID, SessionID: sessionID, Compaction: &ContextCompactionDetails{
-			Stage: "completed", Mode: "local", Reason: "manual", Strategy: compacted.Mode,
+			Stage: "completed", Mode: compacted.Backend, Reason: "manual", Strategy: compacted.Mode,
 			BeforeTokens: compacted.Before, AfterTokens: compacted.After, Threshold: compacted.Threshold, Turns: compacted.Turns,
 		}})
 	}

@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -143,5 +144,159 @@ func TestCoreCompactReturnsResultAndEmitsEvents(t *testing.T) {
 done:
 	if !started || !completed {
 		t.Fatalf("manual compaction events = started:%v completed:%v", started, completed)
+	}
+}
+
+func TestCoreManualCompactUsesResponsesCompactEndpoint(t *testing.T) {
+	var compactRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/responses/compact" {
+			t.Errorf("request = %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		compactRequests++
+		var request model.ModelRequest
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Errorf("decode compact request: %v", err)
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		if !strings.Contains(request.Instructions, "context checkpoint") || !strings.Contains(string(mustJSON(t, request.Input)), "latest request") {
+			t.Errorf("compact request = %#v", request)
+		}
+		_, _ = fmt.Fprint(w, `{"id":"compact-response","object":"response.compaction","status":"completed","model":"test-model","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"retained compacted content"}]},{"type":"compaction","id":"cmp-1","encrypted_content":"opaque-server-state","created_by":"responses.compact"}],"usage":{"input_tokens":200,"output_tokens":12,"total_tokens":212}}`)
+	}))
+	defer server.Close()
+
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	config := projectSettingsForTest(
+		map[string]model.ProviderConfig{"vendor": {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "key", ServerCompaction: true}},
+		map[string]model.ModelProfile{"main": {Provider: "vendor", Model: "test-model"}},
+		"main", projectconfig.RuntimeConfig{ContextWindow: 100000, AutoCompact: true, AutoCompactThreshold: 0.8},
+	)
+	writeProjectSettingsConfig(t, workspace, config)
+	client := openSettingsCore(t, workspace, stateDir)
+	defer client.Close()
+	history, err := json.Marshal(model.NewResponseInputItems(
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("first request")},
+		model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText("first answer")},
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("latest request")},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := client.CreateSession(context.Background(), history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := subscribeTestEvents(t, client, session.ID)
+	result, err := client.Compact(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if compactRequests != 1 || result.Backend != "server" || !result.Compacted {
+		t.Fatalf("compact requests=%d, result=%#v", compactRequests, result)
+	}
+	saved, err := client.GetSession(context.Background(), session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(saved.ModelContext), "opaque-server-state") || strings.Contains(string(saved.History), "opaque-server-state") {
+		t.Fatalf("server compaction state was not isolated: context=%s history=%s", saved.ModelContext, saved.History)
+	}
+	var started, completed bool
+	for {
+		select {
+		case event := <-events:
+			if event.Kind == EventContextCompaction && event.Compaction != nil {
+				started = started || event.Compaction.Stage == "started" && event.Compaction.Mode == "server"
+				completed = completed || event.Compaction.Stage == "completed" && event.Compaction.Mode == "server"
+			}
+			if started && completed {
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("server compaction events missing: started=%v completed=%v", started, completed)
+		}
+	}
+}
+
+func TestCoreManualCompactFallsBackWhenStandaloneEndpointIsUnsupported(t *testing.T) {
+	var compactRequests, summaryRequests int
+	oldDetails := strings.Repeat("earlier verified project requirement ", 5000)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/responses/compact":
+			compactRequests++
+			http.NotFound(w, r)
+		case "/responses":
+			summaryRequests++
+			var request model.ModelRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decode local summary request: %v", err)
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			if !strings.Contains(string(mustJSON(t, request.Input)), "handoff summary") || !strings.Contains(string(mustJSON(t, request.Input)), oldDetails) {
+				t.Error("local fallback did not summarize the original context")
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(&model.ModelResponse{
+				ID: "local-summary", Object: "response", Status: "completed", Model: request.Model,
+				Output: []model.ResponseOutputItem{model.OutputMessage{Role: model.RoleAssistant,
+					Content: []model.OutputContentPart{model.OutputText{Text: "Earlier requirements remain in force."}}}},
+				Usage: model.ResponseUsage{InputTokens: 18000, OutputTokens: 10, TotalTokens: 18010},
+			})
+		default:
+			t.Errorf("unexpected request path %q", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	workspace, stateDir := t.TempDir(), t.TempDir()
+	config := projectSettingsForTest(
+		map[string]model.ProviderConfig{"vendor": {Protocol: model.ProtocolResponses, BaseURL: server.URL, APIKey: "key", ServerCompaction: true}},
+		map[string]model.ModelProfile{"main": {Provider: "vendor", Model: "test-model"}},
+		"main", projectconfig.RuntimeConfig{ContextWindow: 100000, AutoCompact: true, AutoCompactThreshold: 0.8},
+	)
+	writeProjectSettingsConfig(t, workspace, config)
+	client := openSettingsCore(t, workspace, stateDir)
+	defer client.Close()
+	history, err := json.Marshal(model.NewResponseInputItems(
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("first request")},
+		model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText(oldDetails)},
+		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("latest request")},
+	))
+	if err != nil {
+		t.Fatal(err)
+	}
+	session, err := client.CreateSession(context.Background(), history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := subscribeTestEvents(t, client, session.ID)
+	result, err := client.Compact(context.Background(), session.ID)
+	if err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if compactRequests != 1 || summaryRequests != 1 || result.Backend != "local" || !result.Fallback || !result.Compacted {
+		t.Fatalf("compact requests=%d summary requests=%d result=%#v", compactRequests, summaryRequests, result)
+	}
+	var fallback, completed bool
+	for {
+		select {
+		case event := <-events:
+			if event.Kind == EventContextCompaction && event.Compaction != nil {
+				fallback = fallback || event.Compaction.Stage == "fallback" && event.Compaction.Mode == "server"
+				completed = completed || event.Compaction.Stage == "completed" && event.Compaction.Mode == "local"
+			}
+			if fallback && completed {
+				return
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("fallback compaction events missing: fallback=%v completed=%v", fallback, completed)
+		}
 	}
 }

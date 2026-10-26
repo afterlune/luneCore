@@ -64,6 +64,28 @@ func (c *Client) CreateResponse(ctx context.Context, request ModelRequest) (*Mod
 	return c.provider.CreateResponse(ctx, request, c.profile)
 }
 
+// CompactResponse asks a provider with explicit compaction support to compact
+// the supplied conversation without generating a normal assistant turn.
+func (c *Client) CompactResponse(ctx context.Context, request ModelRequest) (*ModelResponse, error) {
+	if c == nil {
+		return nil, errors.New("model client is nil")
+	}
+	if ctx == nil {
+		return nil, errors.New("context is nil")
+	}
+	if c.provider == nil {
+		return nil, errors.New("model provider is required")
+	}
+	provider, ok := c.provider.(CompactionProvider)
+	if !ok {
+		return nil, ErrCompactionUnsupported
+	}
+	if request.Model == "" {
+		request.Model = c.profile.Model
+	}
+	return provider.CompactResponse(ctx, request, c.profile)
+}
+
 // StreamResponse streams normalized model events and returns the final
 // response. A nil event callback discards incremental events.
 func (c *Client) StreamResponse(ctx context.Context, request ModelRequest, emit func(ModelStreamEvent) error) (*ModelResponse, error) {

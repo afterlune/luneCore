@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 type responsesProvider struct {
@@ -18,6 +19,12 @@ type responsesProvider struct {
 type responsesWireRequest struct {
 	ResponsesRequest
 	PromptCacheKey string `json:"prompt_cache_key,omitempty"`
+}
+
+type responsesCompactWireRequest struct {
+	Model        string         `json:"model"`
+	Input        *ResponseInput `json:"input,omitempty"`
+	Instructions string         `json:"instructions,omitempty"`
 }
 
 func (p *responsesProvider) wireRequest(request ModelRequest) responsesWireRequest {
@@ -58,6 +65,40 @@ func (p *responsesProvider) CreateResponse(ctx context.Context, request ModelReq
 	var decoded ModelResponse
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return nil, fmt.Errorf("decode %s Responses response: %w", p.providerID, err)
+	}
+	if decoded.Status == "failed" && decoded.Error != nil {
+		return &decoded, annotateRequestError(response, ResponseFailure(decoded.Error))
+	}
+	return &decoded, nil
+}
+
+func (p *responsesProvider) CompactResponse(ctx context.Context, request ModelRequest, profile ModelProfile) (*ModelResponse, error) {
+	request.Model = resolveModelID(request.Model, profile)
+	endpoint := strings.TrimRight(p.endpoint, "/") + "/compact"
+	wire := responsesCompactWireRequest{
+		Model:        request.Model,
+		Input:        request.Input,
+		Instructions: request.Instructions,
+	}
+	response, err := postJSON(ctx, p.httpClient, endpoint, map[string]string{
+		"Authorization": "Bearer " + p.apiKey,
+	}, wire)
+	if err != nil {
+		return nil, fmt.Errorf("call %s Responses compact endpoint: %w", p.providerID, err)
+	}
+	body, err := responseBody(response)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode == http.StatusNotFound || response.StatusCode == http.StatusMethodNotAllowed || response.StatusCode == http.StatusNotImplemented {
+		return nil, fmt.Errorf("%w: %s Responses compact endpoint returned HTTP %d", ErrCompactionUnsupported, p.providerID, response.StatusCode)
+	}
+	if err := httpStatusError(response, body, p.providerID+" Responses compact endpoint"); err != nil {
+		return nil, err
+	}
+	var decoded ModelResponse
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return nil, fmt.Errorf("decode %s Responses compact response: %w", p.providerID, err)
 	}
 	if decoded.Status == "failed" && decoded.Error != nil {
 		return &decoded, annotateRequestError(response, ResponseFailure(decoded.Error))

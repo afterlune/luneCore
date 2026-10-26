@@ -30,29 +30,22 @@ func (r *UsageTrackingRequester) CreateResponse(ctx context.Context, request mod
 	if err == nil && budgetLimited && responseIncompleteForOutputLimit(response) {
 		err = model.ErrTokenBudgetExceeded
 	}
-	if response != nil && (err == nil || response.Usage != (model.ResponseUsage{})) {
-		r.mu.RLock()
-		observer := r.observer
-		contextObserver := r.contextObserver
-		modelName := r.modelName
-		r.mu.RUnlock()
-		if request.Model != "" {
-			modelName = request.Model
-		}
-		if contextObserver != nil {
-			estimatedInputTokens := int64(0)
-			if err == nil && response.Usage.InputTokens <= 0 {
-				estimatedInputTokens = model.EstimateInputTokens(request)
-			}
-			contextObserver(ctx, response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
-		} else if observer != nil {
-			estimatedInputTokens := int64(0)
-			if err == nil && response.Usage.InputTokens <= 0 {
-				estimatedInputTokens = model.EstimateInputTokens(request)
-			}
-			observer(response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
-		}
+	r.observeUsage(ctx, request, response, err)
+	return response, err
+}
+
+func (r *UsageTrackingRequester) CompactResponse(ctx context.Context, request model.ModelRequest) (*model.ModelResponse, error) {
+	compactor, ok := r.inner.(agentgraph.CompactionRequester)
+	if !ok {
+		return nil, model.ErrCompactionUnsupported
 	}
+	request, reservation, _, err := r.reserveTokens(ctx, request)
+	if err != nil {
+		return nil, err
+	}
+	response, err := compactor.CompactResponse(ctx, request)
+	r.settleTokens(ctx, reservation, response, err)
+	r.observeUsage(ctx, request, response, err)
 	return response, err
 }
 
@@ -70,30 +63,31 @@ func (r *UsageTrackingRequester) StreamResponse(ctx context.Context, request mod
 	if err == nil && budgetLimited && responseIncompleteForOutputLimit(response) {
 		err = model.ErrTokenBudgetExceeded
 	}
-	if response != nil && (err == nil || response.Usage != (model.ResponseUsage{})) {
-		r.mu.RLock()
-		observer := r.observer
-		contextObserver := r.contextObserver
-		modelName := r.modelName
-		r.mu.RUnlock()
-		if request.Model != "" {
-			modelName = request.Model
-		}
-		if contextObserver != nil {
-			estimatedInputTokens := int64(0)
-			if err == nil && response.Usage.InputTokens <= 0 {
-				estimatedInputTokens = model.EstimateInputTokens(request)
-			}
-			contextObserver(ctx, response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
-		} else if observer != nil {
-			estimatedInputTokens := int64(0)
-			if err == nil && response.Usage.InputTokens <= 0 {
-				estimatedInputTokens = model.EstimateInputTokens(request)
-			}
-			observer(response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
-		}
-	}
+	r.observeUsage(ctx, request, response, err)
 	return response, err
+}
+
+func (r *UsageTrackingRequester) observeUsage(ctx context.Context, request model.ModelRequest, response *model.ModelResponse, err error) {
+	if response == nil || err != nil && response.Usage == (model.ResponseUsage{}) {
+		return
+	}
+	r.mu.RLock()
+	observer := r.observer
+	contextObserver := r.contextObserver
+	modelName := r.modelName
+	r.mu.RUnlock()
+	if request.Model != "" {
+		modelName = request.Model
+	}
+	estimatedInputTokens := int64(0)
+	if err == nil && response.Usage.InputTokens <= 0 {
+		estimatedInputTokens = model.EstimateInputTokens(request)
+	}
+	if contextObserver != nil {
+		contextObserver(ctx, response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
+	} else if observer != nil {
+		observer(response.Usage, r.agentID, r.profile, r.providerName, modelName, estimatedInputTokens)
+	}
 }
 
 type TokenBudgetReservation struct {

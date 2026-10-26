@@ -2,6 +2,7 @@ package agentruntime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 
@@ -42,6 +43,33 @@ func (r *Responder) Compact(ctx context.Context) (agentgraph.CompactionResult, e
 	if request.Model == "" {
 		request.Model = model.DeepSeekFlashModel
 	}
+	before := model.EstimateInputTokens(request)
+	if r.taskOptions.Protocol == model.ProtocolResponses && r.taskOptions.ServerCompaction {
+		remoteRequest := request
+		remoteRequest.Instructions = "Compact this conversation into a context checkpoint for another LLM that will continue the task. Preserve the current goal, user constraints and preferences, decisions, unresolved work, important paths and IDs, and useful completed tool results. Return the compacted context for continued use."
+		response, err := r.requester.CompactResponse(ctx, remoteRequest)
+		if err == nil {
+			result, items, convertErr := serverCompactionResult(request, response)
+			if convertErr != nil {
+				return agentgraph.CompactionResult{Before: before, Backend: "server"}, convertErr
+			}
+			r.historyMu.Lock()
+			r.history = model.NewResponseInputItems(items...)
+			r.historyMu.Unlock()
+			return result, nil
+		}
+		if !errors.Is(err, model.ErrCompactionUnsupported) {
+			return agentgraph.CompactionResult{Before: before, Backend: "server"}, err
+		}
+		result, localErr := r.compactLocally(ctx, request)
+		result.Fallback = true
+		result.FallbackReason = err.Error()
+		return result, localErr
+	}
+	return r.compactLocally(ctx, request)
+}
+
+func (r *Responder) compactLocally(ctx context.Context, request model.ModelRequest) (agentgraph.CompactionResult, error) {
 	options := agentgraph.CompactionOptions{
 		ContextWindow:       r.taskOptions.ContextWindow,
 		ReserveOutputTokens: r.taskOptions.ReserveOutputTokens,
@@ -84,6 +112,56 @@ func (r *Responder) Compact(ctx context.Context) (agentgraph.CompactionResult, e
 		r.historyMu.Unlock()
 	}
 	return result, nil
+}
+
+func serverCompactionResult(request model.ModelRequest, response *model.ModelResponse) (agentgraph.CompactionResult, []model.InputItem, error) {
+	before := model.EstimateInputTokens(request)
+	result := agentgraph.CompactionResult{Before: before, Backend: "server", Mode: "compact"}
+	if response == nil {
+		return result, nil, errors.New("provider returned no compacted response")
+	}
+	if response.Status != "" && response.Status != "completed" {
+		return result, nil, errors.New("provider compaction status is " + response.Status)
+	}
+	items := make([]model.InputItem, 0, len(response.Output))
+	hasCompactionState := false
+	for _, output := range response.Output {
+		if _, ok := output.(model.OutputCompaction); ok {
+			hasCompactionState = true
+		}
+		encoded, err := json.Marshal(output)
+		if err != nil {
+			return result, nil, err
+		}
+		items = append(items, model.UnknownInputItem{Raw: encoded})
+	}
+	if !hasCompactionState {
+		return result, nil, errors.New("provider compact response did not contain a compaction state item")
+	}
+	result.Items = items
+	result.After = model.EstimateInputTokens(withHistory(request, items))
+	result.Turns = max(0, userTurnCount(request.Input)-userTurnCount(model.NewResponseInputItems(items...)))
+	result.Compacted = true
+	return result, items, nil
+}
+
+func withHistory(request model.ModelRequest, items []model.InputItem) model.ModelRequest {
+	request.Input = model.NewResponseInputItems(items...)
+	return request
+}
+
+func userTurnCount(input *model.ResponseInput) int {
+	if input == nil {
+		return 0
+	}
+	count := 0
+	for _, item := range input.Items {
+		message, ok := item.(model.InputMessage)
+		if ok && message.Role == model.RoleUser && !agentgraph.IsHostContextMessage(message) {
+			count++
+		}
+	}
+	return count
 }
 
 func responseHistoryItems(history *model.ResponseInput) []model.InputItem {

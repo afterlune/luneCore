@@ -249,7 +249,7 @@ func TestGraphResponderReportsUsageForEveryModelRound(t *testing.T) {
 	}
 }
 
-func TestGraphResponderCompactSummarizesOlderTurnsAndKeepsLatestFour(t *testing.T) {
+func TestGraphResponderCompactSummarizesOlderTurnsAndKeepsRecentContext(t *testing.T) {
 	requester := &graphScriptedRequester{responses: []*model.Response{{
 		Status: "completed",
 		Output: []model.ResponseOutputItem{model.OutputMessage{
@@ -277,7 +277,7 @@ func TestGraphResponderCompactSummarizesOlderTurnsAndKeepsLatestFour(t *testing.
 		}
 		items = append(items,
 			model.InputMessage{Role: model.RoleUser, Content: content},
-			model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText(fmt.Sprintf("assistant-%d", turn))},
+			model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText(fmt.Sprintf("assistant-%d %s", turn, strings.Repeat("detail ", 400)))},
 		)
 		if turn >= 3 {
 			items = append(items,

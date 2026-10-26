@@ -15,6 +15,9 @@ import (
 // are the agent's shared conversation contract; implementations translate
 // them to the provider's native wire format.
 type Provider = publicmodel.Provider
+type CompactionProvider = publicmodel.CompactionProvider
+
+var ErrCompactionUnsupported = publicmodel.ErrCompactionUnsupported
 
 // ResponsesRequest is the wire request shared by Responses-compatible APIs.
 type ResponsesRequest ModelRequest
