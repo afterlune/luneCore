@@ -2,6 +2,7 @@ package tool
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -78,18 +79,13 @@ func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: fmt.Errorf("path %q does not refer to a regular file", args.Path)}
 	}
 
-	reader := bufio.NewReader(file)
-	lineNumber := 1
-	for lineNumber < startLine {
-		_, _, found, _, err := readBoundedLine(ctx, reader, 0)
-		if err != nil {
-			return Result{Err: fmt.Errorf("read %q: %w", args.Path, err)}
-		}
-		if !found {
-			return Result{Output: fmt.Sprintf("No lines at or after start_line=%d.\n[end of file]", startLine)}
-		}
-		lineNumber++
+	reader := bufio.NewReaderSize(file, 64*1024)
+	if found, err := skipFileLines(ctx, reader, startLine-1); err != nil {
+		return Result{Err: fmt.Errorf("read %q: %w", args.Path, err)}
+	} else if !found {
+		return Result{Output: fmt.Sprintf("No lines at or after start_line=%d.\n[end of file]", startLine)}
 	}
+	lineNumber := startLine
 
 	var output pageText
 	emitted := 0
@@ -149,6 +145,45 @@ func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 	footer := fmt.Sprintf("[next_start_line=%d; more=%t; line_truncated=%t]", nextLine, more, lineTruncated)
 	return Result{Output: output.String(footer)}
+}
+
+// skipFileLines advances to the requested line by scanning buffered chunks,
+// avoiding per-line allocations when a caller requests a deep page.
+func skipFileLines(ctx context.Context, reader *bufio.Reader, lines int) (bool, error) {
+	for lines > 0 {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		chunk, err := reader.Peek(reader.Size())
+		if len(chunk) == 0 {
+			if err != nil && !errors.Is(err, io.EOF) {
+				return false, err
+			}
+			return false, nil
+		}
+		consumed := 0
+		for lines > 0 {
+			newline := bytes.IndexByte(chunk[consumed:], '\n')
+			if newline < 0 {
+				break
+			}
+			consumed += newline + 1
+			lines--
+		}
+		if consumed > 0 {
+			if _, discardErr := reader.Discard(consumed); discardErr != nil {
+				return false, discardErr
+			}
+			if lines == 0 {
+				return true, nil
+			}
+			continue
+		}
+		if _, discardErr := reader.Discard(len(chunk)); discardErr != nil {
+			return false, discardErr
+		}
+	}
+	return true, nil
 }
 
 func explainReadFileArgumentError(err error) error {

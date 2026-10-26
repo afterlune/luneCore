@@ -107,6 +107,65 @@ func BenchmarkBuiltinFileTools(b *testing.B) {
 	})
 }
 
+func BenchmarkReadFileDeepPage(b *testing.B) {
+	workspace := b.TempDir()
+	path := filepath.Join(workspace, "large.txt")
+	file, err := os.Create(path)
+	if err != nil {
+		b.Fatal(err)
+	}
+	for line := range 250_000 {
+		if _, err := fmt.Fprintf(file, "line %06d: benchmark content\n", line+1); err != nil {
+			_ = file.Close()
+			b.Fatal(err)
+		}
+	}
+	if err := file.Close(); err != nil {
+		b.Fatal(err)
+	}
+	tool := ReadFileTool{Workspace: workspace}
+	arguments := json.RawMessage(`{"path":"large.txt","start_line":240000,"limit":100}`)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if result := tool.Run(context.Background(), arguments); result.Err != nil {
+			b.Fatal(result.Err)
+		}
+	}
+}
+
+func BenchmarkProjectInstructionReads(b *testing.B) {
+	workspace := b.TempDir()
+	instructions := []byte("# Workspace instructions\nUse the project conventions when editing files.\n")
+	if err := os.WriteFile(filepath.Join(workspace, "AGENTS.md"), instructions, 0o600); err != nil {
+		b.Fatal(err)
+	}
+	registry, err := NewDefaultRegistry(workspace)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer registry.Close()
+	ctx := context.Background()
+	b.Run("bounded_file", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			if _, err := registry.ReadWorkspaceFile(ctx, "AGENTS.md", MaxProjectInstructionBytes); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	b.Run("instruction_resolution", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for range b.N {
+			if _, err := registry.LoadProjectInstructions(ctx, nil, []string{"."}); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+}
+
 func BenchmarkBuiltinCommandTool(b *testing.B) {
 	workspace := b.TempDir()
 	root, err := openWorkspaceRoot(workspace)

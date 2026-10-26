@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -38,6 +39,30 @@ func TestReadFileReturnsNumberedLinePages(t *testing.T) {
 	second := (ReadFileTool{Workspace: workspace}).Run(context.Background(), json.RawMessage(`{"path":"lines.txt","start_line":3,"limit":2}`))
 	if second.Err != nil || !strings.Contains(second.Output, "3 | three") || !strings.Contains(second.Output, "4 | four") || !strings.Contains(second.Output, "more=false") {
 		t.Fatalf("second read page = %#v", second)
+	}
+}
+
+func TestReadFileDeepPageSkipsBufferedChunks(t *testing.T) {
+	workspace := t.TempDir()
+	path := filepath.Join(workspace, "deep.txt")
+	var content strings.Builder
+	for line := 1; line <= 12_000; line++ {
+		content.WriteString("row")
+		content.WriteString(strconv.Itoa(line))
+		if line != 12_000 {
+			content.WriteString("\r\n")
+		}
+	}
+	if err := os.WriteFile(path, []byte(content.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	result := (ReadFileTool{Workspace: workspace}).Run(context.Background(), json.RawMessage(`{"path":"deep.txt","start_line":11999,"limit":2}`))
+	if result.Err != nil || !strings.Contains(result.Output, "11999 | row11999") || !strings.Contains(result.Output, "12000 | row12000") || !strings.Contains(result.Output, "more=false") {
+		t.Fatalf("deep read page = %#v", result)
+	}
+	missing := (ReadFileTool{Workspace: workspace}).Run(context.Background(), json.RawMessage(`{"path":"deep.txt","start_line":12001,"limit":2}`))
+	if missing.Err != nil || !strings.Contains(missing.Output, "No lines at or after start_line=12001") {
+		t.Fatalf("read past end = %#v", missing)
 	}
 }
 
