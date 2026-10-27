@@ -66,9 +66,9 @@ func IsSandboxDisabled(allowLocalCommand bool) bool {
 		return true
 	}
 	val := strings.ToLower(strings.TrimSpace(os.Getenv("LUNE_SANDBOX")))
-	if val == "off" || val == "0" || val == "false" || val == "disable" || val == "disabled" {
+	if val == "off" || val == "0" || val == "false" || val == "no" || val == "disable" || val == "disabled" {
 		return true
 	}
 	noSandbox := strings.ToLower(strings.TrimSpace(os.Getenv("LUNE_NO_SANDBOX")))
-	return noSandbox == "1" || noSandbox == "true" || noSandbox == "on"
+	return noSandbox == "1" || noSandbox == "true" || noSandbox == "yes" || noSandbox == "on"
 }

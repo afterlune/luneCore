@@ -43,6 +43,19 @@ func TestIsSandboxDisabled(t *testing.T) {
 		t.Errorf("expected LUNE_NO_SANDBOX=1 to disable sandbox")
 	}
 
+	// Hosts no longer parse these values themselves, so every accepted spelling has
+	// to live here.
+	t.Setenv("LUNE_NO_SANDBOX", "")
+	t.Setenv("LUNE_SANDBOX", "no")
+	if !IsSandboxDisabled(false) {
+		t.Errorf("expected LUNE_SANDBOX=no to disable sandbox")
+	}
+	t.Setenv("LUNE_SANDBOX", "")
+	t.Setenv("LUNE_NO_SANDBOX", "yes")
+	if !IsSandboxDisabled(false) {
+		t.Errorf("expected LUNE_NO_SANDBOX=yes to disable sandbox")
+	}
+
 	t.Setenv("LUNE_SANDBOX", "")
 	t.Setenv("LUNE_NO_SANDBOX", "")
 	if IsSandboxDisabled(false) {
