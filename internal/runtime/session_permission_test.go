@@ -58,36 +58,40 @@ func TestExplicitTurnPermissionsArePinnedWithoutChangingCore(t *testing.T) {
 	}
 }
 
-func TestPlanPinsReadOnlyEvenWhenHostRequestsFullAccess(t *testing.T) {
-	provider := &barrierHostProvider{entered: make(chan string, 1), release: make(chan struct{}, 1)}
-	client := newProgrammaticCore(t, provider)
-	saved, err := client.CreateSession(context.Background(), nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	submission, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "plan"), PlanMode: true, PermissionMode: PermissionFullAccess}, StartIfIdle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = receiveProviderInput(t, provider.entered)
-	row, found, err := client.sessions.QueuedTurnByExecutionID(context.Background(), saved.ID, submission.ExecutionID)
-	if err != nil || !found {
-		t.Fatal(err)
-	}
-	var stored storedTurnRequest
-	if err = json.Unmarshal(row.Request, &stored); err != nil {
-		t.Fatal(err)
-	}
-	if stored.PermissionOverride != "read-only" {
-		t.Fatalf("Plan permission=%q", stored.PermissionOverride)
-	}
-	provider.release <- struct{}{}
-	if _, err = runtime.WaitTurn(context.Background(), submission.ExecutionID); err != nil {
-		t.Fatal(err)
+func TestPlanPreservesExplicitPermissions(t *testing.T) {
+	for _, mode := range []PermissionMode{"", PermissionReadOnly, PermissionWorkspace, PermissionAuto, PermissionFullAccess} {
+		t.Run(string(mode), func(t *testing.T) {
+			provider := &barrierHostProvider{entered: make(chan string, 1), release: make(chan struct{}, 1)}
+			client := newProgrammaticCore(t, provider)
+			saved, err := client.CreateSession(context.Background(), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			submission, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "plan"), PlanMode: true, PermissionMode: mode}, StartIfIdle)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_ = receiveProviderInput(t, provider.entered)
+			row, found, err := client.sessions.QueuedTurnByExecutionID(context.Background(), saved.ID, submission.ExecutionID)
+			if err != nil || !found {
+				t.Fatal(err)
+			}
+			var stored storedTurnRequest
+			if err = json.Unmarshal(row.Request, &stored); err != nil {
+				t.Fatal(err)
+			}
+			if stored.PermissionOverride != string(mode) || !stored.PlanMode {
+				t.Fatalf("Plan permission=%q, PlanMode=%t; want %q and true", stored.PermissionOverride, stored.PlanMode, mode)
+			}
+			provider.release <- struct{}{}
+			if _, err = runtime.WaitTurn(context.Background(), submission.ExecutionID); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

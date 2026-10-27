@@ -31,8 +31,7 @@ const (
 	proposedPlanCompatCloseTag = "<proposed_plan_end/>"
 )
 
-// ProposedPlan is a complete plan emitted by the model while the active
-// permission mode is read-only.
+// ProposedPlan is a complete plan emitted by the model.
 type ProposedPlan struct {
 	Text string `json:"text"`
 }

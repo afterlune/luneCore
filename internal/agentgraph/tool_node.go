@@ -92,6 +92,9 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 	switch {
 	case call.Name == askUserToolName && state.NoInteractiveDecisions && !state.TeamBranch:
 		return a.blockExecution(ctx, state, call.CallID, call.Name, "execution requires a user decision that was not resolved during planning"), nil
+	case state.PlanMode && call.Name != askUserToolName && call.Name != teamDispatchToolName && call.Name != model.CategorySelectorName &&
+		(a.options.ToolReadOnly == nil || !a.options.ToolReadOnly(call.Name)):
+		output = model.InputFunctionCallOutput{CallID: call.CallID, Output: model.NewToolOutputText(fmt.Sprintf("Tool %q is unavailable in Plan mode because it is not read-only.", call.Name))}
 	case !contains(state.VisibleTools, call.Name):
 		expectedCategory := a.categoryForTool(call.Name)
 		a.options.Logger.WarnContext(ctx, "tool call is not in the visible tool set",

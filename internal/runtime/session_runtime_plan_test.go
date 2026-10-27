@@ -93,6 +93,9 @@ func TestPlanModeHandoffImplementsInSameContextWithScopedPermission(t *testing.T
 		t.Fatal("Plan mode hid the user-question tool")
 	}
 
+	if err := client.SetPermissionMode(PermissionAuto); err != nil {
+		t.Fatal(err)
+	}
 	implementation, err := runtime.ImplementPlan(context.Background(), planned.ExecutionID, PlanImplementationOptions{Mode: PlanImplementSameContext})
 	if err != nil {
 		t.Fatalf("ImplementPlan: %v", err)
@@ -105,7 +108,7 @@ func TestPlanModeHandoffImplementsInSameContextWithScopedPermission(t *testing.T
 		t.Fatalf("implementation pause = %#v, error=%v", paused, err)
 	}
 	pending, found, err := client.pendingState(context.Background(), saved.ID)
-	if err != nil || !found || pending.PermissionOverride != string(PermissionWorkspace) {
+	if err != nil || !found || pending.PermissionOverride != string(PermissionAuto) {
 		t.Fatalf("paused permission override = %q, found=%v, error=%v", pending.PermissionOverride, found, err)
 	}
 	queued, found, err := client.sessions.QueuedTurnByExecutionID(context.Background(), saved.ID, implementation.Submission.ExecutionID)
@@ -116,7 +119,7 @@ func TestPlanModeHandoffImplementsInSameContextWithScopedPermission(t *testing.T
 		t.Fatal("paused plan turn lost its queued request")
 	}
 	var stored storedTurnRequest
-	if err := json.Unmarshal(queued.Request, &stored); err != nil || stored.PermissionOverride != string(PermissionWorkspace) {
+	if err := json.Unmarshal(queued.Request, &stored); err != nil || stored.PermissionOverride != string(PermissionAuto) {
 		t.Fatalf("stored permission override = %q, error=%v", stored.PermissionOverride, err)
 	}
 	recovered, err := runtime.Recover(context.Background(), ExecutionOptions{MaxSteps: 10})
@@ -133,8 +136,8 @@ func TestPlanModeHandoffImplementsInSameContextWithScopedPermission(t *testing.T
 	if calls != 1 {
 		t.Fatalf("workspace write tool calls = %d, want 1", calls)
 	}
-	if client.PermissionMode() != PermissionWorkspace {
-		t.Fatalf("global permission mode = %q, want workspace preserved", client.PermissionMode())
+	if client.PermissionMode() != PermissionAuto {
+		t.Fatalf("global permission mode = %q, want current auto permission preserved", client.PermissionMode())
 	}
 	provider.mu.Lock()
 	executionRequest := provider.seenRequests[2]
@@ -336,6 +339,9 @@ func TestPlanModeHandoffStartsPlanOnlySession(t *testing.T) {
 	if result, err := runtime.WaitTurn(context.Background(), planned.ExecutionID); err != nil || result.ProposedPlan == nil {
 		t.Fatalf("plan result = %#v, error=%v", result, err)
 	}
+	if err := client.SetPermissionMode(PermissionFullAccess); err != nil {
+		t.Fatal(err)
+	}
 	implementation, err := runtime.ImplementPlan(context.Background(), planned.ExecutionID, PlanImplementationOptions{Mode: PlanImplementNewContext})
 	if err != nil {
 		t.Fatalf("ImplementPlan in new context: %v", err)
@@ -361,8 +367,8 @@ func TestPlanModeHandoffStartsPlanOnlySession(t *testing.T) {
 	if !strings.Contains(string(encodedInput), "Only update the README") || strings.Contains(string(encodedInput), "Old conversation context") {
 		t.Fatalf("new-context input = %s", encodedInput)
 	}
-	if client.PermissionMode() != PermissionAuto {
-		t.Fatalf("global permission mode = %q, want auto preserved", client.PermissionMode())
+	if !strings.Contains(requestHostText(request), "Full-access mode permits") || client.PermissionMode() != PermissionFullAccess {
+		t.Fatalf("new-context implementation did not use full-access: instructions=%q mode=%q", requestHostText(request), client.PermissionMode())
 	}
 }
 
