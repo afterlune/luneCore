@@ -4,13 +4,259 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
 	publicmodel "github.com/afterlune/luneCore/model"
+	publictool "github.com/afterlune/luneCore/tool"
 )
+
+type steeringBarrierTool struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (t *steeringBarrierTool) Definition() publictool.Definition {
+	return publicmodel.FunctionTool{
+		Name: "host_wait", Description: "Wait for the test to release this tool.",
+		Parameters: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+	}
+}
+
+func (t *steeringBarrierTool) Run(ctx context.Context, _ json.RawMessage) publictool.Result {
+	select {
+	case t.entered <- struct{}{}:
+	case <-ctx.Done():
+		return publictool.Result{Err: ctx.Err()}
+	}
+	select {
+	case <-t.release:
+		return publictool.Result{Output: "tool released"}
+	case <-ctx.Done():
+		return publictool.Result{Err: ctx.Err()}
+	}
+}
+
+type steeringFinalBoundaryProvider struct {
+	entered chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	seen    []publicmodel.ModelRequest
+}
+
+func (p *steeringFinalBoundaryProvider) Name() string { return "host" }
+
+func (p *steeringFinalBoundaryProvider) CreateResponse(ctx context.Context, request publicmodel.ModelRequest, _ publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
+	p.mu.Lock()
+	p.seen = append(p.seen, request)
+	call := len(p.seen)
+	p.mu.Unlock()
+	if call == 1 {
+		select {
+		case p.entered <- struct{}{}:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		select {
+		case <-p.release:
+			return hostTextResponse("<proposed_plan>outdated plan</proposed_plan>"), nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return hostTextResponse("Final follow-up response."), nil
+}
+
+func (p *steeringFinalBoundaryProvider) StreamResponse(ctx context.Context, request publicmodel.ModelRequest, profile publicmodel.ModelProfile, emit func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {
+	response, err := p.CreateResponse(ctx, request, profile)
+	if err == nil && emit != nil {
+		err = emit(publicmodel.ModelStreamEvent{Type: publicmodel.ModelStreamCompleted, Response: response})
+	}
+	return response, err
+}
+
+func TestSessionRuntimeSteerInputInjectsAfterToolRoundWithoutStartingTurn(t *testing.T) {
+	barrier := &steeringBarrierTool{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
+	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
+		hostToolCallResponse("select-host", "select_tool_category", `{"category":"host"}`),
+		hostToolCallResponse("wait-call", "host_wait", `{}`),
+		hostTextResponse("Follow-up handled."),
+	}}
+	client := newProgrammaticCore(t, provider, publictool.Registration{Tool: barrier, Metadata: publictool.Metadata{
+		Category:        publictool.Category{Name: "host", Description: "Test host tools."},
+		PermissionClass: publictool.PermissionWorkspaceRead, ReadOnly: true,
+	}})
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "start tool round")}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-barrier.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool call did not reach the barrier")
+	}
+	steered, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "follow up now")}, SteerInput)
+	if err != nil || steered.ParentExecutionID != first.ExecutionID || steered.Status != SubmissionQueued {
+		t.Fatalf("steering submission = %#v, error=%v; want parent %q", steered, err, first.ExecutionID)
+	}
+	loaded, loadErr := client.loadSteeringInputs(context.Background(), saved.ID, first.ExecutionID, false)
+	if loadErr != nil || len(loaded) != 1 {
+		t.Fatalf("load steering inputs at tool barrier = %d, error=%v", len(loaded), loadErr)
+	}
+	barrier.release <- struct{}{}
+	result, err := runtime.WaitTurn(context.Background(), first.ExecutionID)
+	if err != nil || result.Status != TaskCompleted {
+		t.Fatalf("parent turn = %#v, error=%v", result, err)
+	}
+	steeredResult, err := runtime.WaitTurn(context.Background(), steered.ExecutionID)
+	if err != nil || steeredResult.Status != TaskCompleted {
+		t.Fatalf("injected input receipt = %#v, error=%v", steeredResult, err)
+	}
+	if len(provider.seenRequests) != 3 || !responseInputContainsUserText(provider.seenRequests[2].Input, "follow up now") {
+		latest := ""
+		if len(provider.seenRequests) > 2 {
+			latest = latestUserInputText(provider.seenRequests[2].Input)
+		}
+		t.Fatalf("model requests did not resume with the steered input: requests=%d latest_user_input=%q", len(provider.seenRequests), latest)
+	}
+	records, err := client.sessions.RuntimeEventsAfter(context.Background(), saved.ID, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	startedReceipt, injected := false, false
+	for _, record := range records {
+		var event Event
+		if err := json.Unmarshal(record.Payload, &event); err != nil {
+			t.Fatal(err)
+		}
+		if event.Kind == EventTaskStarted && event.ExecutionID == steered.ExecutionID {
+			startedReceipt = true
+		}
+		if event.Kind == EventTaskInputInjected && event.InputExecutionID == steered.ExecutionID {
+			injected = true
+			if event.ExecutionID != first.ExecutionID || event.QueueID != steered.QueueID {
+				t.Fatalf("injection event = %#v, want parent and queue identity", event)
+			}
+		}
+	}
+	if startedReceipt || !injected {
+		t.Fatalf("steering lifecycle: input task started=%v, injected=%v", startedReceipt, injected)
+	}
+}
+
+func TestSessionRuntimeSteerInputRemainsCancelableUntilInjection(t *testing.T) {
+	barrier := &steeringBarrierTool{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
+	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
+		hostToolCallResponse("select-host", "select_tool_category", `{"category":"host"}`),
+		hostToolCallResponse("wait-call", "host_wait", `{}`),
+		hostTextResponse("Task completed without the cancelled input."),
+	}}
+	client := newProgrammaticCore(t, provider, publictool.Registration{Tool: barrier, Metadata: publictool.Metadata{
+		Category:        publictool.Category{Name: "host", Description: "Test host tools."},
+		PermissionClass: publictool.PermissionWorkspaceRead, ReadOnly: true,
+	}})
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "start tool round")}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-barrier.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("tool call did not reach the barrier")
+	}
+	steered, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "cancel me")}, SteerInput)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.CancelQueuedTurn(context.Background(), steered.ExecutionID); err != nil {
+		t.Fatalf("CancelQueuedTurn before injection: %v", err)
+	}
+	barrier.release <- struct{}{}
+	if result, err := runtime.WaitTurn(context.Background(), first.ExecutionID); err != nil || result.Status != TaskCompleted {
+		t.Fatalf("parent turn = %#v, error=%v", result, err)
+	}
+	if result, err := runtime.WaitTurn(context.Background(), steered.ExecutionID); !errors.Is(err, context.Canceled) && (err != nil || result.Status != TaskCancelled) {
+		t.Fatalf("cancelled input receipt = %#v, error=%v", result, err)
+	}
+	if len(provider.seenRequests) != 3 || responseInputContainsUserText(provider.seenRequests[2].Input, "cancel me") {
+		latest := ""
+		if len(provider.seenRequests) > 2 {
+			latest = latestUserInputText(provider.seenRequests[2].Input)
+		}
+		t.Fatalf("cancelled input reached the model: requests=%d latest_user_input=%q", len(provider.seenRequests), latest)
+	}
+}
+
+func TestSessionRuntimeSteerInputInterruptsFinalResponseBeforePlanFinalization(t *testing.T) {
+	provider := &steeringFinalBoundaryProvider{entered: make(chan struct{}, 1), release: make(chan struct{}, 1)}
+	client := newProgrammaticCore(t, provider)
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "prepare a plan")}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-provider.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("final response did not begin")
+	}
+	steered, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "change direction")}, SteerInput)
+	if err != nil || steered.ParentExecutionID != first.ExecutionID {
+		t.Fatalf("steering submission = %#v, error=%v", steered, err)
+	}
+	provider.release <- struct{}{}
+	result, err := runtime.WaitTurn(context.Background(), first.ExecutionID)
+	if err != nil || result.Status != TaskCompleted {
+		t.Fatalf("parent turn = %#v, error=%v", result, err)
+	}
+	if result.ProposedPlan != nil || !strings.Contains(string(result.Response), "Final follow-up response.") {
+		t.Fatalf("final result retained the earlier response: %#v", result)
+	}
+	provider.mu.Lock()
+	defer provider.mu.Unlock()
+	if len(provider.seen) != 2 || !responseInputContainsUserText(provider.seen[1].Input, "change direction") {
+		latest := ""
+		if len(provider.seen) > 1 {
+			latest = latestUserInputText(provider.seen[1].Input)
+		}
+		t.Fatalf("follow-up was not sent after the streamed final response: requests=%d latest_user_input=%q", len(provider.seen), latest)
+	}
+}
+
+func responseInputContainsUserText(input *publicmodel.ResponseInput, target string) bool {
+	if input == nil {
+		return false
+	}
+	encoded, err := json.Marshal(input)
+	return err == nil && strings.Contains(string(encoded), target)
+}
 
 func TestSessionRuntimeQueueInputIsFIFOAndSubmissionContextOnlyControlsAdmission(t *testing.T) {
 	provider := &barrierHostProvider{entered: make(chan string, 3), release: make(chan struct{}, 3)}

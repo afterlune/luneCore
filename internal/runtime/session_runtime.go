@@ -39,6 +39,7 @@ type SubmissionMode string
 const (
 	StartIfIdle SubmissionMode = "start_if_idle"
 	QueueInput  SubmissionMode = "queue_input"
+	SteerInput  SubmissionMode = "steer_input"
 )
 
 type SubmissionStatus string
@@ -62,10 +63,11 @@ type TurnRequest struct {
 }
 
 type TurnSubmission struct {
-	Status      SubmissionStatus
-	QueueID     string
-	ExecutionID string
-	Position    int64
+	Status            SubmissionStatus
+	QueueID           string
+	ExecutionID       string
+	ParentExecutionID string
+	Position          int64
 }
 
 type QueuedTurnState struct {
@@ -140,6 +142,8 @@ type storedTurnRequest struct {
 	PlanMode               bool                         `json:"plan_mode,omitempty"`
 	PlanAuthorization      publictool.PlanAuthorization `json:"plan_authorization,omitempty"`
 	NoInteractiveDecisions bool                         `json:"no_interactive_decisions,omitempty"`
+	SteerInput             bool                         `json:"steer_input,omitempty"`
+	SteerParentExecutionID string                       `json:"steer_parent_execution_id,omitempty"`
 	Resume                 bool                         `json:"resume,omitempty"`
 }
 

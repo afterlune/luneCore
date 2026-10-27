@@ -13,12 +13,13 @@ import (
 type EventKind string
 
 const (
-	EventGoalUpdated EventKind = "goal_updated"
-	EventGoalCleared EventKind = "goal_cleared"
+	EventGoalUpdated              EventKind = "goal_updated"
+	EventGoalCleared              EventKind = "goal_cleared"
 	EventTaskStarted              EventKind = "task_started"
 	EventTaskFinished             EventKind = "task_finished"
 	EventTaskDiscarded            EventKind = "task_discarded"
 	EventTaskQueued               EventKind = "task_queued"
+	EventTaskInputInjected        EventKind = "task_input_injected"
 	EventRuntimeStreamFailed      EventKind = "runtime_stream_failed"
 	EventRuntimeReplayComplete    EventKind = "runtime_replay_complete"
 	EventCommandStarted           EventKind = "command_started"
@@ -50,10 +51,10 @@ const (
 // Event is a structured runtime notification. Arguments and response payloads
 // are transient; clients should not persist or log them without sanitizing.
 type Event struct {
-	Goal *Goal
-	GoalID string
-	GoalRevision int64
-	AutomaticGoal bool
+	Goal            *Goal
+	GoalID          string
+	GoalRevision    int64
+	AutomaticGoal   bool
 	RequestID       string
 	RequestAttempt  int
 	RequestChanges  []string
@@ -70,6 +71,10 @@ type Event struct {
 	// QueueID identifies an accepted queued turn until it starts or is discarded.
 	QueueID string
 	TaskID  string
+	// InputExecutionID identifies a queued user message consumed by an active execution.
+	InputExecutionID string
+	// ParentExecutionID identifies the active execution that will consume a queued input.
+	ParentExecutionID string
 	// ExecutionID remains stable when a paused task resumes with a new TaskID.
 	ExecutionID          string
 	SessionID            string
@@ -225,8 +230,8 @@ type pendingApproval struct {
 	pathGrants       *runtimepermission.SessionPathGrantStore
 	sessionApprovals *runtimepermission.SessionApprovalStore
 	sessionID        string
-	taskID      string
-	executionID string
+	taskID           string
+	executionID      string
 }
 
 type pendingInteraction struct {

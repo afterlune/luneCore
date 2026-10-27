@@ -32,6 +32,14 @@ func cloneState(state State) (State, error) {
 	clone.SelectedCategories = append([]string(nil), state.SelectedCategories...)
 	clone.PendingCalls = append([]model.OutputFunctionCall(nil), state.PendingCalls...)
 	clone.VisibleTools = append([]string(nil), state.VisibleTools...)
+	clone.PendingSteeringInputs = make([]SteeringInput, len(state.PendingSteeringInputs))
+	for index, input := range state.PendingSteeringInputs {
+		clone.PendingSteeringInputs[index] = input
+		clone.PendingSteeringInputs[index].Input, err = model.CloneResponseInput(input.Input)
+		if err != nil {
+			return State{}, fmt.Errorf("clone pending steering input: %w", err)
+		}
+	}
 	if clone.FinalResponse, err = model.CloneModelResponse(state.FinalResponse); err != nil {
 		return State{}, fmt.Errorf("clone final response: %w", err)
 	}

@@ -43,6 +43,12 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
 		Logger: c.logger, ActiveCommands: activeCommands, StopCommands: stopCommands,
+		LoadSteeringInputs: func(ctx context.Context, executionID string, finalizing bool) ([]agentgraph.SteeringInput, error) {
+			return c.loadSteeringInputs(ctx, taskState.SessionID, executionID, finalizing)
+		},
+		AcknowledgeSteeringInputs: func(ctx context.Context, executionID string, inputs []agentgraph.SteeringInput) ([]agentgraph.SteeringInput, error) {
+			return c.acknowledgeSteeringInputs(ctx, taskState.SessionID, executionID, inputs)
+		},
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		SupportsInputAudio: profile.SupportsInputAudio, Execution: agentExecutionOptions(taskState.Execution),
 		Team:    c.team,
@@ -56,11 +62,15 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		MemoryWriter:               c.saveExtractedMemories,
 		MemoryObserver:             c.onMemoryEvent,
 		ProjectInstructionsForTask: c.projectInstructionsForTask,
-		GoalForTask:func(ctx context.Context,state agentgraph.State)(string,error){
-			goal,err:=c.sessions.Goal(ctx,taskState.SessionID)
-			if err!=nil { return "",err }
-			if goal==nil || goal.ID!=state.GoalID || goal.Revision!=state.GoalRevision { return "",errStaleGoal }
-			return goalInstructions(goal),nil
+		GoalForTask: func(ctx context.Context, state agentgraph.State) (string, error) {
+			goal, err := c.sessions.Goal(ctx, taskState.SessionID)
+			if err != nil {
+				return "", err
+			}
+			if goal == nil || goal.ID != state.GoalID || goal.Revision != state.GoalRevision {
+				return "", errStaleGoal
+			}
+			return goalInstructions(goal), nil
 		},
 		ProjectInstructionsForTool: c.projectInstructionsForTool,
 		ToolVisibleForMode:         c.registry.ToolVisibleForMode,

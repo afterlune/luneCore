@@ -10,11 +10,56 @@ import (
 )
 
 func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state State) (graph.Transition[State], error) {
+	if len(state.PendingSteeringInputs) > 0 {
+		accepted := state.PendingSteeringInputs
+		if a.options.AcknowledgeSteeringInputs != nil {
+			var err error
+			accepted, err = a.options.AcknowledgeSteeringInputs(ctx, state.ExecutionID, accepted)
+			if err != nil {
+				return a.failTask(state, fmt.Errorf("acknowledge steering inputs: %w", err))
+			}
+		}
+		if len(accepted) == 0 && state.SteeringFinalizing && a.options.LoadSteeringInputs != nil {
+			// A user can cancel a queued message after the final-response boundary
+			// observed it but before this node acknowledges it. Recheck while
+			// atomically closing the gate when the queue is still empty.
+			for len(accepted) == 0 {
+				fresh, err := a.options.LoadSteeringInputs(ctx, state.ExecutionID, true)
+				if err != nil {
+					return a.failTask(state, fmt.Errorf("recheck steering inputs before final response: %w", err))
+				}
+				if len(fresh) == 0 {
+					state.PendingSteeringInputs = nil
+					state.SteeringFinalizing = false
+					return a.finishAgent(state)
+				}
+				if a.options.AcknowledgeSteeringInputs != nil {
+					accepted, err = a.options.AcknowledgeSteeringInputs(ctx, state.ExecutionID, fresh)
+					if err != nil {
+						return a.failTask(state, fmt.Errorf("acknowledge steering inputs: %w", err))
+					}
+				} else {
+					accepted = fresh
+				}
+			}
+		}
+		var appendErr error
+		state, appendErr = appendSteeringInputs(state, accepted)
+		if appendErr != nil {
+			return a.failTask(state, appendErr)
+		}
+		state.PendingSteeringInputs = nil
+		state.SteeringFinalizing = false
+		state.FinalResponse = nil
+		state.TaskError = ""
+	}
 	ensureTranscript(&state)
-	if a.options.GoalForTask!=nil && state.GoalID!="" {
-		goal,err:=a.options.GoalForTask(ctx,state)
-		if err!=nil { return a.failTask(state,err) }
-		state.Goal=goal
+	if a.options.GoalForTask != nil && state.GoalID != "" {
+		goal, err := a.options.GoalForTask(ctx, state)
+		if err != nil {
+			return a.failTask(state, err)
+		}
+		state.Goal = goal
 	}
 	loadProjectInstructions := !state.ProjectInstructionsReady && a.options.ProjectInstructionsForTask != nil
 	if loadProjectInstructions {

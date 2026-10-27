@@ -12,6 +12,7 @@ var errRunningCommands = errors.New("agent submitted a final answer twice while 
 
 func (a *Agent) deferCommandCompletion(ctx context.Context, state State) (graph.Transition[State], error) {
 	state.CommandFinalizeAttempts++
+	state.FinalResponse = nil
 	if state.CommandFinalizeAttempts >= 2 {
 		if state.TeamBranch {
 			return a.failTask(state, errRunningCommands)

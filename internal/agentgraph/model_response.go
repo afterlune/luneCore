@@ -57,11 +57,27 @@ func (a *Agent) handleModelResponse(ctx context.Context, state State, request mo
 	}
 	calls := responseFunctionCalls(response.Output)
 	if len(calls) == 0 {
-		if a.options.ActiveCommands != nil && a.options.ActiveCommands(state) {
+		state.FinalResponse = response
+		if state.TeamBranch {
+			state.CommandFinalizeAttempts = 0
+			return a.finishAgent(state)
+		}
+		activeCommands := a.options.ActiveCommands != nil && a.options.ActiveCommands(state)
+		if a.options.LoadSteeringInputs != nil {
+			inputs, loadErr := a.options.LoadSteeringInputs(ctx, state.ExecutionID, !activeCommands)
+			if loadErr != nil {
+				return a.failTask(state, fmt.Errorf("load steering inputs before final response: %w", loadErr))
+			}
+			if len(inputs) > 0 {
+				state.PendingSteeringInputs = inputs
+				state.SteeringFinalizing = !activeCommands
+				return graph.To(state, modelNode), nil
+			}
+		}
+		if activeCommands {
 			return a.deferCommandCompletion(ctx, state)
 		}
 		state.CommandFinalizeAttempts = 0
-		state.FinalResponse = response
 		return a.finishAgent(state)
 	}
 	if state.MaxToolRounds > 0 && state.ToolRounds >= state.MaxToolRounds {
@@ -75,6 +91,9 @@ func (a *Agent) handleModelResponse(ctx context.Context, state State, request mo
 		}
 		state.FinalResponse = response
 		state.TaskError = fmt.Sprintf("%v: %d", model.ErrToolCallLimit, state.MaxToolRounds)
+		if state.TeamBranch {
+			return a.finishAgent(state)
+		}
 		return a.finishAgent(state)
 	}
 	state.CommandFinalizeAttempts = 0

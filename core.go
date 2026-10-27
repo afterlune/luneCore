@@ -96,6 +96,7 @@ const (
 const (
 	StartIfIdle = coreruntime.StartIfIdle
 	QueueInput  = coreruntime.QueueInput
+	SteerInput  = coreruntime.SteerInput
 )
 
 const (
@@ -206,13 +207,14 @@ type GoalCreateOptions = coreruntime.GoalCreateOptions
 type GoalResumeOptions = coreruntime.GoalResumeOptions
 
 const (
-	GoalActive        = coreruntime.GoalActive
-	GoalPaused        = coreruntime.GoalPaused
-	GoalBlocked       = coreruntime.GoalBlocked
-	GoalBudgetLimited = coreruntime.GoalBudgetLimited
-	GoalComplete      = coreruntime.GoalComplete
-	EventGoalUpdated  = coreruntime.EventGoalUpdated
-	EventGoalCleared  = coreruntime.EventGoalCleared
+	GoalActive             = coreruntime.GoalActive
+	GoalPaused             = coreruntime.GoalPaused
+	GoalBlocked            = coreruntime.GoalBlocked
+	GoalBudgetLimited      = coreruntime.GoalBudgetLimited
+	GoalComplete           = coreruntime.GoalComplete
+	EventGoalUpdated       = coreruntime.EventGoalUpdated
+	EventGoalCleared       = coreruntime.EventGoalCleared
+	EventTaskInputInjected = coreruntime.EventTaskInputInjected
 )
 
 type SubmissionMode = coreruntime.SubmissionMode

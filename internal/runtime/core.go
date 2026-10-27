@@ -121,6 +121,7 @@ type Core struct {
 	interactiveSessions   map[string]bool
 	eventHubs             map[string]*sessionEventHub
 	queueDraining         map[string]bool
+	steeringExecutions    map[string]string
 	queueMutationMu       sync.Mutex
 	turnWaiters           map[string]chan turnResult
 	executionRuns         map[string]chan struct{}
@@ -276,6 +277,7 @@ func New(config Config) (_ *Core, err error) {
 		interactiveSessions:   coord.interactiveSessions,
 		eventHubs:             make(map[string]*sessionEventHub),
 		queueDraining:         coord.queueDraining,
+		steeringExecutions:    make(map[string]string),
 		turnWaiters:           coord.turnWaiters,
 		executionRuns:         coord.executionRuns,
 		interruptRequests:     coord.interruptRequests,

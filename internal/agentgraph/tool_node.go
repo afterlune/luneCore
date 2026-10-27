@@ -31,7 +31,7 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		state.UserQuestions = nil
 		state.UserAnswers, state.UserAnswerReady = nil, false
 		state = appendToolOutput(state, output)
-		return a.nextToolTransition(state), nil
+		return a.nextToolTransition(ctx, state)
 	}
 	if state.PendingIndex == len(state.PendingCalls) && len(state.PendingCalls) > 0 {
 		state.ToolRounds++
@@ -59,10 +59,10 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		}
 		state.ProjectInstructions = working.ProjectInstructions
 		if loadErr != nil {
-			return a.replyWithoutToolCalls(state, "No tools in this call were run because project instructions could not be loaded: "+loadErr.Error()), nil
+			return a.replyWithoutToolCalls(ctx, state, "No tools in this call were run because project instructions could not be loaded: "+loadErr.Error())
 		}
 		if newInstructions {
-			return a.replyWithoutToolCalls(state, "New project instructions were loaded. No tools in this call were run. Reconsider the requested actions under the project instructions, then retry any tools that are still needed."), nil
+			return a.replyWithoutToolCalls(ctx, state, "New project instructions were loaded. No tools in this call were run. Reconsider the requested actions under the project instructions, then retry any tools that are still needed.")
 		}
 	}
 	call := state.PendingCalls[state.PendingIndex]
@@ -164,17 +164,17 @@ func (a *Agent) executeTool(ctx context.Context, info graph.CallInfo, state Stat
 		state.TeamForkBaseInput = nil
 	}
 	state = appendToolOutput(state, output)
-	return a.nextToolTransition(state), nil
+	return a.nextToolTransition(ctx, state)
 }
 
-func (a *Agent) replyWithoutToolCalls(state State, message string) graph.Transition[State] {
+func (a *Agent) replyWithoutToolCalls(ctx context.Context, state State, message string) (graph.Transition[State], error) {
 	for index := state.PendingIndex; index < len(state.PendingCalls); index++ {
 		call := state.PendingCalls[index]
 		state = appendToolOutput(state, model.InputFunctionCallOutput{
 			CallID: call.CallID, Output: model.NewToolOutputText(message),
 		})
 	}
-	return a.nextToolTransition(state)
+	return a.nextToolTransition(ctx, state)
 }
 
 func (a *Agent) blockExecution(ctx context.Context, state State, callID, toolName, reason string) graph.Transition[State] {
@@ -202,16 +202,27 @@ func appendToolOutput(state State, output model.InputFunctionCallOutput) State {
 	return state
 }
 
-func (a *Agent) nextToolTransition(state State) graph.Transition[State] {
+func (a *Agent) nextToolTransition(ctx context.Context, state State) (graph.Transition[State], error) {
 	if state.PendingIndex < len(state.PendingCalls) {
 		if state.TeamBranch {
-			return graph.To(state, teamToolNode)
+			return graph.To(state, teamToolNode), nil
 		}
-		return graph.To(state, toolNode)
+		return graph.To(state, toolNode), nil
 	}
 	state.ToolRounds++
 	state.PendingCalls = nil
 	state.PendingIndex = 0
 	state.VisibleTools = nil
-	return a.nextModelTransition(state)
+	if !state.TeamBranch && a.options.LoadSteeringInputs != nil {
+		inputs, err := a.options.LoadSteeringInputs(ctx, state.ExecutionID, false)
+		if err != nil {
+			return a.failTask(state, fmt.Errorf("load steering inputs after tool round: %w", err))
+		}
+		if len(inputs) > 0 {
+			state.PendingSteeringInputs = inputs
+			state.SteeringFinalizing = false
+			return graph.To(state, modelNode), nil
+		}
+	}
+	return a.nextModelTransition(state), nil
 }

@@ -76,6 +76,8 @@ type TeamExecutor interface {
 }
 
 type AgentOptions struct {
+	LoadSteeringInputs         func(context.Context, string, bool) ([]SteeringInput, error)
+	AcknowledgeSteeringInputs  func(context.Context, string, []SteeringInput) ([]SteeringInput, error)
 	ActiveCommands             func(State) bool
 	StopCommands               func(State) error
 	ID                         string
@@ -111,6 +113,14 @@ type AgentOptions struct {
 	OnBranchFinished      func(context.Context, State, error)
 	StreamObserver        func(model.ModelStreamEvent)
 	CompactionObserver    func(ContextCompactionEvent)
+}
+
+// SteeringInput is a durable user message that should join an active execution
+// at its next model-request boundary.
+type SteeringInput struct {
+	QueueID     string              `json:"queue_id"`
+	ExecutionID string              `json:"execution_id"`
+	Input       model.ResponseInput `json:"input"`
 }
 
 type ContextCompactionEvent struct {
@@ -208,6 +218,8 @@ type State struct {
 	UserAnswers              []model.UserQuestionResponse `json:"user_answers,omitempty"`
 	UserAnswerReady          bool                         `json:"user_answer_ready,omitempty"`
 	TaskInput                json.RawMessage              `json:"task_input,omitempty"`
+	PendingSteeringInputs    []SteeringInput              `json:"pending_steering_inputs,omitempty"`
+	SteeringFinalizing       bool                         `json:"pending_steering_finalizing,omitempty"`
 }
 
 // TaskOptions configures one user task. A zero tool-round limit is unlimited.
