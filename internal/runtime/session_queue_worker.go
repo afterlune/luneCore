@@ -99,7 +99,9 @@ func (c *Core) drainQueue(sessionID string) {
 			return
 		}
 		if !claimed {
-			if c.enqueueGoalContinuation(ctx, sessionID) { continue }
+			if c.enqueueGoalContinuation(ctx, sessionID) {
+				continue
+			}
 			return
 		}
 		c.mu.RLock()
@@ -162,6 +164,28 @@ func (c *Core) drainQueue(sessionID string) {
 			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: errors.New("core is closing")})
 			return
 		}
+		stateAfterRun, hasStateAfterRun := c.StateForSession(sessionID)
+		if errors.Is(runErr, errExecutionInterrupted) ||
+			(hasStateAfterRun && stateAfterRun.ExecutionID == queued.ExecutionID && stateAfterRun.Status == TaskCancelled) {
+			_, exists, lookupErr := c.sessions.QueuedTurnByExecutionID(ctx, sessionID, queued.ExecutionID)
+			if lookupErr != nil {
+				c.logger.Warn("inspect interrupted queued turn", "error", lookupErr)
+				c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: lookupErr})
+				return
+			}
+			if exists {
+				persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				persistErr := c.completeQueuedTurnFromRuntime(persistCtx, queued, TaskCancelled, nil, nil, nil)
+				cancel()
+				if persistErr != nil {
+					c.logger.Warn("persist interrupted queued turn", "error", persistErr)
+					c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: persistErr})
+					return
+				}
+			}
+			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: context.Canceled})
+			continue
+		}
 		resumeQueued := false
 		if current, exists, lookupErr := c.sessions.QueuedTurnByExecutionID(ctx, sessionID, queued.ExecutionID); lookupErr == nil && exists {
 			state, ok := c.StateForSession(sessionID)
@@ -208,6 +232,9 @@ func (c *Core) drainQueue(sessionID string) {
 						response = finalResponse
 					}
 				} else {
+					if runErr == nil {
+						runErr = errors.New("agent task ended without a response or completed checkpoint")
+					}
 					c.failQueuedTurn(ctx, queued, runErr)
 				}
 			}
@@ -223,6 +250,9 @@ func (c *Core) drainQueue(sessionID string) {
 }
 
 func (c *Core) failQueuedTurn(ctx context.Context, queued session.QueuedTurn, err error) {
+	if err == nil {
+		err = errors.New("queued task failed without an error")
+	}
 	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskFailed, Err: errorString(err)}
 	if _, persistErr := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(TaskFailed), nil, nil, nil, "", mustMarshalEvent(event), nil); persistErr != nil {
 		c.logger.Warn("finish rejected queued turn", "error", persistErr)

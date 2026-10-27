@@ -37,6 +37,9 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (agentgraph.Compac
 }
 
 func (c *Core) compactOwned(ctx context.Context, sessionID string) (agentgraph.CompactionResult, error) {
+	if err := c.repairLegacyInterruptedTurn(ctx, sessionID); err != nil {
+		return agentgraph.CompactionResult{}, err
+	}
 	c.runtimeConfigMu.RLock()
 	defer c.runtimeConfigMu.RUnlock()
 	c.mu.RLock()

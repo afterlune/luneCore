@@ -67,7 +67,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		return nil, err
 	}
 	if executionID != "" && c.takeInterruptRequest(executionID) {
-		return nil, context.Canceled
+		return nil, errors.Join(context.Canceled, errExecutionInterrupted)
 	}
 	c.runtimeConfigMu.RLock()
 	defer c.runtimeConfigMu.RUnlock()

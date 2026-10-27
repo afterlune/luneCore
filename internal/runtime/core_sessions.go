@@ -205,6 +205,9 @@ func (c *Core) RewindSession(ctx context.Context, sessionID string, userTurns in
 	}
 	var removed int
 	err := c.withSessionLock(sessionID, func() error {
+		if err := c.repairLegacyInterruptedTurn(ctx, sessionID); err != nil {
+			return err
+		}
 		var err error
 		removed, err = c.rewindSessionOwned(ctx, sessionID, userTurns)
 		return err

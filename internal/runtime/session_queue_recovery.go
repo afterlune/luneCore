@@ -257,7 +257,11 @@ func (c *Core) completeQueuedTurnFromCheckpoint(ctx context.Context, queued sess
 	if status != TaskCompleted {
 		response = nil
 	}
-	if err := c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey, agentContext); err != nil {
+	taskError := ""
+	if state != nil {
+		taskError = state.TaskError
+	}
+	if err := c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey, agentContext, taskError); err != nil {
 		return true, nil, err
 	}
 	return true, response, nil

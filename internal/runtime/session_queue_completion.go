@@ -10,7 +10,7 @@ import (
 	"github.com/afterlune/luneCore/internal/session"
 )
 
-func (c *Core) completeQueuedTurnFromRuntime(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response json.RawMessage, runtime *agentruntime.Responder) error {
+func (c *Core) completeQueuedTurnFromRuntime(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response json.RawMessage, runtime *agentruntime.Responder, taskErr error) error {
 	var history, modelContext, agentContext json.RawMessage
 	contextKey := ""
 	var err error
@@ -36,16 +36,16 @@ func (c *Core) completeQueuedTurnFromRuntime(ctx context.Context, queued session
 	if status != TaskCompleted {
 		response = nil
 	}
-	return c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey, agentContext)
+	return c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey, agentContext, errorString(taskErr))
 }
 
-func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response, history, modelContext json.RawMessage, contextKey string, agentContext json.RawMessage) error {
+func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response, history, modelContext json.RawMessage, contextKey string, agentContext json.RawMessage, taskError string) error {
 	taskState, ok := c.StateForSession(queued.SessionID)
 	var taskID string
 	if ok && taskState.ExecutionID == queued.ExecutionID {
 		taskID = taskState.TaskID
 	}
-	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, TaskID: taskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: status}
+	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, TaskID: taskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: status, Err: taskError}
 	if _, err := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(status), response, history, modelContext, contextKey, mustMarshalEvent(event), agentContext); err != nil {
 		return err
 	}

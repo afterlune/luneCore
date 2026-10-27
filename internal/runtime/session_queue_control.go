@@ -11,10 +11,23 @@ import (
 	"github.com/afterlune/luneGraph/checkpoint"
 )
 
+var errExecutionInterrupted = errors.New("execution interrupted")
+
 func (c *Core) interruptExecution(sessionID, executionID string) bool {
 	c.mu.Lock()
-	if state, ok := c.activeTasks[sessionID]; ok && state.ExecutionID == executionID && state.Status == TaskRunning {
+	if _, finishing := c.finishingExecutions[executionID]; finishing {
+		c.mu.Unlock()
+		return false
+	}
+	if state, ok := c.activeTasks[sessionID]; ok && state.ExecutionID == executionID {
+		if state.Status != TaskRunning {
+			c.mu.Unlock()
+			return false
+		}
 		cancel := c.taskCancels[sessionID]
+		if cancel != nil {
+			c.interruptRequests[executionID] = true
+		}
 		c.mu.Unlock()
 		if cancel != nil {
 			cancel()
@@ -77,6 +90,27 @@ func (c *Core) takeInterruptRequest(executionID string) bool {
 	requested := c.interruptRequests[executionID]
 	delete(c.interruptRequests, executionID)
 	return requested
+}
+
+// beginTaskFinish makes the result immutable with respect to new interrupt
+// requests. An interrupt accepted after run() has returned could otherwise
+// make the host render cancellation while the queue commits a paused task.
+func (c *Core) beginTaskFinish(executionID string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.finishingExecutions == nil {
+		c.finishingExecutions = make(map[string]struct{})
+	}
+	c.finishingExecutions[executionID] = struct{}{}
+	requested := c.interruptRequests[executionID]
+	delete(c.interruptRequests, executionID)
+	return requested
+}
+
+func (c *Core) endTaskFinish(executionID string) {
+	c.mu.Lock()
+	delete(c.finishingExecutions, executionID)
+	c.mu.Unlock()
 }
 
 func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error) {

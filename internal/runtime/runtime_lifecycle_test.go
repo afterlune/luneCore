@@ -251,7 +251,7 @@ func TestClosedRuntimeKeepsLockUntilActiveWorkFinishes(t *testing.T) {
 	}
 }
 
-func TestCancelTaskStopsProviderAndResumesSameExecution(t *testing.T) {
+func TestInterruptTaskStopsProviderAndCancelsExecution(t *testing.T) {
 	provider := &barrierHostProvider{entered: make(chan string, 2), release: make(chan struct{})}
 	client := newProgrammaticCore(t, provider)
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
@@ -286,8 +286,8 @@ func TestCancelTaskStopsProviderAndResumesSameExecution(t *testing.T) {
 	}
 	if !interruptTestTask(t, client, saved.ID) {
 		state, ok := client.StateForSession(saved.ID)
-		if !ok || state.Status != TaskPaused {
-			t.Fatalf("repeated interrupt returned false while task was still active: %#v", state)
+		if !ok || state.Status != TaskCancelled {
+			t.Fatalf("repeated interrupt returned false before the task reached a terminal state: %#v", state)
 		}
 	}
 	select {
@@ -298,34 +298,24 @@ func TestCancelTaskStopsProviderAndResumesSameExecution(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("RunTask did not stop after cancellation")
 	}
-	paused, ok := client.StateForSession(saved.ID)
-	if !ok || paused.Status != TaskPaused || paused.ExecutionID != started.ExecutionID {
-		t.Fatalf("task state after cancellation = %#v, want paused with execution %q", paused, started.ExecutionID)
+	cancelled, ok := client.StateForSession(saved.ID)
+	if !ok || cancelled.Status != TaskCancelled || cancelled.ExecutionID != started.ExecutionID {
+		t.Fatalf("task state after cancellation = %#v, want cancelled with execution %q", cancelled, started.ExecutionID)
 	}
 	if interruptTestTask(t, client, saved.ID) {
 		t.Fatal("CancelTask returned true after the task exited")
 	}
-	pausedEventTimer := time.NewTimer(5 * time.Second)
-	defer pausedEventTimer.Stop()
+	cancelledEventTimer := time.NewTimer(5 * time.Second)
+	defer cancelledEventTimer.Stop()
 	for {
 		select {
 		case event := <-events:
-			if event.Kind == EventTaskFinished && event.SessionID == saved.ID && event.Status == TaskPaused {
-				goto resume
+			if event.Kind == EventTaskFinished && event.SessionID == saved.ID && event.Status == TaskCancelled {
+				return
 			}
-		case <-pausedEventTimer.C:
-			t.Fatal("missing EventTaskFinished with paused status")
+		case <-cancelledEventTimer.C:
+			t.Fatal("missing EventTaskFinished with cancelled status")
 		}
-	}
-
-resume:
-	close(provider.release)
-	if _, err := client.ResumeTask(context.Background(), saved.ID); err != nil {
-		t.Fatalf("ResumeTask after cancellation: %v", err)
-	}
-	resumed, ok := client.StateForSession(saved.ID)
-	if !ok || resumed.Status != TaskCompleted || resumed.ExecutionID != started.ExecutionID {
-		t.Fatalf("resumed task state = %#v, want completed with execution %q", resumed, started.ExecutionID)
 	}
 }
 
@@ -384,7 +374,7 @@ func TestCancelTaskOnlyStopsSelectedSession(t *testing.T) {
 	}
 	firstState, _ := client.StateForSession(first.ID)
 	secondState, _ := client.StateForSession(second.ID)
-	if firstState.Status != TaskPaused || secondState.Status != TaskCompleted {
+	if firstState.Status != TaskCancelled || secondState.Status != TaskCompleted {
 		t.Fatalf("task states after selective cancellation: first=%q second=%q", firstState.Status, secondState.Status)
 	}
 }

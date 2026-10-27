@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
@@ -14,13 +15,17 @@ import (
 )
 
 func (c *Core) finishTaskRun(ctx context.Context, sessionID, queueID, executionID, executionScopeID string, response *model.Response, runErr error, taskRuntime *agentruntime.Responder) (json.RawMessage, error) {
+	explicitlyInterrupted := c.beginTaskFinish(executionID)
+	defer c.endTaskFinish(executionID)
+
 	err := runErr
 	cleanupErr := c.stopCommands(executionScopeID, "")
 	if cleanupErr != nil {
 		err = errors.Join(err, ErrTaskPaused, cleanupErr)
 	}
 	pausedByGraph := errors.Is(err, ErrTaskPaused)
-	if pausedByGraph {
+	graphCancelled := errors.Is(err, agentruntime.ErrExecutionCancelled)
+	if pausedByGraph && !explicitlyInterrupted {
 		if question, found, questionErr := taskRuntime.PendingUserQuestion(ctx, sessionID); questionErr != nil {
 			err = errors.Join(err, questionErr)
 		} else if found {
@@ -43,16 +48,26 @@ func (c *Core) finishTaskRun(ctx context.Context, sessionID, queueID, executionI
 	}
 	status := TaskCompleted
 	taskErr := err
-	if pausedByGraph {
+	if explicitlyInterrupted {
+		status = TaskCancelled
+	} else if pausedByGraph || graphCancelled {
 		status, taskErr = TaskPaused, err
 	} else if err != nil {
 		status = TaskFailed
 		if ctx.Err() != nil {
 			status = TaskPaused
 		}
-	}
-	if pending, pendingErr := c.hasPending(ctx, sessionID); pendingErr == nil && pending && status != TaskCompleted {
+	} else if response == nil && ctx.Err() != nil {
+		// A cancelled graph can return no response and no error. Preserve its
+		// checkpoint instead of reporting a completed turn with no response.
 		status = TaskPaused
+		taskErr = ctx.Err()
+		err = ctx.Err()
+	}
+	if !explicitlyInterrupted {
+		if pending, pendingErr := c.hasPending(ctx, sessionID); pendingErr == nil && pending && status != TaskCompleted {
+			status = TaskPaused
+		}
 	}
 	if status == TaskCompleted && response == nil {
 		status = TaskFailed
@@ -71,10 +86,32 @@ func (c *Core) finishTaskRun(ctx context.Context, sessionID, queueID, executionI
 		}
 	}
 	c.mu.Unlock()
+	persistCtx := ctx
+	var cancelPersist context.CancelFunc
+	if explicitlyInterrupted {
+		persistCtx, cancelPersist = context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancelPersist()
+	}
 	if queueID != "" && status != TaskPaused {
 		queued := session.QueuedTurn{SessionID: sessionID, QueueID: queueID, ExecutionID: executionID}
-		if persistErr := c.completeQueuedTurnFromRuntime(ctx, queued, status, encoded, taskRuntime); persistErr != nil {
+		if persistErr := c.completeQueuedTurnFromRuntime(persistCtx, queued, status, encoded, taskRuntime, taskErr); persistErr != nil {
 			err = errors.Join(err, fmt.Errorf("persist completed turn: %w", persistErr))
+		}
+	}
+	if explicitlyInterrupted {
+		checkpointID := c.runtime.CheckpointID(sessionID)
+		if queueID == "" {
+			c.mu.Lock()
+			delete(c.liveExecutions, checkpointID)
+			c.mu.Unlock()
+			if cleanupErr := c.runtime.DeleteCompletedRunForSession(sessionID); cleanupErr != nil {
+				err = errors.Join(err, fmt.Errorf("delete interrupted task checkpoint: %w", cleanupErr))
+				taskErr = err
+			}
+		}
+		if cleanupErr := c.sessions.DeleteGraphResumeInputs(persistCtx, sessionID, checkpointID); cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("delete interrupted task resume inputs: %w", cleanupErr))
+			taskErr = err
 		}
 	}
 	c.finishTaskState(sessionID, status, taskErr)

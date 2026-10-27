@@ -180,6 +180,9 @@ func (r *Responder) finish(ctx context.Context, result graph.Result[agentgraph.S
 			}
 			return nil, ErrTaskPaused
 		}
+		if result.Status == graph.StatusCancelled {
+			return nil, errors.Join(runErr, ErrExecutionCancelled)
+		}
 	}
 	return nil, runErr
 }

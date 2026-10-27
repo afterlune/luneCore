@@ -136,7 +136,7 @@ func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, setting
 	if c.interruptRequests[taskOptions.ExecutionID] {
 		delete(c.interruptRequests, taskOptions.ExecutionID)
 		c.mu.Unlock()
-		return "", context.Canceled
+		return "", errors.Join(context.Canceled, errExecutionInterrupted)
 	}
 	if queueID == "" {
 		queued, err := c.sessions.QueuedTurns(ctx, sessionID)

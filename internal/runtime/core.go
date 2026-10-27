@@ -125,6 +125,8 @@ type Core struct {
 	turnWaiters         map[string]chan turnResult
 	executionRuns       map[string]chan struct{}
 	interruptRequests   map[string]bool
+
+	finishingExecutions map[string]struct{}
 	commandToolchainPaths []string
 	queueDrainWG        sync.WaitGroup
 	sessionOps          sync.WaitGroup

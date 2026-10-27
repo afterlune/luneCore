@@ -7,6 +7,7 @@ import (
 
 var (
 	ErrTaskPaused                = errors.New("session task is paused; resolve its pending request, recover, or discard it")
+	ErrExecutionCancelled        = errors.New("agent graph execution was cancelled")
 	ErrToolInvocationPersistence = errors.New("tool invocation could not be durably recorded")
 )
 
