@@ -47,6 +47,7 @@ func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry
 		}
 	}
 	registry.workspaceRoot = workspaceID
+	registry.allowLocalCommands = registryOptions.AllowLocalCommands
 	if err := registry.SetPermissionMode(PermissionModeWorkspace); err != nil {
 		_ = registry.Close()
 		return nil, err

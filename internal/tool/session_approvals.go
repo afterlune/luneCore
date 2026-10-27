@@ -25,9 +25,15 @@ func NewSessionApprovalStore(approvals []publictool.SessionApproval) *SessionApp
 		approvals: make([]publictool.SessionApproval, 0, len(approvals)),
 	}
 	for _, a := range approvals {
+		// An approval without a fingerprint has no execution boundary to bind to,
+		// so it cannot be honored safely; the user re-approves it once.
+		if a.Fingerprint == "" {
+			continue
+		}
 		store.approvals = append(store.approvals, publictool.SessionApproval{
-			Tool:      a.Tool,
-			Arguments: NormalizeArguments(json.RawMessage(a.Arguments)),
+			Tool:        a.Tool,
+			Arguments:   NormalizeArguments(json.RawMessage(a.Arguments)),
+			Fingerprint: a.Fingerprint,
 		})
 	}
 	return store
@@ -57,23 +63,18 @@ func NormalizeArguments(raw json.RawMessage) string {
 	return string(canonical)
 }
 
-// Allows checks whether the given tool call with arguments was previously approved in this session.
-func (s *SessionApprovalStore) Allows(tool string, arguments json.RawMessage, fingerprint ...string) bool {
-	if s == nil || tool == "" {
+// Allows reports whether the exact tool call was already approved inside the same
+// execution boundary. A missing fingerprint never matches: approvals are scoped to
+// the workspace, shell, toolchains, and sandbox state that produced them.
+func (s *SessionApprovalStore) Allows(tool string, arguments json.RawMessage, fingerprint string) bool {
+	if s == nil || tool == "" || fingerprint == "" {
 		return false
 	}
 	norm := NormalizeArguments(arguments)
-	fp := ""
-	if len(fingerprint) > 0 {
-		fp = fingerprint[0]
-	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	for _, a := range s.approvals {
-		if a.Tool == tool && a.Arguments == norm {
-			if a.Fingerprint != "" && fp != "" && a.Fingerprint != fp {
-				continue
-			}
+		if a.Tool == tool && a.Arguments == norm && a.Fingerprint == fingerprint {
 			return true
 		}
 	}
@@ -82,7 +83,9 @@ func (s *SessionApprovalStore) Allows(tool string, arguments json.RawMessage, fi
 
 // Add records an approved tool operation in the store.
 func (s *SessionApprovalStore) Add(approval publictool.SessionApproval) {
-	if s == nil || approval.Tool == "" {
+	if s == nil || approval.Tool == "" || approval.Fingerprint == "" {
+		// Nothing binds an approval without a boundary fingerprint, so storing it
+		// would either leak across boundaries or never match.
 		return
 	}
 	norm := NormalizeArguments(json.RawMessage(approval.Arguments))

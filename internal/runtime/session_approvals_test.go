@@ -39,8 +39,9 @@ func TestSessionApprovalPersistenceAndForkIsolation(t *testing.T) {
 	ctx = runtimepermission.WithSessionApprovalStore(ctx, store)
 
 	toolReq := runtimepermission.PermissionRequest{
-		Tool:      "custom_exec",
-		Arguments: json.RawMessage(`{"target": "build"}`),
+		Tool:        "custom_exec",
+		Arguments:   json.RawMessage(`{"target": "build"}`),
+		Fingerprint: "ws=/tmp;mode=workspace;shell=/bin/sh;toolchains=;sandbox=true",
 	}
 
 	// 1. Denial should not persist
@@ -70,8 +71,11 @@ func TestSessionApprovalPersistenceAndForkIsolation(t *testing.T) {
 	if err != nil || len(saved.Approvals) != 1 || saved.Approvals[0].Tool != "custom_exec" {
 		t.Fatalf("saved approvals = %#v, error %v", saved.Approvals, err)
 	}
-	if !store.Allows("custom_exec", json.RawMessage(`{"target":"build"}`)) {
+	if !store.Allows("custom_exec", json.RawMessage(`{"target":"build"}`), toolReq.Fingerprint) {
 		t.Fatal("in-memory store did not record approved tool")
+	}
+	if store.Allows("custom_exec", json.RawMessage(`{"target":"build"}`), toolReq.Fingerprint+"-other") {
+		t.Fatal("approval leaked across execution boundaries")
 	}
 
 	// 3. Fork does not inherit approvals
@@ -98,6 +102,18 @@ func TestSessionApprovalPersistenceAndForkIsolation(t *testing.T) {
 	restored, err := reopened.GetSession(context.Background(), session.ID)
 	if err != nil || len(restored.Approvals) != 1 || restored.Approvals[0].Tool != "custom_exec" {
 		t.Fatalf("reopened approvals = %#v, error %v", restored.Approvals, err)
+	}
+	// The execution boundary has to survive persistence: without the fingerprint a
+	// reloaded approval would be honored in any workspace, shell, or sandbox.
+	if restored.Approvals[0].Fingerprint != toolReq.Fingerprint {
+		t.Fatalf("reopened approval lost its boundary: %#v", restored.Approvals[0])
+	}
+	reloaded := runtimepermission.NewSessionApprovalStore(restored.Approvals)
+	if !reloaded.Allows("custom_exec", json.RawMessage(`{"target":"build"}`), toolReq.Fingerprint) {
+		t.Fatal("reloaded store dropped the approval")
+	}
+	if reloaded.Allows("custom_exec", json.RawMessage(`{"target":"build"}`), "ws=/elsewhere") {
+		t.Fatal("reloaded approval leaked across execution boundaries")
 	}
 }
 

@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"slices"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -24,7 +24,7 @@ const (
 	PermissionModeFullAccess PermissionMode = "full-access"
 
 	// PermissionModeAsk is an alias for PermissionModeAuto for backwards compatibility.
-	PermissionModeAsk        PermissionMode = "ask"
+	PermissionModeAsk PermissionMode = "ask"
 )
 
 // PermissionModes returns the supported permission modes in UI order.
@@ -365,14 +365,23 @@ func requestApproval(ctx context.Context, approve PermissionApprovalHandler, app
 	return ctx.Err()
 }
 
-// ComputeExecutionFingerprint computes a stable fingerprint for execution boundaries.
-func ComputeExecutionFingerprint(workspace, sandboxMode, shell string, toolchains []string, network bool) string {
+// ComputeExecutionFingerprint describes the boundary a session approval is bound
+// to: workspace, permission mode, shell, command toolchains, and whether the OS
+// sandbox is active. Command execution always allows network, so network is not
+// part of the key.
+func ComputeExecutionFingerprint(workspace, permissionMode, shell string, toolchains []string, sandboxDisabled bool) string {
+	ws := strings.TrimSpace(workspace)
+	if ws == "" {
+		ws = "-"
+	} else {
+		ws = filepath.Clean(ws)
+	}
 	parts := []string{
-		"ws=" + filepath.Clean(workspace),
-		"mode=" + sandboxMode,
+		"ws=" + ws,
+		"mode=" + permissionMode,
 		"shell=" + shell,
 		"toolchains=" + strings.Join(toolchains, ","),
-		fmt.Sprintf("net=%t", network),
+		fmt.Sprintf("sandbox=%t", !sandboxDisabled),
 	}
 	return strings.Join(parts, ";")
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"runtime"
 	"strings"
 	"time"
 
@@ -20,6 +21,28 @@ func (r *Registry) Run(ctx context.Context, name string, arguments json.RawMessa
 		return Result{Err: err}
 	}
 	return registeredTool.Run(ctx, arguments)
+}
+
+// executionFingerprint binds a session approval to the workspace, permission mode,
+// shell, toolchains, and sandbox state that produced it.
+func (r *Registry) executionFingerprint(registeredTool Tool, mode PermissionMode) string {
+	workspace := ""
+	if r.workspaceRoot != nil && r.workspaceRoot.root != nil {
+		workspace = r.workspaceRoot.root.Name()
+	}
+	var toolchains []string
+	if commandTool, ok := registeredTool.(CommandTool); ok {
+		toolchains = commandTool.CommandToolchainPaths
+	}
+	return ComputeExecutionFingerprint(workspace, string(mode), executionShell(), toolchains, IsSandboxDisabled(r.allowLocalCommands))
+}
+
+// executionShell names the shell commands run under, mirroring directExecutor.
+func executionShell() string {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe"
+	}
+	return "/bin/sh"
 }
 
 func (r *Registry) authorizedTool(ctx context.Context, name string, arguments json.RawMessage) (Tool, context.Context, error) {
@@ -65,18 +88,10 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 		}
 		pathGrant = grant
 	}
-	var fingerprint string
-	if r.workspaceRoot != nil && r.workspaceRoot.root != nil {
-		ws := r.workspaceRoot.root.Name()
-		var toolchains []string
-		if cmdTool, ok := registeredTool.(CommandTool); ok {
-			toolchains = cmdTool.CommandToolchainPaths
-		}
-		fingerprint = ComputeExecutionFingerprint(ws, string(mode), "powershell", toolchains, true)
-	}
+	var fingerprint = r.executionFingerprint(registeredTool, mode)
 	permissionRequest := PermissionRequest{
 		Tool: name, AgentID: model.AgentIDFromContext(ctx), Arguments: append(json.RawMessage(nil), arguments...), Metadata: metadata,
-		PathGrant: pathGrant,
+		PathGrant:   pathGrant,
 		Fingerprint: fingerprint,
 	}
 	if err := permissions.authorize(ctx, permissionRequest); err != nil {

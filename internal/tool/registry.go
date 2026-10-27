@@ -30,6 +30,9 @@ type Registry struct {
 	callController  ToolCallController
 	permissions     *permissionSettings
 	workspaceRoot   *workspaceIdentity
+	// allowLocalCommands mirrors the host's sandbox bypass, so approvals granted
+	// with the OS sandbox active are not reused once it is disabled.
+	allowLocalCommands bool
 }
 
 // ToolEvent describes a tool call. Arguments are transient so clients can build
