@@ -3,7 +3,6 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -11,9 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	projectconfig "github.com/afterlune/luneCore/internal/config"
@@ -204,6 +201,9 @@ func TestSessionModelSettingsPersistAndDefault(t *testing.T) {
 	if err := client.SetSessionSettings(context.Background(), session.ID, SessionSettings{ModelProfile: "primary", ReasoningEffort: "ultra"}); err == nil {
 		t.Fatal("unknown effort should be rejected")
 	}
+	if err := client.SetSessionSettings(context.Background(), session.ID, SessionSettings{ModelProfile: "primary", ReasoningEffort: "default"}); err == nil {
+		t.Fatal("default alias should be rejected; an unset effort uses the provider default")
+	}
 	profiles := client.ListModelProfiles()
 	if len(profiles) != 2 || profiles[0].Profile != "primary" || profiles[1].Profile != "review" {
 		t.Fatalf("model profiles = %#v, want sorted profiles", profiles)
@@ -272,7 +272,7 @@ func TestSessionTaskSettingsInheritProjectDefaultsAndPersistOverrides(t *testing
 	}
 
 	settings := SessionSettings{
-		ModelProfile: "review",
+		ModelProfile:  "review",
 		ContextWindow: int64Pointer(0), ReserveOutputTokens: int64Pointer(0),
 		AutoCompact: boolPointer(false), AutoCompactThreshold: float64Pointer(0.6),
 	}
@@ -414,29 +414,29 @@ func TestLegacySessionWithoutSettingsGetsDefaultProfile(t *testing.T) {
 }
 
 func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
-	observed := make(chan model.ModelRequest, 2)
-	var calls atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var request model.ModelRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Errorf("decode request: %v", err)
-			return
-		}
-		select {
-		case observed <- request:
-		default:
-		}
-		callNumber := calls.Add(1)
-		if callNumber == 1 {
-			<-r.Context().Done()
-			return
-		}
-		writeCompletedResponseSSE(w, request.Model)
-	}))
-	defer server.Close()
 	workspace, stateDir := t.TempDir(), t.TempDir()
-	writeSettingsConfig(t, workspace, server.URL)
-	client := openSettingsCore(t, workspace, stateDir)
+	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
+		askUserToolCallResponse("Which environment?", []string{"staging"}),
+		hostTextResponse("Deployment ready."),
+	}}
+	config := runtimeTestConfig(workspace, stateDir, provider)
+	config.ModelConfig = &publicmodel.Config{
+		Providers: map[string]publicmodel.ProviderConfig{"host": {Protocol: publicmodel.ProtocolResponses}},
+		Profiles: map[string]publicmodel.ModelProfile{
+			"primary": {Provider: "host", Model: "primary-wire-model"},
+			"review":  {Provider: "host", Model: "review-wire-model"},
+		},
+		DefaultProfile: "primary",
+	}
+	client, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := client.Close(); err != nil {
+			t.Errorf("close Core: %v", err)
+		}
+	})
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -449,39 +449,28 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	if err := client.SetSessionSettings(context.Background(), saved.ID, initial); err != nil {
 		t.Fatal(err)
 	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-	firstDone := make(chan error, 1)
-	input := mustSettingsTaskInput(t, "pause me")
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := mustSettingsTaskInput(t, "pause for clarification")
 	const taskModel = "task-specific-model"
-	go func() {
-		_, runErr := client.RunTask(ctx, TaskRequest{SessionID: saved.ID, Input: input, Model: taskModel})
-		firstDone <- runErr
-	}()
-	select {
-	case first := <-observed:
-		if first.Model != taskModel || first.Reasoning == nil || first.Reasoning.Effort != model.ReasoningEffortLow {
-			cancel()
-			t.Fatalf("initial request = %#v", first)
-		}
-		if active := client.State(); active.Model != taskModel {
-			cancel()
-			t.Fatalf("active task model = %q, want %q", active.Model, taskModel)
-		}
-	case <-time.After(5 * time.Second):
-		cancel()
-		t.Fatal("initial request was not observed")
+	submission, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: input, Model: taskModel}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
 	}
-	cancel()
-	if err := <-firstDone; !errors.Is(err, context.Canceled) {
-		t.Fatalf("interrupted task error = %v, want context canceled", err)
+	pausedWait := waitTurnAsync(runtime, submission.ExecutionID)
+	question := waitPendingUserQuestion(t, runtime, submission.ExecutionID)
+	paused := waitTurnResult(t, pausedWait)
+	if paused.err != nil || paused.result.Status != TaskPaused {
+		t.Fatalf("task did not pause for clarification: %#v, error=%v", paused.result, paused.err)
 	}
-	if pending, err := client.hasPending(context.Background(), saved.ID); err != nil || !pending {
-		t.Fatalf("pending after interruption = %v, error = %v", pending, err)
+	if active := client.State(); active.Model != taskModel {
+		t.Fatalf("active task model = %q, want %q", active.Model, taskModel)
 	}
 	pausedState, ok, err := client.runtime.PendingStateFor(context.Background(), saved.ID)
 	if err != nil || !ok {
-		t.Fatalf("PendingStateFor after interruption: found=%v error=%v", ok, err)
+		t.Fatalf("PendingStateFor after question: found=%v error=%v", ok, err)
 	}
 	if pausedState.ModelOverride != taskModel {
 		t.Fatalf("checkpoint model override = %q, want %q", pausedState.ModelOverride, taskModel)
@@ -500,16 +489,26 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := client.ResumeTask(context.Background(), saved.ID); err != nil {
-		t.Fatalf("ResumeTask: %v", err)
+	if err := runtime.ResolveUserQuestion(context.Background(), UserQuestionAnswer{
+		ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID,
+		Answers: []UserQuestionResponse{{QuestionID: "q1", Answer: "staging"}},
+	}); err != nil {
+		t.Fatal(err)
 	}
-	select {
-	case resumed := <-observed:
-		if resumed.Model != taskModel || resumed.Reasoning == nil || resumed.Reasoning.Effort != model.ReasoningEffortLow {
-			t.Fatalf("resumed request = %#v; want pinned original settings", resumed)
+	resumed := waitTurnResult(t, waitTurnAsync(runtime, submission.ExecutionID))
+	if resumed.err != nil || resumed.result.Status != TaskCompleted {
+		t.Fatalf("resumed task = %#v, error=%v", resumed.result, resumed.err)
+	}
+	provider.mu.Lock()
+	seenRequests := append([]publicmodel.ModelRequest(nil), provider.seenRequests...)
+	provider.mu.Unlock()
+	if len(seenRequests) != 2 {
+		t.Fatalf("model requests = %d, want initial and resumed requests", len(seenRequests))
+	}
+	for _, request := range seenRequests {
+		if request.Model != taskModel || request.Reasoning == nil || request.Reasoning.Effort != model.ReasoningEffortLow {
+			t.Fatalf("request after resume = %#v; want pinned model and effort", request)
 		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("resumed request was not observed")
 	}
 	resumedState, found := client.StateForSession(saved.ID)
 	if !found {
@@ -534,9 +533,6 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 	}
 	if current.Settings.ModelProfile != "review" || current.Settings.ReasoningEffort != model.ReasoningEffortHigh {
 		t.Fatalf("session settings after resume = %#v", current.Settings)
-	}
-	if len(current.UsageRequests) != 1 {
-		t.Fatalf("usage requests = %#v; want one resumed task request", current.UsageRequests)
 	}
 	for _, request := range current.UsageRequests {
 		if request.Model != taskModel {

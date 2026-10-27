@@ -106,32 +106,31 @@ type Core struct {
 	sessionLocks   map[string]*sessionLockEntry
 	coord          *sessionCoordinator
 
-	mu                  sync.RWMutex
-	goalMu              sync.Mutex
-	goalArmed           map[string]bool
-	goalRuns            map[string]goalExecution
-	eventHubMu          sync.Mutex
-	runtimeConfigMu     sync.RWMutex
-	usageMu             sync.Mutex
-	active              TaskState
-	activeTasks         map[string]TaskState
-	taskCancels         map[string]context.CancelFunc
-	approvals           map[string]pendingApproval
-	interactions        map[string]pendingInteraction
-	interactiveSessions map[string]bool
-	eventHubs           map[string]*sessionEventHub
-	queueDraining       map[string]bool
-	queueMutationMu     sync.Mutex
-	turnWaiters         map[string]chan turnResult
-	executionRuns       map[string]chan struct{}
-	interruptRequests   map[string]bool
-
-	finishingExecutions map[string]struct{}
+	mu                    sync.RWMutex
+	goalMu                sync.Mutex
+	goalArmed             map[string]bool
+	goalRuns              map[string]goalExecution
+	eventHubMu            sync.Mutex
+	runtimeConfigMu       sync.RWMutex
+	usageMu               sync.Mutex
+	active                TaskState
+	activeTasks           map[string]TaskState
+	taskCancels           map[string]context.CancelFunc
+	approvals             map[string]pendingApproval
+	interactions          map[string]pendingInteraction
+	interactiveSessions   map[string]bool
+	eventHubs             map[string]*sessionEventHub
+	queueDraining         map[string]bool
+	queueMutationMu       sync.Mutex
+	turnWaiters           map[string]chan turnResult
+	executionRuns         map[string]chan struct{}
+	interruptRequests     map[string]bool
+	finishingExecutions   map[string]struct{}
 	commandToolchainPaths []string
-	queueDrainWG        sync.WaitGroup
-	sessionOps          sync.WaitGroup
-	closed              bool
-	closing             bool
+	queueDrainWG          sync.WaitGroup
+	sessionOps            sync.WaitGroup
+	closed                bool
+	closing               bool
 }
 
 func New(config Config) (_ *Core, err error) {
@@ -260,27 +259,27 @@ func New(config Config) (_ *Core, err error) {
 			ContextWindow: projectConfig.Runtime.ContextWindow, ReserveOutputTokens: projectConfig.Runtime.ReserveOutputTokens,
 			AutoCompact: projectConfig.Runtime.AutoCompact, AutoCompactThreshold: projectConfig.Runtime.AutoCompactThreshold,
 		},
-		checkpoints:          checkpoints,
-		sessions:             sessions,
-		executionDefaults:    executionDefaults,
-		callbackLimiter:      callbackLimiter,
-		personalInstructions: config.PersonalInstructions,
-		memoryConfig:         config.Memory,
-		memory:               workspacememory.New(sessions, workspace, config.Memory.Embedder, logger),
-		liveExecutions:       make(map[string]*graph.Execution[agentgraph.State]),
-		coord:                coord,
-		active:               TaskState{Status: TaskIdle},
-		activeTasks:          coord.activeTasks,
-		taskCancels:          coord.taskCancels,
-		approvals:            coord.approvals,
-		interactions:         coord.interactions,
-		interactiveSessions:  coord.interactiveSessions,
-		eventHubs:            make(map[string]*sessionEventHub),
-		queueDraining:        coord.queueDraining,
-		turnWaiters:          coord.turnWaiters,
-		executionRuns:        coord.executionRuns,
-		interruptRequests:    coord.interruptRequests,
-		sessionLocks:         make(map[string]*sessionLockEntry),
+		checkpoints:           checkpoints,
+		sessions:              sessions,
+		executionDefaults:     executionDefaults,
+		callbackLimiter:       callbackLimiter,
+		personalInstructions:  config.PersonalInstructions,
+		memoryConfig:          config.Memory,
+		memory:                workspacememory.New(sessions, workspace, config.Memory.Embedder, logger),
+		liveExecutions:        make(map[string]*graph.Execution[agentgraph.State]),
+		coord:                 coord,
+		active:                TaskState{Status: TaskIdle},
+		activeTasks:           coord.activeTasks,
+		taskCancels:           coord.taskCancels,
+		approvals:             coord.approvals,
+		interactions:          coord.interactions,
+		interactiveSessions:   coord.interactiveSessions,
+		eventHubs:             make(map[string]*sessionEventHub),
+		queueDraining:         coord.queueDraining,
+		turnWaiters:           coord.turnWaiters,
+		executionRuns:         coord.executionRuns,
+		interruptRequests:     coord.interruptRequests,
+		sessionLocks:          make(map[string]*sessionLockEntry),
 		commandToolchainPaths: config.CommandToolchainPaths,
 	}
 	if err := c.configureCommands(config); err != nil {
@@ -330,7 +329,9 @@ func New(config Config) (_ *Core, err error) {
 	team := &teamExecutor{core: c, models: models, tools: registry}
 	c.team = team
 	c.runtime = agentruntime.NewResponder(checkpoints, callbackLimiter, c.logger)
-	if err := c.registerGoalTools(); err != nil { return nil, err }
+	if err := c.registerGoalTools(); err != nil {
+		return nil, err
+	}
 	registry.SetToolEventObserver(c.onToolEvent)
 	registry.SetToolCallController(c.executeToolCall)
 	registry.SetPermissionApprovalDecisionHandler(c.requestApprovalDecision)

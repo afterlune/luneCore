@@ -83,6 +83,13 @@ func TestApprovalWaitsWithoutSubscriberAndCanBeResolvedAfterReconnect(t *testing
 	case <-time.After(time.Second):
 		t.Fatal("approval wait did not return after explicit resolution")
 	}
+	saved, err = client.GetSession(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Approvals) != 0 {
+		t.Fatalf("one-time approval was persisted for the session: %#v", saved.Approvals)
+	}
 }
 
 func TestUserInteractionEventCanBeResolved(t *testing.T) {

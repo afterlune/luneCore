@@ -215,6 +215,7 @@ func (publicRegistrationTestTool) Run(context.Context, json.RawMessage) publicto
 }
 
 func TestDefaultRegistryFailsClosedWhenSandboxHelperIsUnavailable(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
 	registry, err := NewDefaultRegistry(t.TempDir())
 	if err != nil {
 		t.Fatalf("NewDefaultRegistry: %v", err)

@@ -165,9 +165,6 @@ func (c *Core) normalizeSessionModelSettings(settings SessionSettings) (SessionS
 		return SessionSettings{}, fmt.Errorf("unknown model profile %q", settings.ModelProfile)
 	}
 	effort := strings.TrimSpace(settings.ReasoningEffort)
-	if effort == "default" {
-		effort = ""
-	}
 	switch effort {
 	case "", model.ReasoningEffortNone, model.ReasoningEffortMinimal, model.ReasoningEffortLow,
 		model.ReasoningEffortMedium, model.ReasoningEffortHigh, model.ReasoningEffortXHigh, model.ReasoningEffortMax:
@@ -238,7 +235,7 @@ func taskOptionsFromState(state agentgraph.State) agentgraph.TaskOptions {
 		ExecutionID:   state.ExecutionID,
 		MaxToolRounds: state.MaxToolRounds, Model: state.ModelOverride, ReasoningEffort: state.ReasoningEffort,
 		Goal: state.Goal, PersonalInstructions: state.PersonalInstructions,
-		GoalID:state.GoalID, GoalRevision:state.GoalRevision, AutomaticGoal:state.AutomaticGoal,
+		GoalID: state.GoalID, GoalRevision: state.GoalRevision, AutomaticGoal: state.AutomaticGoal,
 		ProjectInstructionsReady: state.ProjectInstructionsReady,
 		ProjectInstructions:      append([]agentgraph.ProjectInstruction(nil), state.ProjectInstructions...),
 		ContextWindow:            state.ContextWindow, ReserveOutputTokens: state.ReserveOutputTokens,

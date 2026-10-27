@@ -120,19 +120,19 @@ const (
 )
 
 var (
-	ErrPlanUnavailable           = coreruntime.ErrPlanUnavailable
-	ErrPlanOutdated              = coreruntime.ErrPlanOutdated
-	ErrSessionBusy               = coreruntime.ErrSessionBusy
-	ErrTaskPaused                = coreruntime.ErrTaskPaused
-	ErrTurnNotFound              = coreruntime.ErrTurnNotFound
-	ErrQueuedTurnStarted         = coreruntime.ErrQueuedTurnStarted
-	ErrMCPServerLifecycleChanged = coreruntime.ErrMCPServerLifecycleChanged
-	ErrModelRetryNotReady        = coreruntime.ErrModelRetryNotReady
-	ErrSessionInUse              = coreruntime.ErrSessionInUse
-	ErrToolInvocationPersistence = coreruntime.ErrToolInvocationPersistence
+	ErrPlanUnavailable            = coreruntime.ErrPlanUnavailable
+	ErrPlanOutdated               = coreruntime.ErrPlanOutdated
+	ErrSessionBusy                = coreruntime.ErrSessionBusy
+	ErrTaskPaused                 = coreruntime.ErrTaskPaused
+	ErrTurnNotFound               = coreruntime.ErrTurnNotFound
+	ErrQueuedTurnStarted          = coreruntime.ErrQueuedTurnStarted
+	ErrMCPServerLifecycleChanged  = coreruntime.ErrMCPServerLifecycleChanged
+	ErrModelRetryNotReady         = coreruntime.ErrModelRetryNotReady
+	ErrSessionInUse               = coreruntime.ErrSessionInUse
+	ErrToolInvocationPersistence  = coreruntime.ErrToolInvocationPersistence
 	ErrUserInteractionUnsupported = coreruntime.ErrUserInteractionUnsupported
-	ErrAuthorizationRequired     = mcp.ErrAuthorizationRequired
-	ErrCredentialNotFound        = mcp.ErrCredentialNotFound
+	ErrAuthorizationRequired      = mcp.ErrAuthorizationRequired
+	ErrCredentialNotFound         = mcp.ErrCredentialNotFound
 )
 
 type BrowserOpener = mcp.BrowserOpener
@@ -206,14 +206,15 @@ type GoalCreateOptions = coreruntime.GoalCreateOptions
 type GoalResumeOptions = coreruntime.GoalResumeOptions
 
 const (
-	GoalActive = coreruntime.GoalActive
-	GoalPaused = coreruntime.GoalPaused
-	GoalBlocked = coreruntime.GoalBlocked
+	GoalActive        = coreruntime.GoalActive
+	GoalPaused        = coreruntime.GoalPaused
+	GoalBlocked       = coreruntime.GoalBlocked
 	GoalBudgetLimited = coreruntime.GoalBudgetLimited
-	GoalComplete = coreruntime.GoalComplete
-	EventGoalUpdated = coreruntime.EventGoalUpdated
-	EventGoalCleared = coreruntime.EventGoalCleared
+	GoalComplete      = coreruntime.GoalComplete
+	EventGoalUpdated  = coreruntime.EventGoalUpdated
+	EventGoalCleared  = coreruntime.EventGoalCleared
 )
+
 type SubmissionMode = coreruntime.SubmissionMode
 type SubmissionStatus = coreruntime.SubmissionStatus
 type TaskInput = coreruntime.TaskInput

@@ -9,6 +9,7 @@ import (
 
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
+	publicmodel "github.com/afterlune/luneCore/model"
 )
 
 func TestSessionRuntimeQueueInputIsFIFOAndSubmissionContextOnlyControlsAdmission(t *testing.T) {
@@ -394,112 +395,8 @@ func TestOpenSessionRuntimeStartsPersistedUnpausedQueue(t *testing.T) {
 	}
 }
 
-func TestSessionRuntimeReopensPausedTurnAndDrainsQueuedInput(t *testing.T) {
+func TestSessionRuntimeInterruptCancelsActiveTurnAndDrainsQueue(t *testing.T) {
 	provider := &barrierHostProvider{entered: make(chan string, 3), release: make(chan struct{}, 3)}
-	workspace, stateDir := t.TempDir(), t.TempDir()
-	config := runtimeTestConfig(workspace, stateDir, provider)
-	client, err := New(config)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
-			t.Errorf("close Core: %v", err)
-		}
-	})
-	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	streamCtx, cancelStream := context.WithCancel(context.Background())
-	stream, err := runtime.SubscribeEvents(streamCtx, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	streamDone := make(chan struct{})
-	go func() {
-		defer close(streamDone)
-		for range stream {
-		}
-	}()
-
-	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "paused turn")}, StartIfIdle)
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = receiveProviderInput(t, provider.entered)
-	if !runtime.Interrupt(first.ExecutionID) {
-		t.Fatal("Interrupt returned false for active turn")
-	}
-	waitRuntimeStatus(t, runtime, TaskPaused)
-	cancelStream()
-	<-streamDone
-	if err := client.Close(); err != nil {
-		t.Fatalf("close paused Core: %v", err)
-	}
-
-	reopened, err := New(config)
-	if err != nil {
-		t.Fatalf("reopen Core: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := reopened.Close(); err != nil {
-			t.Errorf("close reopened Core: %v", err)
-		}
-	})
-	runtime, err = reopened.OpenSessionRuntime(context.Background(), saved.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	state, err := runtime.State(context.Background())
-	if err != nil || state.Task.Status != TaskPaused || len(state.Queue) != 1 || state.Queue[0].Status != "paused" {
-		t.Fatalf("reopened runtime state = %#v, error=%v", state, err)
-	}
-	if _, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "blocked while paused")}, StartIfIdle); !errors.Is(err, ErrTaskPaused) {
-		t.Fatalf("StartIfIdle while paused = %v, want ErrTaskPaused", err)
-	}
-	queued, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "after recovery")}, QueueInput)
-	if err != nil || queued.Position <= state.Queue[0].Position {
-		t.Fatalf("queued turn after reopen = %#v, error=%v", queued, err)
-	}
-	resumeCtx, cancelResume := context.WithCancel(context.Background())
-	resumeEvents, err := runtime.SubscribeEvents(resumeCtx, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() {
-		cancelResume()
-		for range resumeEvents {
-		}
-	}()
-	resumeDone := make(chan struct{})
-	go func() {
-		defer close(resumeDone)
-		for range resumeEvents {
-		}
-	}()
-	if _, err := runtime.Recover(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	_ = receiveProviderInput(t, provider.entered)
-	provider.release <- struct{}{}
-	_ = receiveProviderInput(t, provider.entered)
-	provider.release <- struct{}{}
-	waitQueueLength(t, runtime, 0)
-	state, err = runtime.State(context.Background())
-	if err != nil || state.Task.Status != TaskCompleted {
-		t.Fatalf("state after recovery and queued turn = %#v, error=%v", state, err)
-	}
-	cancelResume()
-	<-resumeDone
-}
-
-func TestSessionRuntimeDiscardPausedTurnUnblocksQueue(t *testing.T) {
-	provider := &barrierHostProvider{entered: make(chan string, 2), release: make(chan struct{}, 2)}
 	client := newProgrammaticCore(t, provider)
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
@@ -509,23 +406,74 @@ func TestSessionRuntimeDiscardPausedTurnUnblocksQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_ = subscribeTestEvents(t, client, saved.ID)
-	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "discard this")}, StartIfIdle)
+	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "paused turn")}, StartIfIdle)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = receiveProviderInput(t, provider.entered)
-	if _, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "run after discard")}, QueueInput); err != nil {
+	second, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "after cancellation")}, QueueInput)
+	if err != nil {
 		t.Fatal(err)
 	}
 	if !runtime.Interrupt(first.ExecutionID) {
-		t.Fatal("Interrupt returned false")
+		t.Fatal("Interrupt returned false for active turn")
 	}
-	waitRuntimeStatus(t, runtime, TaskPaused)
+	firstResult, err := runtime.WaitTurn(context.Background(), first.ExecutionID)
+	if err != nil || firstResult.Status != TaskCancelled {
+		t.Fatalf("interrupted turn result = %#v, error=%v; want cancelled", firstResult, err)
+	}
+	if got := receiveProviderInput(t, provider.entered); got != "after cancellation" {
+		t.Fatalf("next provider input = %q, want queued input", got)
+	}
+	provider.release <- struct{}{}
+	secondResult, err := runtime.WaitTurn(context.Background(), second.ExecutionID)
+	if err != nil || secondResult.Status != TaskCompleted {
+		t.Fatalf("queued turn result = %#v, error=%v", secondResult, err)
+	}
+	waitQueueLength(t, runtime, 0)
+}
+
+func TestSessionRuntimeDiscardPausedTurnUnblocksQueue(t *testing.T) {
+	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
+		askUserToolCallResponse("Choose before discarding", []string{"continue"}),
+		hostTextResponse("Queued turn complete."),
+	}}
+	client := newProgrammaticCore(t, provider)
+	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "discard this")}, StartIfIdle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstWait := waitTurnAsync(runtime, first.ExecutionID)
+	question := waitPendingUserQuestion(t, runtime, first.ExecutionID)
+	paused := waitTurnResult(t, firstWait)
+	if paused.err != nil || paused.result.Status != TaskPaused {
+		t.Fatalf("first turn did not pause for clarification: %#v, error=%v", paused.result, paused.err)
+	}
+	second, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "run after discard")}, QueueInput)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if discarded, err := runtime.DiscardPaused(context.Background()); err != nil || !discarded {
 		t.Fatalf("DiscardPaused = %v, error=%v", discarded, err)
 	}
-	_ = receiveProviderInput(t, provider.entered)
-	provider.release <- struct{}{}
+	discardedResult, err := runtime.WaitTurn(context.Background(), first.ExecutionID)
+	if err != nil || discardedResult.Status != TaskDiscarded {
+		t.Fatalf("discarded turn = %#v, error=%v", discardedResult, err)
+	}
+	if question.ExecutionID != first.ExecutionID {
+		t.Fatalf("pending question execution = %q, want %q", question.ExecutionID, first.ExecutionID)
+	}
+	queuedResult, err := runtime.WaitTurn(context.Background(), second.ExecutionID)
+	if err != nil || queuedResult.Status != TaskCompleted {
+		t.Fatalf("queued turn after discard = %#v, error=%v", queuedResult, err)
+	}
 	waitQueueLength(t, runtime, 0)
 }

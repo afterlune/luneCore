@@ -106,7 +106,7 @@ func TestGoalPauseResumeAndEditCheckpoint(t *testing.T) {
 	if _,err:=runtime.PauseGoal(t.Context());err!=nil { t.Fatal(err) }
 	client.queueDrainWG.Wait()
 	state,err:=runtime.State(t.Context())
-	if err!=nil || state.Task.Status!=TaskPaused || state.Goal.Status!=GoalPaused { t.Fatalf("state=%+v err=%v",state,err) }
+	if err!=nil || state.Task.Status!=TaskCancelled || state.Goal.Status!=GoalPaused { t.Fatalf("state=%+v err=%v",state,err) }
 	if _,err:=runtime.EditGoal(t.Context(),"Updated objective");err!=nil { t.Fatal(err) }
 	edited,_:=runtime.GetGoal(t.Context())
 	if edited.Revision!=goal.Revision+1 || edited.Status!=GoalPaused { t.Fatalf("edited=%+v",edited) }

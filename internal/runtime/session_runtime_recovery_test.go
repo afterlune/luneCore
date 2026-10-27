@@ -127,7 +127,10 @@ func TestSessionRuntimeWaitTurnCancellationDoesNotInterruptExecution(t *testing.
 }
 
 func TestSessionRuntimeWaitTurnReturnsPausedThenResumedResult(t *testing.T) {
-	provider := &barrierHostProvider{entered: make(chan string, 2), release: make(chan struct{}, 1)}
+	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
+		askUserToolCallResponse("Choose a deployment target", []string{"staging"}),
+		hostTextResponse("Deployment ready."),
+	}}
 	client := newProgrammaticCore(t, provider)
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
@@ -141,61 +144,28 @@ func TestSessionRuntimeWaitTurnReturnsPausedThenResumedResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstWait := make(chan struct {
-		result TurnResult
-		err    error
-	}, 1)
-	go func() {
-		result, err := runtime.WaitTurn(context.Background(), submission.ExecutionID)
-		firstWait <- struct {
-			result TurnResult
-			err    error
-		}{result, err}
-	}()
-	_ = receiveProviderInput(t, provider.entered)
-	if !runtime.Interrupt(submission.ExecutionID) {
-		t.Fatal("Interrupt returned false")
-	}
-	var paused struct {
-		result TurnResult
-		err    error
-	}
-	select {
-	case paused = <-firstWait:
-	case <-time.After(5 * time.Second):
-		t.Fatal("WaitTurn did not return the paused result")
-	}
+	pausedWait := waitTurnAsync(runtime, submission.ExecutionID)
+	question := waitPendingUserQuestion(t, runtime, submission.ExecutionID)
+	paused := waitTurnResult(t, pausedWait)
 	if paused.err != nil || paused.result.Status != TaskPaused || paused.result.ExecutionID != submission.ExecutionID {
 		t.Fatalf("paused WaitTurn result = %#v, error=%v", paused.result, paused.err)
 	}
-	if _, err := runtime.Recover(context.Background()); err != nil {
+	if err := runtime.ResolveUserQuestion(context.Background(), UserQuestionAnswer{
+		ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID,
+		Answers: []UserQuestionResponse{{QuestionID: "q1", Answer: "staging"}},
+	}); err != nil {
 		t.Fatal(err)
 	}
-	secondWait := make(chan struct {
-		result TurnResult
-		err    error
-	}, 1)
-	go func() {
-		result, err := runtime.WaitTurn(context.Background(), submission.ExecutionID)
-		secondWait <- struct {
-			result TurnResult
-			err    error
-		}{result, err}
-	}()
-	_ = receiveProviderInput(t, provider.entered)
-	provider.release <- struct{}{}
-	select {
-	case resumed := <-secondWait:
-		if resumed.err != nil || resumed.result.Status != TaskCompleted || resumed.result.ExecutionID != submission.ExecutionID || len(resumed.result.Response) == 0 {
-			t.Fatalf("resumed WaitTurn result = %#v, error=%v", resumed.result, resumed.err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("WaitTurn did not return the resumed result")
+	resumed := waitTurnResult(t, waitTurnAsync(runtime, submission.ExecutionID))
+	if resumed.err != nil || resumed.result.Status != TaskCompleted || resumed.result.ExecutionID != submission.ExecutionID || len(resumed.result.Response) == 0 {
+		t.Fatalf("resumed WaitTurn result = %#v, error=%v", resumed.result, resumed.err)
 	}
 }
 
 func TestSessionRuntimeWaitTurnReportsCancelledAndDiscardedStatuses(t *testing.T) {
-	provider := &barrierHostProvider{entered: make(chan string, 1), release: make(chan struct{}, 1)}
+	provider := &scriptedHostProvider{responses: []*publicmodel.ModelResponse{
+		askUserToolCallResponse("Choose before discarding", []string{"continue"}),
+	}}
 	client := newProgrammaticCore(t, provider)
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
@@ -209,14 +179,12 @@ func TestSessionRuntimeWaitTurnReportsCancelledAndDiscardedStatuses(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstWait := make(chan TurnResult, 1)
-	firstWaitErr := make(chan error, 1)
-	go func() {
-		result, err := runtime.WaitTurn(context.Background(), first.ExecutionID)
-		firstWait <- result
-		firstWaitErr <- err
-	}()
-	_ = receiveProviderInput(t, provider.entered)
+	firstWait := waitTurnAsync(runtime, first.ExecutionID)
+	question := waitPendingUserQuestion(t, runtime, first.ExecutionID)
+	paused := waitTurnResult(t, firstWait)
+	if paused.err != nil || paused.result.Status != TaskPaused {
+		t.Fatalf("paused WaitTurn result = %#v, error=%v", paused.result, paused.err)
+	}
 	second, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "cancel before start")}, QueueInput)
 	if err != nil {
 		t.Fatal(err)
@@ -228,23 +196,15 @@ func TestSessionRuntimeWaitTurnReportsCancelledAndDiscardedStatuses(t *testing.T
 	if err != nil || cancelled.Status != TaskCancelled || cancelled.Response != nil {
 		t.Fatalf("cancelled WaitTurn result = %#v, error=%v", cancelled, err)
 	}
-	if !runtime.Interrupt(first.ExecutionID) {
-		t.Fatal("Interrupt returned false for active turn")
-	}
-	select {
-	case paused := <-firstWait:
-		if err := <-firstWaitErr; err != nil || paused.Status != TaskPaused {
-			t.Fatalf("paused WaitTurn result = %#v, error=%v", paused, err)
-		}
-	case <-time.After(5 * time.Second):
-		t.Fatal("WaitTurn did not return paused status")
-	}
 	if discarded, err := runtime.DiscardPaused(context.Background()); err != nil || !discarded {
 		t.Fatalf("DiscardPaused = %t, error=%v", discarded, err)
 	}
 	discarded, err := runtime.WaitTurn(context.Background(), first.ExecutionID)
 	if err != nil || discarded.Status != TaskDiscarded || discarded.Response != nil {
 		t.Fatalf("discarded WaitTurn result = %#v, error=%v", discarded, err)
+	}
+	if question.ExecutionID != first.ExecutionID {
+		t.Fatalf("pending question execution = %q, want %q", question.ExecutionID, first.ExecutionID)
 	}
 }
 

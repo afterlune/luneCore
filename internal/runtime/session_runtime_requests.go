@@ -153,7 +153,14 @@ func (r *SessionRuntime) ResolveApprovalDecision(id string, decision publictool.
 
 func (r *SessionRuntime) ResolveApproval(id string, allowed bool) error {
 	if allowed {
-		return r.ResolveApprovalDecision(id, publictool.ApprovalAllowSession)
+		if pending, err := r.PendingRequests(context.Background()); err == nil {
+			for _, p := range pending {
+				if p.Kind == PendingApproval && p.Approval != nil && p.Approval.ID == id && p.Approval.PathGrant != nil {
+					return r.ResolveApprovalDecision(id, publictool.ApprovalAllowSession)
+				}
+			}
+		}
+		return r.ResolveApprovalDecision(id, publictool.ApprovalAllowOnce)
 	}
 	return r.ResolveApprovalDecision(id, publictool.ApprovalDeny)
 }

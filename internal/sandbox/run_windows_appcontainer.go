@@ -137,7 +137,7 @@ func appContainerCapabilities(network bool) ([]windows.SIDAndAttributes, func(),
 			cleanup()
 			return nil, func() {}, err
 		}
-		capabilities = append(capabilities, windows.SIDAndAttributes{Sid: sid})
+		capabilities = append(capabilities, windows.SIDAndAttributes{Sid: sid, Attributes: windows.SE_GROUP_ENABLED})
 	}
 	return capabilities, cleanup, nil
 }
@@ -205,4 +205,82 @@ func lockPathACL(path string) (func(), error) {
 		return nil, fmt.Errorf("lock sandbox path ACL: status=%d error=%v", status, err)
 	}
 	return func() { _ = windows.ReleaseMutex(mutex); _ = windows.CloseHandle(mutex); runtime.UnlockOSThread() }, nil
+}
+
+func grantWindowStationAndDesktop(sid *windows.SID) (func(), error) {
+	user32 := windows.NewLazySystemDLL("user32.dll")
+	getWinsta := user32.NewProc("GetProcessWindowStation")
+	getDesktop := user32.NewProc("GetThreadDesktop")
+	getCurrentThreadId := windows.NewLazySystemDLL("kernel32.dll").NewProc("GetCurrentThreadId")
+
+	hWinsta, _, _ := getWinsta.Call()
+	threadId, _, _ := getCurrentThreadId.Call()
+	hDesktop, _, _ := getDesktop.Call(threadId)
+
+	if hWinsta == 0 || hDesktop == 0 {
+		return func() {}, nil
+	}
+
+	grantObject := func(handle windows.Handle, accessMask windows.ACCESS_MASK) (func() error, error) {
+		sd, err := windows.GetSecurityInfo(handle, windows.SE_WINDOW_OBJECT, windows.DACL_SECURITY_INFORMATION)
+		if err != nil {
+			return nil, err
+		}
+		dacl, _, err := sd.DACL()
+		if err != nil {
+			return nil, err
+		}
+		entry := windows.EXPLICIT_ACCESS{
+			AccessPermissions: accessMask,
+			AccessMode:        windows.GRANT_ACCESS,
+			Inheritance:       windows.NO_INHERITANCE,
+			Trustee: windows.TRUSTEE{
+				TrusteeForm:  windows.TRUSTEE_IS_SID,
+				TrusteeType:  windows.TRUSTEE_IS_USER,
+				TrusteeValue: windows.TrusteeValueFromSID(sid),
+			},
+		}
+		var pinner runtime.Pinner
+		pinner.Pin(sid)
+		acl, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{entry}, dacl)
+		if err == nil {
+			err = windows.SetSecurityInfo(handle, windows.SE_WINDOW_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, acl, nil)
+		}
+		pinner.Unpin()
+		if err != nil {
+			return nil, err
+		}
+		return func() error {
+			current, err := windows.GetSecurityInfo(handle, windows.SE_WINDOW_OBJECT, windows.DACL_SECURITY_INFORMATION)
+			if err != nil {
+				return err
+			}
+			currentDACL, _, err := current.DACL()
+			if err != nil {
+				return err
+			}
+			revoke := entry
+			revoke.AccessMode = windows.REVOKE_ACCESS
+			var pinner runtime.Pinner
+			pinner.Pin(sid)
+			updated, err := windows.ACLFromEntries([]windows.EXPLICIT_ACCESS{revoke}, currentDACL)
+			if err == nil {
+				err = windows.SetSecurityInfo(handle, windows.SE_WINDOW_OBJECT, windows.DACL_SECURITY_INFORMATION, nil, nil, updated, nil)
+			}
+			pinner.Unpin()
+			return err
+		}, nil
+	}
+
+	restoreWinsta, _ := grantObject(windows.Handle(hWinsta), windows.GENERIC_ALL)
+	restoreDesktop, _ := grantObject(windows.Handle(hDesktop), windows.GENERIC_ALL)
+
+	return func() {
+		if restoreDesktop != nil {
+			_ = restoreDesktop()
+		}
+		if restoreWinsta != nil {
+			_ = restoreWinsta()
+		}
+	}, nil
 }

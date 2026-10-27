@@ -107,7 +107,7 @@ func TestCoreEmitsLeadTextDeltasWithTaskIdentity(t *testing.T) {
 	}
 }
 
-func TestCoreStreamingCancellationPausesAndResumeStreamsAgain(t *testing.T) {
+func TestCoreStreamingCancellationFinalizesTask(t *testing.T) {
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var request model.ResponseRequest
@@ -191,64 +191,25 @@ func TestCoreStreamingCancellationPausesAndResumeStreamsAgain(t *testing.T) {
 		t.Fatalf("interrupted RunTask error = %v, want context canceled", err)
 	}
 	timeout.Reset(5 * time.Second)
-	paused := false
-	for !paused {
+	cancelled := false
+	for !cancelled {
 		select {
 		case event := <-events:
 			if event.Kind == EventTaskFinished && event.TaskID == firstTaskID {
-				if event.Status != TaskPaused {
-					t.Fatalf("interrupted task status = %q, want paused", event.Status)
+				if event.Status != TaskCancelled {
+					t.Fatalf("interrupted task status = %q, want cancelled", event.Status)
 				}
-				paused = true
+				cancelled = true
 			}
 		case <-timeout.C:
-			t.Fatal("Core did not emit the paused task event")
+			t.Fatal("Core did not emit the cancelled task event")
 		}
 	}
-	if pending, err := client.hasPending(context.Background(), saved.ID); err != nil || !pending {
-		t.Fatalf("pending checkpoint after cancellation = %v, error=%v; want paused task", pending, err)
+	if pending, err := client.hasPending(context.Background(), saved.ID); err != nil || pending {
+		t.Fatalf("cancelled task retained a checkpoint: pending=%v error=%v", pending, err)
 	}
-
-	response, err := client.ResumeTask(context.Background(), saved.ID)
-	if err != nil {
-		t.Fatalf("ResumeTask after stream cancellation: %v", err)
-	}
-	if len(response.Response) == 0 {
-		t.Fatal("resumed stream returned an empty response")
-	}
-	timeout.Reset(5 * time.Second)
-	var resumedTaskID string
-	gotResumedDelta, completed := false, false
-	for !completed {
-		select {
-		case event := <-events:
-			switch event.Kind {
-			case EventTaskStarted:
-				resumedTaskID = event.TaskID
-			case EventModelStream:
-				if event.Stream == nil {
-					continue
-				}
-				if event.TaskID != resumedTaskID || event.SessionID != saved.ID {
-					t.Fatalf("resumed stream event lost task/session identity: %#v", event)
-				}
-				if event.Stream.Type == "text_delta" && event.Stream.Delta == "resumed result" {
-					gotResumedDelta = true
-				}
-			case EventTaskFinished:
-				if event.TaskID == resumedTaskID {
-					if event.Status != TaskCompleted {
-						t.Fatalf("resumed task status = %q, want completed", event.Status)
-					}
-					completed = true
-				}
-			}
-		case <-timeout.C:
-			t.Fatal("Core did not finish the resumed stream")
-		}
-	}
-	if resumedTaskID == "" || resumedTaskID == firstTaskID || !gotResumedDelta || requests.Load() != 2 {
-		t.Fatalf("resume task=%q first task=%q delta=%v provider requests=%d", resumedTaskID, firstTaskID, gotResumedDelta, requests.Load())
+	if requests.Load() != 1 {
+		t.Fatalf("provider requests after terminal cancellation = %d, want 1", requests.Load())
 	}
 }
 

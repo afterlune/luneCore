@@ -23,16 +23,16 @@ type securityCapabilities struct {
 	Reserved        uint32
 }
 
-func runRestrictedUserProcess(ctx context.Context, args []string, directory string) error {
+func runRestrictedUserProcess(ctx context.Context, args []string, directory string, envOverrides map[string]string) error {
 	token, err := restrictedCurrentUserToken()
 	if err != nil {
 		return err
 	}
 	defer token.Close()
-	return runWindowsChild(ctx, args, directory, token, nil)
+	return runWindowsChild(ctx, args, directory, token, nil, envOverrides)
 }
 
-func runWindowsChild(ctx context.Context, args []string, directory string, token windows.Token, security *securityCapabilities) error {
+func runWindowsChild(ctx context.Context, args []string, directory string, token windows.Token, security *securityCapabilities, envOverrides map[string]string) error {
 	attributeCount := uint32(1)
 	if security != nil {
 		attributeCount++
@@ -102,11 +102,20 @@ func runWindowsChild(ctx context.Context, args []string, directory string, token
 		return fmt.Errorf("configure sandbox process job: %w", err)
 	}
 	processInfo := windows.ProcessInformation{}
-	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW)
+	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_SUSPENDED)
+	var envBlockPtr *uint16
+	if len(envOverrides) > 0 {
+		block, blockErr := windowsEnvironmentBlock(envOverrides)
+		if blockErr != nil {
+			return blockErr
+		}
+		envBlockPtr = &block[0]
+		flags |= windows.CREATE_UNICODE_ENVIRONMENT
+	}
 	if token != 0 {
-		err = windows.CreateProcessAsUser(token, application, commandLine, nil, nil, true, flags, nil, directory16, &startup.StartupInfo, &processInfo)
+		err = windows.CreateProcessAsUser(token, application, commandLine, nil, nil, true, flags, envBlockPtr, directory16, &startup.StartupInfo, &processInfo)
 	} else {
-		err = windows.CreateProcess(application, commandLine, nil, nil, true, flags, nil, directory16, &startup.StartupInfo, &processInfo)
+		err = windows.CreateProcess(application, commandLine, nil, nil, true, flags, envBlockPtr, directory16, &startup.StartupInfo, &processInfo)
 	}
 	if err != nil {
 		return fmt.Errorf("create sandbox process: %w", err)
@@ -230,7 +239,7 @@ func runAppContainerProcess(ctx context.Context, sid *windows.SID, args []string
 		return fmt.Errorf("configure sandbox job: %w", err)
 	}
 	processInfo := windows.ProcessInformation{}
-	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_SUSPENDED | windows.CREATE_NO_WINDOW)
+	flags := uint32(windows.EXTENDED_STARTUPINFO_PRESENT | windows.CREATE_SUSPENDED)
 	environment, err := windowsEnvironmentBlock(map[string]string{
 		"TEMP": tempDir, "TMP": tempDir, "HOME": tempDir,
 		"PATH":    appendSearchPaths(os.Getenv("PATH"), commandToolchainSearchPaths(toolchainRoots), ";"),

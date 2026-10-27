@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	publictool "github.com/afterlune/luneCore/tool"
 	"golang.org/x/sys/windows"
@@ -45,12 +46,8 @@ func runPlatform(ctx context.Context, request publictool.CommandRequest, _ io.Wr
 		if homeDir == "" {
 			return errors.New("current-user profile is unavailable for full-access sandbox")
 		}
-		for name, value := range map[string]string{"TEMP": tempDir, "TMP": tempDir, "HOME": homeDir} {
-			if err := os.Setenv(name, value); err != nil {
-				return fmt.Errorf("set sandbox %s: %w", name, err)
-			}
-		}
-		return runRestrictedUserProcess(ctx, args, workspace)
+		envOverrides := map[string]string{"TEMP": tempDir, "TMP": tempDir, "HOME": homeDir}
+		return runRestrictedUserProcess(ctx, args, workspace, envOverrides)
 	}
 	if request.Sandbox.PermissionMode != "workspace" {
 		return fmt.Errorf("unsupported sandbox permission mode %q", request.Sandbox.PermissionMode)
@@ -67,6 +64,9 @@ func runPlatform(ctx context.Context, request publictool.CommandRequest, _ io.Wr
 		}
 	}()
 	defer windows.FreeSid(containerSID)
+	if restoreWinStation, winErr := grantWindowStationAndDesktop(containerSID); winErr == nil && restoreWinStation != nil {
+		defer restoreWinStation()
+	}
 
 	var revert []func() error
 	defer func() {
@@ -87,8 +87,14 @@ func runPlatform(ctx context.Context, request publictool.CommandRequest, _ io.Wr
 		readWrite := access == publictool.PathReadWrite
 		restore, grantErr := grantAppContainerPath(resolved, containerSID, readWrite)
 		if grantErr != nil {
-			if !required && errors.Is(grantErr, windows.ERROR_ACCESS_DENIED) {
+			isAccessDenied := errors.Is(grantErr, windows.ERROR_ACCESS_DENIED) || errors.Is(grantErr, syscall.Errno(5)) || strings.Contains(grantErr.Error(), "Access is denied")
+			if !required && isAccessDenied {
 				return nil
+			}
+			if !readWrite && isAccessDenied {
+				if _, readTestErr := os.Stat(resolved); readTestErr == nil {
+					return nil
+				}
 			}
 			return grantErr
 		}

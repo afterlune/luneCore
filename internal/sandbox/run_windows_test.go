@@ -193,6 +193,27 @@ func TestGrantedGoToolchainRunsOfflineStandardLibraryTests(t *testing.T) {
 	if strings.EqualFold(filepath.Base(toolchainRoot), "bin") {
 		toolchainRoot = filepath.Dir(toolchainRoot)
 	}
+	probeProfile := windowsProfileName(t.TempDir(), t.TempDir())
+	probeSID, err := createAppContainerProfile(probeProfile)
+	if err != nil {
+		t.Fatalf("create AppContainer permission probe: %v", err)
+	}
+	t.Cleanup(func() {
+		windows.FreeSid(probeSID)
+		if err := deleteAppContainerProfile(probeProfile); err != nil {
+			t.Errorf("delete AppContainer permission probe: %v", err)
+		}
+	})
+	restoreToolchainACL, grantErr := grantAppContainerPath(toolchainRoot, probeSID, false)
+	if grantErr != nil {
+		if errors.Is(grantErr, windows.ERROR_ACCESS_DENIED) {
+			t.Skipf("AppContainer cannot receive access to the host Go installation: %v", grantErr)
+		}
+		t.Fatalf("probe AppContainer access to the Go installation: %v", grantErr)
+	}
+	if err := restoreToolchainACL(); err != nil {
+		t.Fatalf("restore Go installation ACL after permission probe: %v", err)
+	}
 	workspace, tempDir := t.TempDir(), t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "go.mod"), []byte("module sandbox-toolchain-test\n\ngo 1.20\n"), 0600); err != nil {
 		t.Fatal(err)
@@ -285,4 +306,44 @@ func snapshotPathDACL(path string) (string, error) {
 		dacl = dacl[end+1:]
 	}
 	return normalized.String(), nil
+}
+
+func TestWindowsSandboxFullAccessDoesNotMutateHostEnv(t *testing.T) {
+	origTemp := os.Getenv("TEMP")
+	origTmp := os.Getenv("TMP")
+	origHome := os.Getenv("HOME")
+
+	workspace := t.TempDir()
+	tempDir := filepath.Join(t.TempDir(), "cmd-temp")
+	if err := os.MkdirAll(tempDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	request := publictool.CommandRequest{
+		Command:   "exit 0",
+		Workspace: workspace,
+		Sandbox: publictool.SandboxPolicy{
+			PermissionMode: "full-access",
+			Workspace:      workspace,
+			TempDir:        tempDir,
+			Network:        true,
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := RunContext(ctx, request, io.Discard); err != nil {
+		t.Fatalf("full-access command failed: %v", err)
+	}
+
+	if got := os.Getenv("TEMP"); got != origTemp {
+		t.Fatalf("host TEMP was mutated: got %q, want %q", got, origTemp)
+	}
+	if got := os.Getenv("TMP"); got != origTmp {
+		t.Fatalf("host TMP was mutated: got %q, want %q", got, origTmp)
+	}
+	if got := os.Getenv("HOME"); got != origHome {
+		t.Fatalf("host HOME was mutated: got %q, want %q", got, origHome)
+	}
 }
