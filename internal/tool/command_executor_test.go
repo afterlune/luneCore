@@ -218,13 +218,13 @@ func TestCommandToolPassesPlanGrantsToSandboxExecutor(t *testing.T) {
 	if len(received.Sandbox.CommandToolchainPaths) != 1 || received.Sandbox.CommandToolchainPaths[0] != toolchainPath {
 		t.Fatalf("sandbox toolchain paths = %#v", received.Sandbox.CommandToolchainPaths)
 	}
-	ask := WithPermissionMode(context.Background(), string(PermissionModeAsk))
+	ask := WithPermissionMode(context.Background(), string(PermissionModeAuto))
 	result = commandTool.Run(ask, json.RawMessage(`{"command":"echo ok"}`))
 	if result.Err != nil {
 		t.Fatal(result.Err)
 	}
 	if received.Sandbox.PermissionMode != string(PermissionModeWorkspace) {
-		t.Fatalf("ask mode sandbox = %q, want workspace after approval", received.Sandbox.PermissionMode)
+		t.Fatalf("auto mode sandbox = %q, want workspace after approval", received.Sandbox.PermissionMode)
 	}
 	fullAccess := WithPermissionMode(context.Background(), string(PermissionModeFullAccess))
 	result = commandTool.Run(fullAccess, json.RawMessage(`{"command":"echo ok"}`))
@@ -250,7 +250,7 @@ func TestApprovedAskModeCommandUsesWorkspaceSandbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.SetPermissionMode(PermissionModeAsk); err != nil {
+	if err := registry.SetPermissionMode(PermissionModeAuto); err != nil {
 		t.Fatal(err)
 	}
 	approvals := 0

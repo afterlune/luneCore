@@ -88,7 +88,7 @@ func TestExternalPathApprovalsFollowPermissionModes(t *testing.T) {
 		writeApprovals int
 	}{
 		{mode: PermissionModeReadOnly, readApprovals: 1},
-		{mode: PermissionModeAsk, readApprovals: 1, writeAllowed: true, writeApprovals: 1},
+		{mode: PermissionModeAuto, readApprovals: 1, writeAllowed: true, writeApprovals: 1},
 		{mode: PermissionModeWorkspace, readApprovals: 1, writeAllowed: true, writeApprovals: 1},
 		{mode: PermissionModeFullAccess, writeAllowed: true},
 	}

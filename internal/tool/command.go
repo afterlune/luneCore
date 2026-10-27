@@ -126,8 +126,8 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: &publictool.ExecutionBlockerError{Tool: "command", Reason: "high-risk command is not individually approved in the plan"}}
 	}
 	sandboxMode := mode
-	if sandboxMode == PermissionModeAuto || sandboxMode == PermissionModeAsk {
-		// Ask approval is resolved by the Core permission controller. Once
+	if sandboxMode == PermissionModeAuto {
+		// Auto approval is resolved by the Core permission controller. Once
 		// approved, execute with the regular workspace sandbox boundaries.
 		sandboxMode = PermissionModeWorkspace
 	}

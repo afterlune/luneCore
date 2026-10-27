@@ -108,7 +108,7 @@ func TestAgentIdentityFlowsThroughSharedToolAndApprovalHandlers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.SetPermissionMode(PermissionModeAsk); err != nil {
+	if err := registry.SetPermissionMode(PermissionModeAuto); err != nil {
 		t.Fatal(err)
 	}
 	var approvedAgent string

@@ -52,8 +52,8 @@ func taskInstructions(goal, permissionMode string, planMode, teamEnabled bool) s
 			instructions = append(instructions, "Active permission is read-only. Inspect and explain only; do not modify files or run commands. Web and network access require host approval.")
 		case "workspace":
 			instructions = append(instructions, "Workspace mode permits reading and writing workspace files. Commands and network access require host approval.")
-		case "ask":
-			instructions = append(instructions, "Ask mode requires host approval for tools other than workspace reads.")
+		case "auto":
+			instructions = append(instructions, "Auto mode applies model auto-review to commands and external operations, asking the host only when the review is unsafe or fails.")
 		case "full-access":
 			instructions = append(instructions, "Full-access mode permits all available tools.")
 		}

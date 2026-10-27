@@ -22,9 +22,6 @@ const (
 	PermissionModeWorkspace  PermissionMode = "workspace"
 	PermissionModeAuto       PermissionMode = "auto"
 	PermissionModeFullAccess PermissionMode = "full-access"
-
-	// PermissionModeAsk is an alias for PermissionModeAuto for backwards compatibility.
-	PermissionModeAsk PermissionMode = "ask"
 )
 
 // PermissionModes returns the supported permission modes in UI order.
@@ -44,7 +41,7 @@ func PermissionModeDescription(mode PermissionMode) string {
 		return "Read workspace files; ask before external directories, web, and unclassified tools; block writes and commands"
 	case PermissionModeWorkspace:
 		return "Read and write workspace files; ask before external directories, commands, web, and unclassified tools"
-	case PermissionModeAuto, PermissionModeAsk:
+	case PermissionModeAuto:
 		return "Read and write workspace files; auto-review commands and external operations, asking only when needed"
 	case PermissionModeFullAccess:
 		return "Allow registered tools and current-user files without prompts; extremely dangerous commands remain blocked"
@@ -154,8 +151,6 @@ func (p *permissionSettings) setMode(mode PermissionMode) error {
 		return errors.New("permission settings are unavailable")
 	}
 	switch mode {
-	case PermissionModeAsk:
-		mode = PermissionModeAuto
 	case PermissionModeReadOnly, PermissionModeWorkspace, PermissionModeAuto, PermissionModeFullAccess:
 	default:
 		return fmt.Errorf("unknown permission mode %q", mode)
@@ -232,7 +227,7 @@ func (p *permissionSettings) authorize(ctx context.Context, request PermissionRe
 	}
 
 	// In auto mode, try model auto-review first.
-	if (mode == PermissionModeAuto || mode == PermissionModeAsk) && autoReview != nil {
+	if mode == PermissionModeAuto && autoReview != nil {
 		res, err := autoReview(ctx, approvalRequest)
 		if err == nil && res.Decision == AutoReviewApprove {
 			// Auto-review approves THIS invocation only. It NEVER automatically forms session-wide approvals or persistent directory grants.
@@ -285,7 +280,7 @@ func (p *permissionSettings) policy(metadata model.ToolMetadata) (PermissionMode
 }
 
 func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) permissionDisposition {
-	if class == model.ToolPermissionSessionControl && (mode == PermissionModeReadOnly || mode == PermissionModeWorkspace || mode == PermissionModeAuto || mode == PermissionModeAsk || mode == PermissionModeFullAccess) {
+	if class == model.ToolPermissionSessionControl && (mode == PermissionModeReadOnly || mode == PermissionModeWorkspace || mode == PermissionModeAuto || mode == PermissionModeFullAccess) {
 		return permissionAllowed
 	}
 	switch mode {
@@ -311,7 +306,7 @@ func permissionPolicy(mode PermissionMode, class model.ToolPermissionClass) perm
 			// Unclassified tools prompt for approval
 			return permissionNeedsApproval
 		}
-	case PermissionModeAuto, PermissionModeAsk:
+	case PermissionModeAuto:
 		switch class {
 		case model.ToolPermissionWorkspaceRead, model.ToolPermissionWorkspaceWrite:
 			return permissionAllowed

@@ -61,12 +61,6 @@ func TestPermissionModesAuthorizeToolsAsDesigned(t *testing.T) {
 			needsApproval: map[string]bool{"command": true, "web_fetch": true, "custom_tool": true},
 		},
 		{
-			name:          "ask-alias",
-			mode:          PermissionModeAsk,
-			allowed:       map[string]bool{"read_file": true, "write_file": true, "command": true, "web_fetch": true, "custom_tool": true},
-			needsApproval: map[string]bool{"command": true, "web_fetch": true, "custom_tool": true},
-		},
-		{
 			name:    "full-access",
 			mode:    PermissionModeFullAccess,
 			allowed: map[string]bool{"read_file": true, "write_file": true, "command": true, "web_fetch": true, "custom_tool": true},
@@ -449,5 +443,17 @@ func TestApprovalFingerprintInvalidation(t *testing.T) {
 	// Changed environment / fingerprint -> invalidates, does not allow
 	if store.Allows("command", json.RawMessage(`{"command":"echo test"}`), "ws=/second;mode=workspace;net=true") {
 		t.Fatal("expected store to reject when fingerprint changed")
+	}
+}
+
+// The legacy "ask" mode was folded into "auto"; accepting it again would keep a
+// fifth mode alive in every switch.
+func TestSetPermissionModeRejectsTheRetiredAskMode(t *testing.T) {
+	settings := newPermissionSettings(PermissionModeWorkspace)
+	if err := settings.setMode(PermissionMode("ask")); err == nil {
+		t.Fatal("expected the retired ask mode to be rejected")
+	}
+	if got := settings.modeValue(); got != PermissionModeWorkspace {
+		t.Fatalf("rejected mode still changed the setting: %q", got)
 	}
 }
