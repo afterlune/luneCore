@@ -19,6 +19,7 @@ import (
 	"time"
 
 	commandruntime "github.com/afterlune/luneCore/internal/command"
+	"github.com/afterlune/luneCore/internal/model"
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
@@ -110,7 +111,7 @@ func main() {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := (CommandTool{Workspace: workspace, Manager: manager, CommandToolchainPaths: []string{filepath.Dir(goPath)}}).Run(ctx, arguments)
+	result := (CommandTool{Workspace: workspace, Manager: manager, CommandToolchainPaths: []string{filepath.Dir(filepath.Dir(goPath))}}).Run(ctx, arguments)
 	if result.Err != nil || result.Details == nil || result.Details.Command == nil || !result.Details.Command.Command.Background {
 		t.Fatalf("start service result = %#v", result)
 	}
@@ -183,4 +184,71 @@ func awaitHTTPFailure(t *testing.T, endpoint string) {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func TestCommandControlPermissionModes(t *testing.T) {
+	store := &backgroundCommandStore{records: map[string]commandruntime.Record{}}
+	executor := commandExecutorFunc(func(ctx context.Context, _ publictool.CommandRequest) (publictool.CommandResult, error) {
+		<-ctx.Done()
+		return publictool.CommandResult{}, ctx.Err()
+	})
+	manager, err := commandruntime.New(context.Background(), store, executor, publictool.CommandOptions{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = manager.OpenScope("execution", context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if e := manager.Close(ctx); e != nil {
+			t.Error(e)
+		}
+	}()
+	registry, err := NewDefaultRegistry(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer registry.Close()
+	if err = registry.SetCommandManager(manager); err != nil {
+		t.Fatal(err)
+	}
+	identity := publictool.CallIdentity{SessionID: "session", ExecutionID: "execution", AgentID: "lead", InvocationID: "start"}
+	ctx := publictool.WithCallIdentity(context.Background(), identity)
+	started, err := manager.Start(ctx, publictool.CommandRequest{Command: "fake service", Background: true}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{"command_id": started.Command.ID, "wait_ms": 0})
+	for _, mode := range []PermissionMode{PermissionModeReadOnly, PermissionModeWorkspace, PermissionModeAuto, PermissionModeFullAccess} {
+		if err = registry.SetPermissionMode(mode); err != nil {
+			t.Fatal(err)
+		}
+		if result := registry.Run(ctx, "command_status", args); result.Err != nil {
+			t.Fatalf("%s status: %v", mode, result.Err)
+		}
+	}
+	metadata, _ := registry.ToolMetadata("command_stop")
+	if metadata.ReadOnly || metadata.PermissionClass != model.ToolPermissionCommand {
+		t.Fatal(metadata)
+	}
+	_ = registry.SetPermissionMode(PermissionModeReadOnly)
+	stopArgs, _ := json.Marshal(map[string]any{"command_id": started.Command.ID})
+	if result := registry.Run(ctx, "command_stop", stopArgs); result.Err == nil {
+		t.Fatal("read-only stopped command")
+	}
+	output, e := manager.Read(ctx, "session", started.Command.ID, "execution", "lead", publictool.CommandReadOptions{})
+	if e != nil || !output.Command.Status.Active() {
+		t.Fatalf("blocked stop mutated service: %#v %v", output, e)
+	}
+	prompts := 0
+	registry.SetPermissionApprovalDecisionHandler(func(context.Context, PermissionRequest) ApprovalDecision { prompts++; return ApprovalAllowOnce })
+	_ = registry.SetPermissionMode(PermissionModeWorkspace)
+	if result := registry.Run(ctx, "command_stop", stopArgs); result.Err != nil {
+		t.Fatal(result.Err)
+	}
+	if prompts != 1 {
+		t.Fatalf("stop prompts=%d", prompts)
+	}
 }

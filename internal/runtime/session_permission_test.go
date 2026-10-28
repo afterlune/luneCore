@@ -8,7 +8,7 @@ import (
 )
 
 func TestExplicitTurnPermissionsArePinnedWithoutChangingCore(t *testing.T) {
-	for _, mode := range []PermissionMode{PermissionReadOnly, PermissionWorkspace, PermissionAuto, PermissionAsk, PermissionFullAccess} {
+	for _, mode := range []PermissionMode{PermissionReadOnly, PermissionWorkspace, PermissionAuto, PermissionFullAccess} {
 		t.Run(string(mode), func(t *testing.T) {
 			provider := &barrierHostProvider{entered: make(chan string, 2), release: make(chan struct{}, 2)}
 			client := newProgrammaticCore(t, provider)

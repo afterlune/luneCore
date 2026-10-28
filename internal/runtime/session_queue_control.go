@@ -15,9 +15,11 @@ var errExecutionInterrupted = errors.New("execution interrupted")
 
 func (c *Core) interruptExecution(sessionID, executionID string) bool {
 	c.mu.Lock()
-	if _, finishing := c.finishingExecutions[executionID]; finishing {
+	if interrupted, finishing := c.finishingExecutions[executionID]; finishing {
+		state := c.activeTasks[sessionID]
+		accepted := state.ExecutionID == executionID && interrupted
 		c.mu.Unlock()
-		return false
+		return accepted
 	}
 	if state, ok := c.activeTasks[sessionID]; ok && state.ExecutionID == executionID {
 		if state.Status != TaskRunning {
@@ -99,9 +101,9 @@ func (c *Core) beginTaskFinish(executionID string) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.finishingExecutions == nil {
-		c.finishingExecutions = make(map[string]struct{})
+		c.finishingExecutions = make(map[string]bool)
 	}
-	c.finishingExecutions[executionID] = struct{}{}
+	c.finishingExecutions[executionID] = c.interruptRequests[executionID]
 	requested := c.interruptRequests[executionID]
 	delete(c.interruptRequests, executionID)
 	return requested

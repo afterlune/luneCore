@@ -104,29 +104,29 @@ type Core struct {
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
 	sessionLocks   map[string]*sessionLockEntry
-	coord          *sessionCoordinator
 
-	mu                    sync.RWMutex
-	goalMu                sync.Mutex
-	goalArmed             map[string]bool
-	goalRuns              map[string]goalExecution
-	eventHubMu            sync.Mutex
-	runtimeConfigMu       sync.RWMutex
-	usageMu               sync.Mutex
-	active                TaskState
-	activeTasks           map[string]TaskState
-	taskCancels           map[string]context.CancelFunc
-	approvals             map[string]pendingApproval
-	interactions          map[string]pendingInteraction
-	interactiveSessions   map[string]bool
-	eventHubs             map[string]*sessionEventHub
-	queueDraining         map[string]bool
-	steeringExecutions    map[string]string
-	queueMutationMu       sync.Mutex
-	turnWaiters           map[string]chan turnResult
-	executionRuns         map[string]chan struct{}
-	interruptRequests     map[string]bool
-	finishingExecutions   map[string]struct{}
+	mu                  sync.RWMutex
+	goalMu              sync.Mutex
+	goalArmed           map[string]bool
+	goalRuns            map[string]goalExecution
+	eventHubMu          sync.Mutex
+	runtimeConfigMu     sync.RWMutex
+	usageMu             sync.Mutex
+	active              TaskState
+	activeTasks         map[string]TaskState
+	taskCancels         map[string]context.CancelFunc
+	approvals           map[string]pendingApproval
+	interactions        map[string]pendingInteraction
+	interactiveSessions map[string]bool
+	eventHubs           map[string]*sessionEventHub
+	queueDraining       map[string]bool
+	steeringExecutions  map[string]string
+	queueMutationMu     sync.Mutex
+	turnWaiters         map[string]chan turnResult
+	executionRuns       map[string]chan struct{}
+	interruptRequests   map[string]bool
+	// finishingExecutions records whether cancellation was accepted before finishing.
+	finishingExecutions   map[string]bool
 	commandToolchainPaths []string
 	queueDrainWG          sync.WaitGroup
 	sessionOps            sync.WaitGroup
@@ -248,7 +248,6 @@ func New(config Config) (_ *Core, err error) {
 	if executionDefaults.MaxTeamDepth == 0 {
 		executionDefaults.MaxTeamDepth = agentgraph.DefaultMaxTeamDepth
 	}
-	coord := newSessionCoordinator()
 	c := &Core{
 		logger:           logger,
 		workspace:        workspace,
@@ -268,19 +267,18 @@ func New(config Config) (_ *Core, err error) {
 		memoryConfig:          config.Memory,
 		memory:                workspacememory.New(sessions, workspace, config.Memory.Embedder, logger),
 		liveExecutions:        make(map[string]*graph.Execution[agentgraph.State]),
-		coord:                 coord,
 		active:                TaskState{Status: TaskIdle},
-		activeTasks:           coord.activeTasks,
-		taskCancels:           coord.taskCancels,
-		approvals:             coord.approvals,
-		interactions:          coord.interactions,
-		interactiveSessions:   coord.interactiveSessions,
+		activeTasks:           make(map[string]TaskState),
+		taskCancels:           make(map[string]context.CancelFunc),
+		approvals:             make(map[string]pendingApproval),
+		interactions:          make(map[string]pendingInteraction),
+		interactiveSessions:   make(map[string]bool),
 		eventHubs:             make(map[string]*sessionEventHub),
-		queueDraining:         coord.queueDraining,
+		queueDraining:         make(map[string]bool),
 		steeringExecutions:    make(map[string]string),
-		turnWaiters:           coord.turnWaiters,
-		executionRuns:         coord.executionRuns,
-		interruptRequests:     coord.interruptRequests,
+		turnWaiters:           make(map[string]chan turnResult),
+		executionRuns:         make(map[string]chan struct{}),
+		interruptRequests:     make(map[string]bool),
 		sessionLocks:          make(map[string]*sessionLockEntry),
 		commandToolchainPaths: config.CommandToolchainPaths,
 	}

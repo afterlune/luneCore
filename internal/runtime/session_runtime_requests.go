@@ -19,31 +19,20 @@ func (r *SessionRuntime) PendingRequests(ctx context.Context) ([]PendingRequest,
 	}
 	c := r.core
 	var requests []PendingRequest
-	if c.coord != nil {
-		for _, pending := range c.coord.ApprovalsForSession(r.sessionID) {
+	c.mu.RLock()
+	for _, pending := range c.approvals {
+		if pending.sessionID == r.sessionID {
 			copy := cloneApproval(pending.request)
 			requests = append(requests, PendingRequest{Kind: PendingApproval, Approval: &copy})
 		}
-		for _, pending := range c.coord.InteractionsForSession(r.sessionID) {
+	}
+	for _, pending := range c.interactions {
+		if pending.sessionID == r.sessionID {
 			copy := cloneInteraction(pending.request)
 			requests = append(requests, PendingRequest{Kind: PendingUserInteraction, Interaction: &copy})
 		}
-	} else {
-		c.mu.RLock()
-		for _, pending := range c.approvals {
-			if pending.sessionID == r.sessionID {
-				copy := cloneApproval(pending.request)
-				requests = append(requests, PendingRequest{Kind: PendingApproval, Approval: &copy})
-			}
-		}
-		for _, pending := range c.interactions {
-			if pending.sessionID == r.sessionID {
-				copy := cloneInteraction(pending.request)
-				requests = append(requests, PendingRequest{Kind: PendingUserInteraction, Interaction: &copy})
-			}
-		}
-		c.mu.RUnlock()
 	}
+	c.mu.RUnlock()
 	question, hasQuestion, err := c.runtime.PendingUserQuestion(ctx, r.sessionID)
 	if err != nil {
 		return nil, err
@@ -151,18 +140,13 @@ func (r *SessionRuntime) ResolveApprovalDecision(id string, decision publictool.
 	return r.core.resolveApprovalDecision(r.sessionID, id, decision)
 }
 
+// ResolveApproval permits only this invocation. Use ResolveApprovalDecision for session grants.
 func (r *SessionRuntime) ResolveApproval(id string, allowed bool) error {
+	decision := publictool.ApprovalDeny
 	if allowed {
-		if pending, err := r.PendingRequests(context.Background()); err == nil {
-			for _, p := range pending {
-				if p.Kind == PendingApproval && p.Approval != nil && p.Approval.ID == id && p.Approval.PathGrant != nil {
-					return r.ResolveApprovalDecision(id, publictool.ApprovalAllowSession)
-				}
-			}
-		}
-		return r.ResolveApprovalDecision(id, publictool.ApprovalAllowOnce)
+		decision = publictool.ApprovalAllowOnce
 	}
-	return r.ResolveApprovalDecision(id, publictool.ApprovalDeny)
+	return r.ResolveApprovalDecision(id, decision)
 }
 
 // ResolveUserQuestion stores an answer and resumes the exact graph continuation.

@@ -113,13 +113,6 @@ func (c *Core) resolveApprovalDecision(sessionID, id string, decision publictool
 	return nil
 }
 
-func (c *Core) resolveApproval(sessionID, id string, allowed bool) error {
-	if allowed {
-		return c.resolveApprovalDecision(sessionID, id, publictool.ApprovalAllowSession)
-	}
-	return c.resolveApprovalDecision(sessionID, id, publictool.ApprovalDeny)
-}
-
 func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, settings SessionSettings, profile model.ModelProfile, modelName string, taskOptions agentgraph.TaskOptions, expectedUpdatedAt time.Time, cancel context.CancelFunc) (string, error) {
 	if ctx == nil {
 		return "", errors.New("context is nil")

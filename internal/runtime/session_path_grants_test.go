@@ -51,7 +51,7 @@ func TestExternalReadApprovalPersistsAndIsReusedByRuntime(t *testing.T) {
 	if approval.PathGrant == nil || approval.PathGrant.Path != external || approval.PathGrant.Access != publictool.PathRead {
 		t.Fatalf("path approval = %#v", approval)
 	}
-	if err := runtime.ResolveApproval(approval.ID, true); err != nil {
+	if err := runtime.ResolveApprovalDecision(approval.ID, publictool.ApprovalAllowSession); err != nil {
 		t.Fatal(err)
 	}
 	result, err := runtime.WaitTurn(context.Background(), first.ExecutionID)
@@ -147,7 +147,7 @@ func TestSessionPathGrantDenialRetryPersistenceAndForkIsolation(t *testing.T) {
 	request := toolPermissionRequestWithPathGrant(grant)
 
 	approvalID, approvalResult := beginPathGrantApproval(t, client, session.ID, ctx, request)
-	if err := client.resolveApproval(session.ID, approvalID, false); err != nil {
+	if err := client.resolveApprovalDecision(session.ID, approvalID, publictool.ApprovalDeny); err != nil {
 		t.Fatal(err)
 	}
 	if approved := awaitApprovalResult(t, approvalResult); approved {
@@ -162,7 +162,7 @@ func TestSessionPathGrantDenialRetryPersistenceAndForkIsolation(t *testing.T) {
 	}
 
 	approvalID, approvalResult = beginPathGrantApproval(t, client, session.ID, ctx, request)
-	if err := client.resolveApproval(session.ID, approvalID, true); err != nil {
+	if err := client.resolveApprovalDecision(session.ID, approvalID, publictool.ApprovalAllowSession); err != nil {
 		t.Fatal(err)
 	}
 	if approved := awaitApprovalResult(t, approvalResult); !approved {
@@ -241,5 +241,33 @@ func awaitApprovalResult(t *testing.T, response <-chan bool) bool {
 	case <-time.After(5 * time.Second):
 		t.Fatal("approval did not return")
 		return false
+	}
+}
+
+func TestBooleanDirectoryApprovalDoesNotRememberGrant(t *testing.T) {
+	client := newProgrammaticCore(t, &scriptedHostProvider{})
+	saved, err := client.CreateSession(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rt, err := client.OpenSessionRuntime(context.Background(), saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rt.Close()
+	grant := publictool.PathGrant{Path: t.TempDir(), Access: publictool.PathRead}
+	store := runtimepermission.NewSessionPathGrantStore(nil)
+	ctx := publictool.WithCallIdentity(context.Background(), publictool.CallIdentity{SessionID: saved.ID, ExecutionID: "execution", AgentID: "lead"})
+	ctx = runtimepermission.WithSessionPathGrantStore(ctx, store)
+	id, result := beginPathGrantApproval(t, client, saved.ID, ctx, toolPermissionRequestWithPathGrant(grant))
+	if err = rt.ResolveApproval(id, true); err != nil {
+		t.Fatal(err)
+	}
+	if !awaitApprovalResult(t, result) {
+		t.Fatal("call was not approved")
+	}
+	session, err := client.GetSession(context.Background(), saved.ID)
+	if err != nil || len(session.PathGrants) != 0 || len(session.Approvals) != 0 || store.Allows(grant) {
+		t.Fatalf("single call persisted authorization: %#v, err=%v", session, err)
 	}
 }

@@ -20,8 +20,11 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go vet ./...
-      - run: go test ./... -count=1 -p 1
+      - run: go test -trimpath ./... -count=1 -p 1
+      - name: Race-check runtime and tool lifecycle
+        if: runner.os == 'Linux'
+        run: go test -race -trimpath -p 1 ./internal/runtime ./internal/tool ./internal/command ./internal/mcp
       - name: Build sandbox helper
-        run: go build -o "${{ runner.temp }}/lune-sandbox${{ matrix.os == 'windows-latest' && '.exe' || '' }}" ./cmd/lune-sandbox
+        run: go build -trimpath -o "${{ runner.temp }}/lune-sandbox${{ matrix.os == 'windows-latest' && '.exe' || '' }}" ./cmd/lune-sandbox
       - name: Scan Go vulnerabilities
-        run: go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...

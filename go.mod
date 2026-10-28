@@ -1,11 +1,11 @@
 module github.com/afterlune/luneCore
 
-go 1.26.9
+go 1.26.10
 
 require (
 	github.com/afterlune/luneGraph v0.0.0-20261013014749-96cda2267151
 	github.com/go-keyring/keyring v0.3.1
-	golang.org/x/net v0.61.0
+	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.59.0
 )

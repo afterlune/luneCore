@@ -75,8 +75,8 @@ func (t CommandControlTool) Run(ctx context.Context, raw json.RawMessage) Result
 	return Result{Output: string(data), Err: err, Details: &publictool.ExecutionDetails{Command: &snapshot}}
 }
 
-// Control is a capability over an already-authorized process, never a fresh
-// command approval. Task commands are limited to their owner; session-managed
+// Controls enforce both tool permissions and ownership. Task commands are limited
+// to their owner; session-managed
 // background commands are limited to their originating session.
 func (r *Registry) SetCommandManager(manager *command.Manager) error {
 	r.mu.Lock()
@@ -91,6 +91,11 @@ func (r *Registry) SetCommandManager(manager *command.Manager) error {
 	}
 	metadata := model.ToolMetadata{Category: model.ToolCategory{Name: "command", Description: "Run workspace commands."}, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true}
 	for _, stop := range []bool{false, true} {
+		metadata.PermissionClass = model.ToolPermissionWorkspaceRead
+		metadata.ReadOnly = !stop
+		if stop {
+			metadata.PermissionClass = model.ToolPermissionCommand
+		}
 		if err := r.Register(ToolRegistration{Tool: CommandControlTool{Manager: manager, Stop: stop}, Metadata: metadata}); err != nil {
 			return err
 		}

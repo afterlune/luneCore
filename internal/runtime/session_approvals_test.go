@@ -46,7 +46,7 @@ func TestSessionApprovalPersistenceAndForkIsolation(t *testing.T) {
 
 	// 1. Denial should not persist
 	approvalID, resultChan := beginSessionToolApproval(t, client, session.ID, ctx, toolReq)
-	if err := client.resolveApproval(session.ID, approvalID, false); err != nil {
+	if err := client.resolveApprovalDecision(session.ID, approvalID, publictool.ApprovalDeny); err != nil {
 		t.Fatal(err)
 	}
 	if allowed := awaitApprovalResult(t, resultChan); allowed {
@@ -60,7 +60,7 @@ func TestSessionApprovalPersistenceAndForkIsolation(t *testing.T) {
 
 	// 2. Allowance should persist and be in memory store
 	approvalID, resultChan = beginSessionToolApproval(t, client, session.ID, ctx, toolReq)
-	if err := client.resolveApproval(session.ID, approvalID, true); err != nil {
+	if err := client.resolveApprovalDecision(session.ID, approvalID, publictool.ApprovalAllowSession); err != nil {
 		t.Fatal(err)
 	}
 	if allowed := awaitApprovalResult(t, resultChan); !allowed {

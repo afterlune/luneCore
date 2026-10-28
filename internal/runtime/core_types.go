@@ -23,7 +23,4 @@ const (
 	PermissionWorkspace  PermissionMode = "workspace"
 	PermissionAuto       PermissionMode = "auto"
 	PermissionFullAccess PermissionMode = "full-access"
-
-	// Deprecated: use PermissionAuto instead.
-	PermissionAsk        PermissionMode = "ask"
 )

@@ -84,7 +84,6 @@ const (
 	PermissionReadOnly   = coreruntime.PermissionReadOnly
 	PermissionWorkspace  = coreruntime.PermissionWorkspace
 	PermissionAuto       = coreruntime.PermissionAuto
-	PermissionAsk        = coreruntime.PermissionAsk
 	PermissionFullAccess = coreruntime.PermissionFullAccess
 )
 

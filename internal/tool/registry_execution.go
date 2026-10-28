@@ -63,7 +63,7 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 		}
 		if json.Unmarshal(arguments, &commandRequest) == nil {
 			if reason := extremeDangerCommandReason(commandRequest.Command); reason != "" {
-				return nil, ctx, &publictool.ExecutionBlockerError{Tool: name, Reason: "command is permanently blocked as extremely dangerous: " + reason}
+				return nil, ctx, &publictool.ExecutionBlockerError{Tool: name, Reason: "command matches a blocked dangerous pattern: " + reason}
 			}
 		}
 	}
@@ -71,7 +71,6 @@ func (r *Registry) authorizedTool(ctx context.Context, name string, arguments js
 		if err := control.authorizeCommand(ctx, arguments); err != nil {
 			return nil, ctx, err
 		}
-		return registeredTool, ctx, nil
 	}
 	mode := permissionModeFromRegistry(ctx, permissions, metadata)
 	if permissionPolicy(mode, metadata.PermissionClass) == permissionDenied {

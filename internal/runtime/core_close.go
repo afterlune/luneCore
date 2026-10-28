@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	publictool "github.com/afterlune/luneCore/tool"
 )
 
 func (c *Core) Close() error {
@@ -69,12 +71,30 @@ func (c *Core) Close() error {
 		closingAfterQueueDrain = true
 		c.mu.Lock()
 	}
-	if c.coord != nil {
-		c.coord.Close(errors.New("core is closing"))
-	}
+	waiters := c.turnWaiters
+	approvals := c.approvals
+	interactions := c.interactions
+	c.turnWaiters = make(map[string]chan turnResult)
+	c.approvals = make(map[string]pendingApproval)
+	c.interactions = make(map[string]pendingInteraction)
 	// Terminal command observers append events through Core and may need c.mu.
 	// Keep new work out via c.closing, but release the lock while joining them.
 	c.mu.Unlock()
+	for _, waiter := range waiters {
+		waiter <- turnResult{err: errors.New("core is closing")}
+	}
+	for _, pending := range approvals {
+		select {
+		case pending.response <- publictool.ApprovalDeny:
+		default:
+		}
+	}
+	for _, pending := range interactions {
+		select {
+		case pending.response <- userInteractionResult{Err: errors.New("core is closing")}:
+		default:
+		}
+	}
 	c.sessionOps.Wait()
 	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
 	cleanupErr := c.commands.Close(cleanupCtx)

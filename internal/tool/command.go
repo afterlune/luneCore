@@ -120,7 +120,7 @@ func (t CommandTool) Run(ctx context.Context, raw json.RawMessage) Result {
 	}
 	authorization := publictool.PlanAuthorizationFromContext(ctx)
 	if reason := extremeDangerCommandReason(args.Command); reason != "" {
-		return Result{Err: &publictool.ExecutionBlockerError{Tool: "command", Reason: "command is permanently blocked as extremely dangerous: " + reason}}
+		return Result{Err: &publictool.ExecutionBlockerError{Tool: "command", Reason: "command matches a blocked dangerous pattern: " + reason}}
 	}
 	if publictool.NoInteractiveDecisions(ctx) && highRiskCommandReason(args.Command) != "" && !commandApproved(args.Command, authorization.ApprovedHighRiskCommands) {
 		return Result{Err: &publictool.ExecutionBlockerError{Tool: "command", Reason: "high-risk command is not individually approved in the plan"}}

@@ -259,7 +259,7 @@ func validateExecutionOptions(options ExecutionOptions) error {
 }
 
 func validatePermissionOverride(mode string) error {
-	if mode == "" || PermissionMode(mode) == PermissionReadOnly || PermissionMode(mode) == PermissionWorkspace || PermissionMode(mode) == PermissionAuto || PermissionMode(mode) == PermissionAsk || PermissionMode(mode) == PermissionFullAccess {
+	if mode == "" || PermissionMode(mode) == PermissionReadOnly || PermissionMode(mode) == PermissionWorkspace || PermissionMode(mode) == PermissionAuto || PermissionMode(mode) == PermissionFullAccess {
 		return nil
 	}
 	return fmt.Errorf("unsupported task permission override %q", mode)

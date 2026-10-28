@@ -2,8 +2,8 @@ package tool
 
 import (
 	"context"
-	"errors"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -363,8 +363,9 @@ func TestAutoModeModelReview(t *testing.T) {
 }
 
 func TestApprovalDecisionAllowOnceDoesNotPersist(t *testing.T) {
+	helper := sandboxHelperForTest(t)
 	workspace := t.TempDir()
-	registry, err := NewDefaultRegistry(workspace)
+	registry, err := NewDefaultRegistry(workspace, RegistryOptions{SandboxHelperPath: helper})
 	if err != nil {
 		t.Fatal(err)
 	}

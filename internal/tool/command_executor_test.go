@@ -236,7 +236,7 @@ func TestCommandToolPassesPlanGrantsToSandboxExecutor(t *testing.T) {
 	}
 }
 
-func TestApprovedAskModeCommandUsesWorkspaceSandbox(t *testing.T) {
+func TestApprovedAutoModeCommandUsesWorkspaceSandbox(t *testing.T) {
 	var received publictool.CommandRequest
 	executor := commandExecutorFunc(func(_ context.Context, request publictool.CommandRequest) (publictool.CommandResult, error) {
 		received = request
@@ -263,10 +263,10 @@ func TestApprovedAskModeCommandUsesWorkspaceSandbox(t *testing.T) {
 		t.Fatal(result.Err)
 	}
 	if approvals != 1 {
-		t.Fatalf("ask-mode command approvals = %d, want one", approvals)
+		t.Fatalf("auto-mode command approvals = %d, want one", approvals)
 	}
 	if received.Sandbox.PermissionMode != string(PermissionModeWorkspace) {
-		t.Fatalf("approved ask-mode sandbox = %q, want workspace", received.Sandbox.PermissionMode)
+		t.Fatalf("approved auto-mode sandbox = %q, want workspace", received.Sandbox.PermissionMode)
 	}
 }
 
@@ -324,7 +324,7 @@ func TestHighRiskAndOpaqueCommandsNeedExactPlanApproval(t *testing.T) {
 	}
 }
 
-func TestExtremeDangerCommandsAreAlwaysBlocked(t *testing.T) {
+func TestKnownExtremeDangerCommandSpellingsAreBlocked(t *testing.T) {
 	commands := []string{
 		"mkfs.ext4 /dev/sdb", "diskpart clean", "Set-MpPreference -DisableRealtimeMonitoring $true",
 		"iptables -F", `bcdedit /delete {current}`, "dd if=/dev/zero of=/dev/sdb", "format C:",
