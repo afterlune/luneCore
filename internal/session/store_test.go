@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -500,5 +501,94 @@ func TestDeleteIsWorkspaceScopedAndIdempotent(t *testing.T) {
 	deleted, err = store.Delete(ctx, "one", "workspace")
 	if err != nil || deleted {
 		t.Fatalf("repeat Delete = %v, %v", deleted, err)
+	}
+}
+
+func TestStaleSnapshotSavePreservesCurrentConversation(t *testing.T) {
+	for _, clearContext := range []bool{false, true} {
+		t.Run(fmt.Sprintf("clear_context_%t", clearContext), func(t *testing.T) {
+			store, _ := openTestStore(t)
+			stale := Snapshot{ID: "session", Workspace: "workspace", Data: json.RawMessage(`{"history":["old"],"model_context":["old context"],"model_context_key":"old-key","agent_context":{"categories":["old"]},"settings":{"model_profile":"main"},"session_usage":{"requests":1}}`)}
+			if err := store.Save(t.Context(), stale); err != nil {
+				t.Fatal(err)
+			}
+			history := json.RawMessage(`["new history"]`)
+			modelContext := json.RawMessage(`[{"type":"compaction","encrypted_content":"new opaque state"}]`)
+			agentContext := json.RawMessage(`{"categories":["new"],"host_context":"new host state"}`)
+			key := "new-key"
+			if clearContext {
+				modelContext = json.RawMessage(`null`)
+				agentContext = json.RawMessage(`null`)
+				key = ""
+			}
+			if err := store.UpdateConversation(t.Context(), stale.ID, stale.Workspace, history, modelContext, key, agentContext); err != nil {
+				t.Fatal(err)
+			}
+			var update map[string]any
+			if err := json.Unmarshal(stale.Data, &update); err != nil {
+				t.Fatal(err)
+			}
+			update["settings"] = map[string]any{"model_profile": "review"}
+			update["session_usage"] = map[string]any{"requests": 2}
+			stale.Data, _ = json.Marshal(update)
+			if err := store.Save(t.Context(), stale); err != nil {
+				t.Fatal(err)
+			}
+			latest, err := store.Get(t.Context(), stale.ID, stale.Workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal(latest.Data, &got); err != nil {
+				t.Fatal(err)
+			}
+			for field, want := range map[string]json.RawMessage{"history": history, "model_context": modelContext, "agent_context": agentContext, "model_context_key": mustJSON(t, key)} {
+				if string(got[field]) != string(want) {
+					t.Errorf("%s=%s, want %s", field, got[field], want)
+				}
+			}
+			if !strings.Contains(string(got["settings"]), "review") || !strings.Contains(string(got["session_usage"]), "2") {
+				t.Fatalf("snapshot fields were not updated: %s", latest.Data)
+			}
+		})
+	}
+}
+
+func mustJSON(t *testing.T, value any) json.RawMessage {
+	t.Helper()
+	data, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func TestSnapshotSavePreservesJSONScalarConversationFields(t *testing.T) {
+	for _, value := range []json.RawMessage{json.RawMessage(`"text"`), json.RawMessage(`true`), json.RawMessage(`7`), json.RawMessage(`null`)} {
+		t.Run(string(value), func(t *testing.T) {
+			store, _ := openTestStore(t)
+			payload := mustJSON(t, map[string]json.RawMessage{"history": value, "model_context": value, "agent_context": value})
+			snapshot := Snapshot{ID: "session", Workspace: "workspace", Data: payload}
+			if err := store.Save(t.Context(), snapshot); err != nil {
+				t.Fatal(err)
+			}
+			snapshot.Data = json.RawMessage(`{"history":[],"session_usage":{"requests":2}}`)
+			if err := store.Save(t.Context(), snapshot); err != nil {
+				t.Fatal(err)
+			}
+			latest, err := store.Get(t.Context(), snapshot.ID, snapshot.Workspace)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal(latest.Data, &got); err != nil {
+				t.Fatal(err)
+			}
+			for _, field := range []string{"history", "model_context", "agent_context"} {
+				if string(got[field]) != string(value) {
+					t.Errorf("%s changed from %s to %s", field, value, got[field])
+				}
+			}
+		})
 	}
 }

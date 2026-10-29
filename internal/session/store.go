@@ -42,6 +42,8 @@ func (s *Store) Save(ctx context.Context, snapshot Snapshot) error {
 	if updatedAt.IsZero() {
 		updatedAt = time.Now()
 	}
+	// Conversation fields have their own atomic update path. A usage/settings
+	// snapshot may predate that commit and must not restore stale provider state.
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions(id, workspace, updated_at, data) VALUES(?, ?, ?, ?)
 		ON CONFLICT(id) DO UPDATE SET
@@ -50,7 +52,10 @@ func (s *Store) Save(ctx context.Context, snapshot Snapshot) error {
 			data = CAST(json_set(
 				CAST(excluded.data AS TEXT),
 				'$.history',
-				json(coalesce(json_extract(CAST(sessions.data AS TEXT), '$.history'), 'null')),
+				json(coalesce(CAST(sessions.data AS TEXT) -> '$.history', 'null')),
+				'$.model_context', json(coalesce(CAST(sessions.data AS TEXT) -> '$.model_context', 'null')),
+				'$.model_context_key', coalesce(json_extract(CAST(sessions.data AS TEXT), '$.model_context_key'), ''),
+				'$.agent_context', json(coalesce(CAST(sessions.data AS TEXT) -> '$.agent_context', 'null')),
 				'$.title', coalesce(json_extract(CAST(sessions.data AS TEXT), '$.title'), ''),
 				'$.archived', json(CASE json_type(CAST(sessions.data AS TEXT), '$.archived')
 					WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' ELSE 'false' END)
