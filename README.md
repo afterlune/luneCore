@@ -216,7 +216,7 @@ Interactive command approvals can permit ordinary high-risk commands. A narrow d
 
 A Core can run tasks for different sessions concurrently. A session runtime serializes turns within its session. Use `runtime.State` to inspect the active task and durable queue; `ActiveTasks` reports currently running tasks across the Core.
 
-Call `runtime.Interrupt(ctx, executionID)` to interrupt a running turn or remove it before it starts. Cancellation is cooperative, so host providers and tools should honor their context. A turn with a saved checkpoint remains paused and blocks later queue entries until `runtime.Recover` or `runtime.DiscardPaused`. `Close(ctx)` waits for queued work to finish starting and returns an error while a task is running. Deadline expiry leaves storage open so the caller can join ongoing work and retry cleanup. Cancellation is cooperative; provider and tool implementations must honor their contexts.
+Call `runtime.Interrupt(ctx, executionID)` to interrupt a running turn or remove it before it starts. Cancellation is cooperative, so host providers and tools should honor their context. A turn with a saved checkpoint remains paused and blocks later queue entries until `runtime.Recover` or `runtime.DiscardPaused`. `Close(ctx)` waits for queued work to finish starting and returns an error while a task is running. Once resource shutdown starts, new work stays blocked. A deadline limits the caller’s wait; the single owned cleanup continues, keeps storage open until MCP operations and transports have exited, then closes the stores. Calling Close again joins the same cleanup and returns its result. Cancellation is cooperative; a custom callback that never exits can keep cleanup pending.
 
 If the process stops while a tool may have caused a side effect, recovery exposes a `PendingToolRecovery` request through `runtime.PendingRequests`. Choose `ToolRecoveryRetry` or `ToolRecoverySkip` with `runtime.ResolveToolRecovery`, then call `runtime.Recover`. Completed tool results are replayed from the invocation ledger without running the tool again. Recovery covers parent and team-worker calls. `runtime.SetUserInteractionAvailable(true)` enables MCP user interaction for that session while a runtime event subscriber is attached.
 
@@ -385,3 +385,10 @@ The format marker is written last; a failed upgrade can be retried. Restore a
 backup only with all processes stopped, preserving the whole original state
 folder before replacing files. This API changes execution persistence intentionally;
 old processes must not be restarted against the upgraded directory.
+
+When queue coordination or outcome persistence fails, the drain stops rather than
+immediately rescheduling the same failing work. `WaitTurn` reports the transient
+storage error; this is not a durable failed outcome. The queue and checkpoint
+remain available. After fixing storage, explicitly reopen the session runtime or
+retry `WaitTurn` to trigger reconciliation. Completed checkpoints are committed
+without repeating model or completed tool calls. No automatic retry timer is installed.

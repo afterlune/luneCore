@@ -545,6 +545,9 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 			}
 			return TurnResult{}, ErrTurnNotFound
 		}
+		if err := hub.drainError(); err != nil {
+			return TurnResult{}, err
+		}
 		select {
 		case <-changed:
 		case <-ctx.Done():

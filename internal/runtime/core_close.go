@@ -20,6 +20,14 @@ func (c *Core) Close(ctx context.Context) error {
 	runtimeConfigLocked := c.runtimeConfigMu.TryLock()
 	closingAfterQueueDrain := false
 	c.mu.Lock()
+	if c.closeDone != nil {
+		done := c.closeDone
+		c.mu.Unlock()
+		if runtimeConfigLocked {
+			c.runtimeConfigMu.Unlock()
+		}
+		return c.waitClosed(ctx, done)
+	}
 	if c.closed {
 		c.mu.Unlock()
 		if runtimeConfigLocked {
@@ -133,14 +141,34 @@ func (c *Core) Close(ctx context.Context) error {
 		c.mu.Unlock()
 		return cleanupErr
 	}
+	c.mu.Lock()
+	c.closeDone = make(chan struct{})
+	done := c.closeDone
+	c.mu.Unlock()
+	go c.finishClose()
+	return c.waitClosed(ctx, done)
+}
+
+func (c *Core) waitClosed(ctx context.Context, done <-chan struct{}) error {
+	select {
+	case <-done:
+		return c.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// Once resource shutdown starts, keep admission closed even if a waiter leaves.
+// Storage remains open until every MCP operation has released its ownership.
+func (c *Core) finishClose() {
 	var closeMCP error
 	if c.mcpManager != nil {
-		closeMCP = c.mcpManager.Close()
+		closeMCP = c.mcpManager.Close(context.Background())
 	}
 	c.mu.Lock()
-	closeErr := errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.closeSessionLocksLocked(), c.stateLock.Close())
+	c.closeErr = errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.closeSessionLocksLocked(), c.stateLock.Close())
 	c.closed = true
 	c.closing = false
+	close(c.closeDone)
 	c.mu.Unlock()
-	return closeErr
 }

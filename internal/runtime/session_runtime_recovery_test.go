@@ -280,8 +280,8 @@ func TestSessionRuntimeFinalizesCompletedCheckpointAfterRestartWithoutRerunning(
 	waitCtx, cancelWait := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	_, waitErr := runtime.WaitTurn(waitCtx, submission.ExecutionID)
 	cancelWait()
-	if !errors.Is(waitErr, context.DeadlineExceeded) {
-		t.Fatalf("WaitTurn before checkpoint recovery error = %v, want context deadline exceeded", waitErr)
+	if waitErr == nil || !strings.Contains(waitErr.Error(), "reject turn result") {
+		t.Fatalf("WaitTurn before checkpoint recovery error = %v, want persistence error", waitErr)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for {

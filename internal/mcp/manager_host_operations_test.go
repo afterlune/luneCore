@@ -48,7 +48,7 @@ func TestManagerLifecycleChangeCancelsHostOperations(t *testing.T) {
 			if err := manager.Enable("host"); err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() { _ = manager.Close() })
+			t.Cleanup(func() { _ = manager.Close(context.Background()) })
 
 			requestDone := make(chan error, 1)
 			go func() {
@@ -67,7 +67,7 @@ func TestManagerLifecycleChangeCancelsHostOperations(t *testing.T) {
 				case "reconnect":
 					lifecycleDone <- manager.Enable("host")
 				default:
-					lifecycleDone <- manager.Close()
+					lifecycleDone <- manager.Close(context.Background())
 				}
 			}()
 
@@ -117,7 +117,7 @@ func TestManagerHostOperationPreservesCallerCancellation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer manager.Close(context.Background())
 	if err := manager.Enable("host"); err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +160,7 @@ func TestManagerDisableDrainsStdioHostOperationBeforeClosing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer manager.Close(context.Background())
 	if err := manager.Enable("stdio"); err != nil {
 		t.Fatal(err)
 	}
@@ -229,7 +229,7 @@ func TestManagerDisableCancelsEveryHostOperationForOnlyThatServer(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer manager.Close(context.Background())
 	for _, name := range []string{"shared", "other"} {
 		if err := manager.Enable(name); err != nil {
 			t.Fatal(err)

@@ -152,7 +152,7 @@ func TestManagerRestartsExitedStdioForFutureCallsOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer manager.Close(context.Background())
 	if err := manager.Enable("local"); err != nil {
 		t.Fatal(err)
 	}

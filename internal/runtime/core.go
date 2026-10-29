@@ -133,6 +133,8 @@ type Core struct {
 	sessionOps            sync.WaitGroup
 	closed                bool
 	closing               bool
+	closeDone             chan struct{}
+	closeErr              error
 }
 
 func New(config Config) (_ *Core, err error) {
@@ -330,7 +332,7 @@ func New(config Config) (_ *Core, err error) {
 	closeMCPManager := true
 	defer func() {
 		if closeMCPManager {
-			_ = mcpManager.Close()
+			_ = mcpManager.Close(context.Background())
 		}
 	}()
 	if config.RestoreEnabledMCP {

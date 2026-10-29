@@ -18,6 +18,14 @@ func (c *Core) CreateSession(ctx context.Context, history json.RawMessage) (Sess
 	if c == nil || ctx == nil {
 		return Session{}, errors.New("core and context are required")
 	}
+	c.mu.Lock()
+	if c.closed || c.closing {
+		c.mu.Unlock()
+		return Session{}, errors.New("core is closing or closed")
+	}
+	c.sessionOps.Add(1)
+	c.mu.Unlock()
+	defer c.sessionOps.Done()
 	return c.createSession(ctx, history, SessionSettings{ModelProfile: c.models.DefaultModel()})
 }
 

@@ -124,7 +124,7 @@ func TestHTTPManagerRegistersToolsAndPreservesMCPResults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer manager.Close(context.Background())
 	if err := manager.Enable("docs"); err != nil {
 		t.Fatal(err)
 	}
@@ -272,7 +272,7 @@ func TestHTTPManagerRetriesMRTRWithNewIDAndOpaqueRequestState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer manager.Close(context.Background())
 	if err := manager.Enable("login"); err != nil {
 		t.Fatal(err)
 	}

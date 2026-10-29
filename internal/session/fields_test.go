@@ -72,3 +72,44 @@ func TestFieldMutationsAcrossStoresPreserveIndependentOwners(t *testing.T) {
 		t.Fatal("deleted session resurrected")
 	}
 }
+
+func TestFieldUpdatesPreserveJSONTypesAndRollbackInvalidMutation(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "sessions.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.Create(t.Context(), Snapshot{ID: "s", Workspace: "w", Data: json.RawMessage(`{"history":["keep"],"other":{"untouched":true}}`)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range []string{`"plain string"`, `true`, `3.5`, `null`, `[1,"two"]`, `{"nested":false}`} {
+		if err := store.UpdateSettings(t.Context(), "s", "w", json.RawMessage(raw)); err != nil {
+			t.Fatal(err)
+		}
+		saved, err := store.Get(t.Context(), "s", "w")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(saved.Data, &fields); err != nil {
+			t.Fatal(err)
+		}
+		if string(fields["settings"]) != raw || string(fields["history"]) != `["keep"]` || string(fields["other"]) != `{"untouched":true}` {
+			t.Fatalf("type or ownership changed: %s", saved.Data)
+		}
+	}
+	before, err := store.Get(t.Context(), "s", "w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.ModifyUsage(t.Context(), "s", "w", func(json.RawMessage) (json.RawMessage, error) { return json.RawMessage(`{"session_usage":`), nil }); err == nil {
+		t.Fatal("malformed JSON accepted")
+	}
+	after, err := store.Get(t.Context(), "s", "w")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before.Data) != string(after.Data) {
+		t.Fatal("invalid mutation partially committed")
+	}
+}

@@ -58,7 +58,7 @@ func (manager *Manager) connectServer(ctx context.Context, name string, force bo
 	if existing != nil {
 		existing.hostOperationsWG.Wait()
 		if old, ok := existing.client.(*stdioTransport); ok {
-			err := old.closeContext(ctx)
+			err := old.Close()
 			if ctx.Err() != nil {
 				return ctx.Err()
 			}
@@ -94,14 +94,14 @@ func (manager *Manager) connectServer(ctx context.Context, name string, force bo
 	instance.category = model.ToolCategory{Name: "mcp", Description: "Tools provided by enabled MCP servers."}
 	tools, err := manager.listTools(ctx, name, instance)
 	if err != nil {
-		_ = closeConnection(ctx, client)
+		_ = client.Close()
 		return err
 	}
 	instance.tools = tools
 	manager.mu.Lock()
 	if manager.closed || manager.generations[name] != generation || ctx.Err() != nil {
 		manager.mu.Unlock()
-		_ = closeConnection(ctx, client)
+		_ = client.Close()
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -116,7 +116,7 @@ func (manager *Manager) connectServer(ctx context.Context, name string, force bo
 				manager.registry.Unregister(registeredTool.registeredID)
 			}
 			manager.mu.Unlock()
-			_ = closeConnection(ctx, client)
+			_ = client.Close()
 			return fmt.Errorf("register MCP tool %q: %w", remote.remoteName, err)
 		}
 		registered = append(registered, remote)
@@ -128,13 +128,6 @@ func (manager *Manager) connectServer(ctx context.Context, name string, force bo
 	delete(manager.errors, name)
 	manager.mu.Unlock()
 	return nil
-}
-
-func closeConnection(ctx context.Context, client transport) error {
-	if stdio, ok := client.(*stdioTransport); ok {
-		return stdio.closeContext(ctx)
-	}
-	return client.Close()
 }
 
 func instanceClient(instance *serverInstance) transport {

@@ -100,7 +100,12 @@ func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, 
 		AgentID: agentID, Purpose: purpose, ModelProfile: profile, Provider: provider, Model: modelID,
 	}
 	return c.sessions.ModifyUsage(ctx, id, c.workspace, func(previous json.RawMessage) (json.RawMessage, error) {
-		var saved Session
+		var saved struct {
+			UsageRequests []UsageRecord          `json:"usage_requests"`
+			AgentUsage    map[string]UsageTotals `json:"agent_usage"`
+			TaskUsage     UsageTotals            `json:"task_usage"`
+			SessionUsage  UsageTotals            `json:"session_usage"`
+		}
 		if err := json.Unmarshal(previous, &saved); err != nil {
 			return nil, err
 		}

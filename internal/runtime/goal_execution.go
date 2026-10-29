@@ -16,24 +16,27 @@ func (c *Core) goalRun(executionID string) goalExecution {
 	return c.goalRuns[executionID]
 }
 
-func (c *Core) enqueueGoalContinuation(ctx context.Context, sessionID string) bool {
+func (c *Core) enqueueGoalContinuation(ctx context.Context, sessionID string) (bool, error) {
 	if err := lockContext(ctx, &c.queueMutationMu); err != nil {
-		return false
+		return false, err
 	}
 	defer c.queueMutationMu.Unlock()
 	c.goalMu.Lock()
 	defer c.goalMu.Unlock()
 	if !c.goalSessions[sessionID].Armed {
-		return false
+		return false, nil
 	}
 	goal, err := c.sessions.Goal(ctx, sessionID)
-	if err != nil || goal == nil || goal.Status != GoalActive {
-		return false
+	if err != nil {
+		return false, err
+	}
+	if goal == nil || goal.Status != GoalActive {
+		return false, nil
 	}
 	options := c.goalSessions[sessionID]
 	input, _ := ParseTaskInput("Continue making concrete progress toward the active goal. Verify the full objective before marking it complete. The objective and budget are supplied in runtime context.")
 	_, _, err = c.submitTurnAdmitted(ctx, sessionID, TurnRequest{Input: input, automaticGoal: true, NoInteractiveDecisions: options.NoInteractiveDecisions}, StartIfIdle, false)
-	return err == nil
+	return err == nil, err
 }
 
 func (c *Core) admitGoalExecution(ctx context.Context, sessionID, executionID string, request storedTurnRequest) error {

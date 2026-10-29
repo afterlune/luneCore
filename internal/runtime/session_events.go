@@ -8,11 +8,12 @@ import (
 )
 
 type sessionEventHub struct {
-	mu      sync.Mutex
-	changed chan struct{}
-	live    map[uint64]eventSubscriber
-	nextID  uint64
-	closed  bool
+	mu       sync.Mutex
+	changed  chan struct{}
+	live     map[uint64]eventSubscriber
+	nextID   uint64
+	closed   bool
+	drainErr error
 }
 
 type eventSubscriber struct {
@@ -48,6 +49,22 @@ func (h *sessionEventHub) notifyDurable() {
 	close(h.changed)
 	h.changed = make(chan struct{})
 	h.mu.Unlock()
+}
+
+// A drain error is transient host state, never a durable execution outcome.
+func (h *sessionEventHub) setDrainError(err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.drainErr = err
+	if err != nil && !h.closed {
+		close(h.changed)
+		h.changed = make(chan struct{})
+	}
+}
+func (h *sessionEventHub) drainError() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.drainErr
 }
 
 func (h *sessionEventHub) isClosed() bool { h.mu.Lock(); defer h.mu.Unlock(); return h.closed }

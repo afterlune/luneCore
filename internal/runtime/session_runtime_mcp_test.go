@@ -26,7 +26,7 @@ type hostMCPRequest struct {
 func attachHostMCPServer(t *testing.T, client *Core, name, endpoint string, limits ...mcp.Limits) {
 	t.Helper()
 	if client.mcpManager != nil {
-		if err := client.mcpManager.Close(); err != nil {
+		if err := client.mcpManager.Close(context.Background()); err != nil {
 			t.Fatal(err)
 		}
 	}

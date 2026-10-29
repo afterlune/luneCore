@@ -47,7 +47,7 @@ func blockedDiscoveryManager(t *testing.T) (*Manager, <-chan struct{}, func()) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = manager.Close() })
+	t.Cleanup(func() { _ = manager.Close(context.Background()) })
 	return manager, entered, unblock
 }
 
@@ -64,7 +64,7 @@ func TestManagerInvalidatesDiscoveryOnDisableOrClose(t *testing.T) {
 			if action == "disable" {
 				err = manager.Disable("local")
 			} else {
-				err = manager.Close()
+				err = manager.Close(context.Background())
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -130,7 +130,7 @@ func TestManagerConcurrentReconnectDoesNotReplayTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
+	defer manager.Close(context.Background())
 	if err := manager.Enable("local"); err != nil {
 		t.Fatal(err)
 	}

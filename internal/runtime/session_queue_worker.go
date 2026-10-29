@@ -16,20 +16,22 @@ func (c *Core) scheduleQueueDrain(sessionID string) {
 		c.mu.Unlock()
 		return
 	}
+	c.eventHub(sessionID).setDrainError(nil)
 	c.queueDraining[sessionID] = true
 	c.queueDrainWG.Add(1)
 	c.mu.Unlock()
 	go c.drainQueue(sessionID)
 }
 
-func (c *Core) drainQueue(sessionID string) {
+func (c *Core) drainQueue(sessionID string) (drainErr error) {
 	defer c.queueDrainWG.Done()
 	defer func() {
 		c.mu.Lock()
+		c.eventHub(sessionID).setDrainError(drainErr)
 		delete(c.queueDraining, sessionID)
 		closed := c.closed || c.closing
 		c.mu.Unlock()
-		if closed {
+		if closed || drainErr != nil {
 			return
 		}
 		if err := c.releasePendingSessionLock(sessionID); err != nil {
@@ -66,7 +68,7 @@ func (c *Core) drainQueue(sessionID string) {
 	ctx := context.Background()
 	if err := c.reconcileQueuedTurns(ctx, sessionID); err != nil {
 		c.logger.Warn("reconcile queued turns before draining", "error", err)
-		return
+		return err
 	}
 	for {
 		c.mu.RLock()
@@ -81,11 +83,14 @@ func (c *Core) drainQueue(sessionID string) {
 		pending, found, err := c.pendingState(ctx, sessionID)
 		if err != nil {
 			c.logger.Warn("inspect checkpoint before queued turn", "error", err)
-			return
+			return err
 		}
 		if found {
 			queued, listErr := c.sessions.QueuedTurns(ctx, sessionID)
-			if listErr != nil || len(queued) == 0 || queued[0].ExecutionID != pending.ExecutionID {
+			if listErr != nil {
+				return listErr
+			}
+			if len(queued) == 0 || queued[0].ExecutionID != pending.ExecutionID {
 				return
 			}
 			var request storedTurnRequest
@@ -98,10 +103,14 @@ func (c *Core) drainQueue(sessionID string) {
 		c.queueMutationMu.Unlock()
 		if err != nil {
 			c.logger.Warn("claim queued turn", "error", err)
-			return
+			return err
 		}
 		if !claimed {
-			if c.enqueueGoalContinuation(ctx, sessionID) {
+			enqueued, err := c.enqueueGoalContinuation(ctx, sessionID)
+			if err != nil {
+				return err
+			}
+			if enqueued {
 				continue
 			}
 			return
@@ -118,23 +127,31 @@ func (c *Core) drainQueue(sessionID string) {
 		}
 		var request storedTurnRequest
 		if err := json.Unmarshal(queued.Request, &request); err != nil {
-			c.failQueuedTurn(ctx, queued, err)
+			if persistErr := c.failQueuedTurn(ctx, queued, err); persistErr != nil {
+				return persistErr
+			}
 			continue
 		}
 		if err := c.admitGoalExecution(ctx, sessionID, queued.ExecutionID, request); err != nil {
 			if errors.Is(err, errStaleGoal) {
 				goal, _ := c.sessions.Goal(ctx, sessionID)
 				if goal != nil && goal.ID == request.GoalID && goal.Status != GoalActive {
-					_ = c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnPaused)
+					if err := c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnPaused); err != nil {
+						return err
+					}
 					return
 				}
 			}
-			c.failQueuedTurn(ctx, queued, err)
+			if persistErr := c.failQueuedTurn(ctx, queued, err); persistErr != nil {
+				return persistErr
+			}
 			continue
 		}
 		input, err := model.NewResponseInput(request.Input)
 		if err != nil {
-			c.failQueuedTurn(ctx, queued, err)
+			if persistErr := c.failQueuedTurn(ctx, queued, err); persistErr != nil {
+				return persistErr
+			}
 			continue
 		}
 		runDone := make(chan struct{})
@@ -175,7 +192,7 @@ func (c *Core) drainQueue(sessionID string) {
 			c.rememberQueuedTaskStatus(sessionID, queued.ExecutionID, queued.QueueID, TaskFailed)
 			c.logger.Warn("commit execution outcome", "execution_id", queued.ExecutionID, "error", persistErr)
 			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: persistErr})
-			return
+			return persistErr
 		}
 		if closing {
 			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: errors.New("core is closing")})
@@ -202,13 +219,15 @@ func (c *Core) drainQueue(sessionID string) {
 	}
 }
 
-func (c *Core) failQueuedTurn(ctx context.Context, queued session.QueuedTurn, err error) {
+func (c *Core) failQueuedTurn(ctx context.Context, queued session.QueuedTurn, err error) error {
 	if err == nil {
 		err = errors.New("queued task failed without an error")
 	}
 	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskFailed, Err: errorString(err)}
 	if _, persistErr := c.sessions.CompleteQueuedTurn(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(TaskFailed), nil, nil, nil, "", mustMarshalEvent(event), nil); persistErr != nil {
 		c.logger.Warn("finish rejected queued turn", "error", persistErr)
+		c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: errors.Join(err, persistErr)})
+		return persistErr
 	} else {
 		c.notifyEventHub(queued.SessionID)
 		if cleanupErr := c.sessions.DeleteExecutionTokenBudget(context.Background(), queued.ExecutionID); cleanupErr != nil {
@@ -216,6 +235,7 @@ func (c *Core) failQueuedTurn(ctx context.Context, queued session.QueuedTurn, er
 		}
 	}
 	c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: err})
+	return nil
 }
 
 func (c *Core) resolveTurnWaiter(executionID string, result turnResult) {

@@ -68,6 +68,8 @@ type Manager struct {
 	instances      map[string]*serverInstance
 	errors         map[string]string
 	closed         bool
+	closeDone      chan struct{}
+	closeErr       error
 }
 
 type serverInstance struct {
@@ -243,24 +245,46 @@ func safeEndpoint(raw string) string {
 	return parsed.String()
 }
 
-func (manager *Manager) Close() error {
+// Close stops admission once. A deadline limits waiting, not cleanup ownership.
+func (manager *Manager) Close(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	manager.mu.Lock()
-	if manager.closed {
-		manager.mu.Unlock()
-		return nil
+	if manager.closeDone == nil {
+		manager.closed = true
+		manager.closeDone = make(chan struct{})
+		for _, cancel := range manager.connecting {
+			cancel()
+		}
+		instances := make([]*serverInstance, 0, len(manager.instances))
+		for _, instance := range manager.instances {
+			instances = append(instances, instance)
+			manager.cancelHostOperationsLocked(instance)
+			manager.unregister(instance)
+		}
+		go manager.finishClose(instances)
 	}
-	manager.closed = true
-	for _, cancel := range manager.connecting {
-		cancel()
-	}
-	instances := make([]*serverInstance, 0, len(manager.instances))
-	for _, instance := range manager.instances {
-		instances = append(instances, instance)
-		manager.cancelHostOperationsLocked(instance)
-		manager.unregister(instance)
-	}
-	manager.instances = make(map[string]*serverInstance)
+	done := manager.closeDone
 	manager.mu.Unlock()
+	select {
+	case <-done:
+		return manager.closeErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (manager *Manager) finishClose(instances []*serverInstance) {
+	// A connection can own a detached old transport while reconnecting. Join
+	// that handoff too, after closing admission and cancelling its context.
+	if manager.connectGate != nil {
+		manager.connectGate <- struct{}{}
+		defer func() { <-manager.connectGate }()
+	}
 	var failures []error
 	for _, instance := range instances {
 		instance.hostOperationsWG.Wait()
@@ -268,7 +292,11 @@ func (manager *Manager) Close() error {
 			failures = append(failures, err)
 		}
 	}
-	return errors.Join(failures...)
+	manager.mu.Lock()
+	manager.instances = make(map[string]*serverInstance)
+	manager.closeErr = errors.Join(failures...)
+	close(manager.closeDone)
+	manager.mu.Unlock()
 }
 
 func (manager *Manager) cancelHostOperationsLocked(instance *serverInstance) {

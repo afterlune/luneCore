@@ -174,7 +174,9 @@ func (c *Core) reconcileQueuedTurns(ctx context.Context, sessionID string) error
 			continue
 		}
 		if _, checkpointErr := c.runtime.CheckpointForSession(ctx, sessionID); errors.Is(checkpointErr, checkpoint.ErrNotFound) {
-			c.failQueuedTurn(ctx, item, errors.New("active task checkpoint is missing; refusing to replay a turn that may have completed tool side effects"))
+			if err := c.failQueuedTurn(ctx, item, errors.New("active task checkpoint is missing; refusing to replay a turn that may have completed tool side effects")); err != nil {
+				return err
+			}
 			continue
 		} else if checkpointErr != nil {
 			return checkpointErr
