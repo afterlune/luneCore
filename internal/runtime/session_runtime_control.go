@@ -20,16 +20,22 @@ func (r *SessionRuntime) State(ctx context.Context) (RuntimeState, error) {
 		return RuntimeState{}, err
 	}
 	goal, err := r.GetGoal(ctx)
-	if err != nil { return RuntimeState{}, err }
-	result := RuntimeState{Task: state, Goal:goal}
+	if err != nil {
+		return RuntimeState{}, err
+	}
+	result := RuntimeState{Task: state, Goal: goal}
+	taskSelected := result.Task.Status == TaskRunning
 	for _, item := range queued {
 		result.Queue = append(result.Queue, QueuedTurnState{QueueID: item.QueueID, Position: item.Position, ExecutionID: item.ExecutionID, Status: item.Status, CreatedAt: item.CreatedAt})
-		if result.Task.Status != TaskRunning && item.Status == session.QueuedTurnPaused {
+		if taskSelected {
+			continue
+		}
+		if item.Status == session.QueuedTurnPaused {
 			result.Task = TaskState{SessionID: r.sessionID, ExecutionID: item.ExecutionID, QueueID: item.QueueID, Status: TaskPaused}
-			break
-		} else if result.Task.Status != TaskRunning && (item.Status == session.QueuedTurnQueued || item.Status == session.QueuedTurnActive) {
+			taskSelected = true
+		} else if item.Status == session.QueuedTurnQueued || item.Status == session.QueuedTurnActive {
 			result.Task = TaskState{SessionID: r.sessionID, ExecutionID: item.ExecutionID, QueueID: item.QueueID, Status: TaskQueued}
-			break
+			taskSelected = true
 		}
 	}
 	if result.Task.Status != TaskRunning {
@@ -46,7 +52,7 @@ func (r *SessionRuntime) State(ctx context.Context) (RuntimeState, error) {
 				}
 			}
 			if !recoveryQueued {
-				result.Task = TaskState{SessionID: r.sessionID, ExecutionID: pending.ExecutionID, Status: TaskPaused, GoalID:pending.GoalID, GoalRevision:pending.GoalRevision, AutomaticGoal:pending.AutomaticGoal}
+				result.Task = TaskState{SessionID: r.sessionID, ExecutionID: pending.ExecutionID, Status: TaskPaused, GoalID: pending.GoalID, GoalRevision: pending.GoalRevision, AutomaticGoal: pending.AutomaticGoal}
 			}
 		}
 	}
@@ -55,7 +61,7 @@ func (r *SessionRuntime) State(ctx context.Context) (RuntimeState, error) {
 
 func (r *SessionRuntime) Interrupt(executionID string) bool {
 	if r != nil && r.core != nil && r.core.goalRun(executionID).ID != "" {
-		_, err := r.pauseGoal(context.Background(), false)
+		_, err := r.pauseGoal(context.Background(), false, executionID)
 		return err == nil
 	}
 	return r != nil && r.core != nil && executionID != "" && r.core.interruptExecution(r.sessionID, executionID)

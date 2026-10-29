@@ -97,13 +97,21 @@ func (r *SessionRuntime) CreateGoal(ctx context.Context, options GoalCreateOptio
 }
 
 func (r *SessionRuntime) PauseGoal(ctx context.Context) (*Goal, error) {
-	return r.pauseGoal(ctx, true)
+	return r.pauseGoal(ctx, true, "")
 }
 
-func (r *SessionRuntime) pauseGoal(ctx context.Context, wait bool) (*Goal, error) {
+func (r *SessionRuntime) pauseGoal(ctx context.Context, wait bool, executionID string) (*Goal, error) {
 	if _, err := r.GetGoal(ctx); err != nil { return nil, err }
 	goal, err := r.core.changeGoal(ctx, r.sessionID, "", func(goal *Goal) (*Goal, error) {
 		if goal == nil { return nil, errors.New("no goal is set") }
+		// Interrupt must match this session's current goal. Check under goalMu
+		// so a completed execution or a revised goal cannot pause newer work.
+		if executionID != "" {
+			ref := r.core.goalRuns[executionID]
+			if ref.ID == "" || ref.ID != goal.ID || ref.Revision != goal.Revision {
+				return nil, errStaleGoal
+			}
+		}
 		delete(r.core.goalArmed, r.sessionID)
 		if goal.Status != GoalComplete && goal.Status != GoalBudgetLimited {
 			goal.Status, goal.StopReason, goal.UpdatedAt = GoalPaused, "Paused by user", time.Now().UTC()
