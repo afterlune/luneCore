@@ -37,7 +37,7 @@ func TestCoreRoutesCommandsThroughInjectedExecutor(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("Close: %v", err)
 		}
 	}()

@@ -127,7 +127,7 @@ func TestCoreFullLifecycleSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
 	}
-	defer c.Close()
+	defer c.Close(context.Background())
 
 	ctx := context.Background()
 	session, err := c.CreateSession(ctx, json.RawMessage("null"))
@@ -139,7 +139,7 @@ func TestCoreFullLifecycleSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSessionRuntime: %v", err)
 	}
-	defer runtime.Close()
+	defer runtime.Close(context.Background())
 
 	taskInput, err := core.NewTaskInput("run smoke task")
 	if err != nil {
@@ -230,10 +230,10 @@ func TestCoreFullLifecycleSmoke(t *testing.T) {
 	}
 
 	// 6. Test session state persistence across close and reopen
-	if err := runtime.Close(); err != nil {
+	if err := runtime.Close(context.Background()); err != nil {
 		t.Fatalf("runtime.Close: %v", err)
 	}
-	if err := c.Close(); err != nil {
+	if err := c.Close(context.Background()); err != nil {
 		t.Fatalf("c.Close: %v", err)
 	}
 
@@ -242,7 +242,7 @@ func TestCoreFullLifecycleSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen Core: %v", err)
 	}
-	defer c2.Close()
+	defer c2.Close(context.Background())
 
 	loadedSession, err := c2.GetSession(ctx, session.ID)
 	if err != nil {
@@ -296,7 +296,7 @@ func TestCoreConcurrentSessionsIsolationSmoke(t *testing.T) {
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
 	}
-	defer c.Close()
+	defer c.Close(context.Background())
 
 	ctx := context.Background()
 	const concurrency = 6
@@ -317,7 +317,7 @@ func TestCoreConcurrentSessionsIsolationSmoke(t *testing.T) {
 				errs <- fmt.Errorf("[%d] OpenSessionRuntime: %w", id, err)
 				return
 			}
-			defer rt.Close()
+			defer rt.Close(context.Background())
 
 			input, _ := core.NewTaskInput(fmt.Sprintf("task from session %d", id))
 			sub, err := rt.SubmitTurn(ctx, core.TurnRequest{Input: input}, core.StartIfIdle)

@@ -37,7 +37,7 @@ func (c *Core) createSession(ctx context.Context, history json.RawMessage, setti
 		Settings: settings, AgentUsage: map[string]UsageTotals{}, AgentUsageComplete: true,
 		History: append(json.RawMessage(nil), history...),
 	}
-	if err := c.saveSession(ctx, saved); err != nil {
+	if err := c.createSnapshot(ctx, saved); err != nil {
 		return Session{}, err
 	}
 	return saved, nil
@@ -151,10 +151,7 @@ func (c *Core) deleteSessionOwned(ctx context.Context, sessionID string) error {
 	if cleanupErr != nil {
 		return cleanupErr
 	}
-	// Save-based usage/settings updates must not recreate a session after its
-	// row has been deleted. The session row is removed last for retry safety.
-	c.usageMu.Lock()
-	defer c.usageMu.Unlock()
+	// Remove the session row last so interrupted cleanup can be retried.
 	if _, err := c.GetSession(ctx, sessionID); err != nil {
 		return err
 	}
@@ -205,9 +202,6 @@ func (c *Core) RewindSession(ctx context.Context, sessionID string, userTurns in
 	}
 	var removed int
 	err := c.withSessionLock(sessionID, func() error {
-		if err := c.repairLegacyInterruptedTurn(ctx, sessionID); err != nil {
-			return err
-		}
 		var err error
 		removed, err = c.rewindSessionOwned(ctx, sessionID, userTurns)
 		return err

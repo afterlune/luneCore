@@ -29,7 +29,7 @@ func TestExternalReadApprovalPersistsAndIsReusedByRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
 	if err := client.SetPermissionMode(PermissionReadOnly); err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +41,7 @@ func TestExternalReadApprovalPersistsAndIsReusedByRuntime(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = runtime.Close() })
+	t.Cleanup(func() { _ = runtime.Close(context.Background()) })
 
 	first, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "read external file"), PermissionMode: PermissionReadOnly}, StartIfIdle)
 	if err != nil {
@@ -51,7 +51,7 @@ func TestExternalReadApprovalPersistsAndIsReusedByRuntime(t *testing.T) {
 	if approval.PathGrant == nil || approval.PathGrant.Path != external || approval.PathGrant.Access != publictool.PathRead {
 		t.Fatalf("path approval = %#v", approval)
 	}
-	if err := runtime.ResolveApprovalDecision(approval.ID, publictool.ApprovalAllowSession); err != nil {
+	if err := runtime.ResolveApprovalDecision(context.Background(), approval.ID, publictool.ApprovalAllowSession); err != nil {
 		t.Fatal(err)
 	}
 	result, err := runtime.WaitTurn(context.Background(), first.ExecutionID)
@@ -133,7 +133,7 @@ func TestSessionPathGrantDenialRetryPersistenceAndForkIsolation(t *testing.T) {
 	closed := false
 	t.Cleanup(func() {
 		if !closed {
-			_ = client.Close()
+			_ = client.Close(context.Background())
 		}
 	})
 	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
@@ -147,7 +147,7 @@ func TestSessionPathGrantDenialRetryPersistenceAndForkIsolation(t *testing.T) {
 	request := toolPermissionRequestWithPathGrant(grant)
 
 	approvalID, approvalResult := beginPathGrantApproval(t, client, session.ID, ctx, request)
-	if err := client.resolveApprovalDecision(session.ID, approvalID, publictool.ApprovalDeny); err != nil {
+	if err := client.resolveApprovalDecision(context.Background(), session.ID, approvalID, publictool.ApprovalDeny); err != nil {
 		t.Fatal(err)
 	}
 	if approved := awaitApprovalResult(t, approvalResult); approved {
@@ -162,7 +162,7 @@ func TestSessionPathGrantDenialRetryPersistenceAndForkIsolation(t *testing.T) {
 	}
 
 	approvalID, approvalResult = beginPathGrantApproval(t, client, session.ID, ctx, request)
-	if err := client.resolveApprovalDecision(session.ID, approvalID, publictool.ApprovalAllowSession); err != nil {
+	if err := client.resolveApprovalDecision(context.Background(), session.ID, approvalID, publictool.ApprovalAllowSession); err != nil {
 		t.Fatal(err)
 	}
 	if approved := awaitApprovalResult(t, approvalResult); !approved {
@@ -188,7 +188,7 @@ func TestSessionPathGrantDenialRetryPersistenceAndForkIsolation(t *testing.T) {
 		t.Fatalf("new session grants = %#v, error %v", created.PathGrants, err)
 	}
 
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	closed = true
@@ -196,7 +196,7 @@ func TestSessionPathGrantDenialRetryPersistenceAndForkIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = reopened.Close() })
+	t.Cleanup(func() { _ = reopened.Close(context.Background()) })
 	restored, err := reopened.GetSession(context.Background(), session.ID)
 	if err != nil || len(restored.PathGrants) != 1 || restored.PathGrants[0] != grant {
 		t.Fatalf("reopened grants = %#v, error %v", restored.PathGrants, err)
@@ -216,7 +216,7 @@ func toolPermissionRequestWithPathGrant(grant publictool.PathGrant) runtimepermi
 func beginPathGrantApproval(t *testing.T, client *Core, sessionID string, ctx context.Context, request runtimepermission.PermissionRequest) (string, <-chan bool) {
 	t.Helper()
 	result := make(chan bool, 1)
-	go func() { result <- client.requestApproval(ctx, request) }()
+	go func() { result <- (client.requestApprovalDecision(ctx, request) != publictool.ApprovalDeny) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		client.mu.RLock()
@@ -254,13 +254,13 @@ func TestBooleanDirectoryApprovalDoesNotRememberGrant(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer rt.Close()
+	defer rt.Close(context.Background())
 	grant := publictool.PathGrant{Path: t.TempDir(), Access: publictool.PathRead}
 	store := runtimepermission.NewSessionPathGrantStore(nil)
 	ctx := publictool.WithCallIdentity(context.Background(), publictool.CallIdentity{SessionID: saved.ID, ExecutionID: "execution", AgentID: "lead"})
 	ctx = runtimepermission.WithSessionPathGrantStore(ctx, store)
 	id, result := beginPathGrantApproval(t, client, saved.ID, ctx, toolPermissionRequestWithPathGrant(grant))
-	if err = rt.ResolveApproval(id, true); err != nil {
+	if err = rt.ResolveApprovalDecision(context.Background(), id, publictool.ApprovalAllowOnce); err != nil {
 		t.Fatal(err)
 	}
 	if !awaitApprovalResult(t, result) {

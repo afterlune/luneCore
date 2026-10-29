@@ -47,7 +47,7 @@ func TestDeepSeekMCPInputProtocolsSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("close Core: %v", err)
 		}
 	})

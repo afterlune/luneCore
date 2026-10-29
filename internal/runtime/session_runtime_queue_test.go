@@ -661,7 +661,7 @@ func TestSessionRuntimeInterruptCancelsActiveTurnAndDrainsQueue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !runtime.Interrupt(first.ExecutionID) {
+	if accepted, err := runtime.Interrupt(context.Background(), first.ExecutionID); !accepted || err != nil {
 		t.Fatal("Interrupt returned false for active turn")
 	}
 	firstResult, err := runtime.WaitTurn(context.Background(), first.ExecutionID)

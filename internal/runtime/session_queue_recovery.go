@@ -13,6 +13,17 @@ import (
 )
 
 func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool, executionOverride ...ExecutionOptions) (TurnSubmission, <-chan turnResult, error) {
+	if c == nil || ctx == nil {
+		return TurnSubmission{}, nil, errors.New("core and context are required")
+	}
+	if err := lockContext(ctx, &c.queueMutationMu); err != nil {
+		return TurnSubmission{}, nil, err
+	}
+	defer c.queueMutationMu.Unlock()
+	return c.recoverSessionAdmitted(ctx, sessionID, wait, executionOverride...)
+}
+
+func (c *Core) recoverSessionAdmitted(ctx context.Context, sessionID string, wait bool, executionOverride ...ExecutionOptions) (TurnSubmission, <-chan turnResult, error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return TurnSubmission{}, nil, errors.New("core, context, and session id are required")
 	}
@@ -95,7 +106,7 @@ func (c *Core) recoverSession(ctx context.Context, sessionID string, wait bool, 
 			c.mu.Unlock()
 			return TurnSubmission{}, nil, idErr
 		}
-		resumeRequest := storedTurnRequest{Input: json.RawMessage("null"), Resume: true, GoalID:pending.GoalID, GoalRevision:pending.GoalRevision, AutomaticGoal:pending.AutomaticGoal}
+		resumeRequest := storedTurnRequest{Input: json.RawMessage("null"), Resume: true, GoalID: pending.GoalID, GoalRevision: pending.GoalRevision, AutomaticGoal: pending.AutomaticGoal}
 		if len(executionOverride) == 1 {
 			resumeRequest.Execution, resumeRequest.ExecutionOverride = executionOverride[0], true
 		}

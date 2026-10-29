@@ -97,7 +97,7 @@ func TestExecutionTokenBudgetPersistsAcrossPauseAndRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer func() { _ = client.Close() }()
+	defer func() { _ = client.Close(context.Background()) }()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
@@ -121,7 +121,7 @@ func TestExecutionTokenBudgetPersistsAcrossPauseAndRecovery(t *testing.T) {
 	if initialCalls != 1 {
 		t.Fatalf("model calls before first pause = %d, want one completed task-tool call", initialCalls)
 	}
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatalf("close before recovery: %v", err)
 	}
 	client, err = New(config)
@@ -177,7 +177,7 @@ func TestForkPausedTaskStartsWithFreshTokenBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	source, err := client.CreateSession(ctx, json.RawMessage("null"))
@@ -227,7 +227,7 @@ func TestDiscardPausedTaskClearsTokenBudget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
@@ -284,7 +284,7 @@ func TestBudgetCappedIncompleteResponsePausesTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
@@ -394,7 +394,7 @@ func TestTaskBudgetReasonPersistsAndRecoveryCanRaiseLimit(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	defer func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("Close: %v", err)
 		}
 	}()

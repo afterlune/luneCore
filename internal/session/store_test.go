@@ -92,7 +92,7 @@ func TestListPageReturnsNewestNonArchivedSessions(t *testing.T) {
 		{ID: "new", Workspace: "workspace", UpdatedAt: time.Unix(4, 0), Data: json.RawMessage(`{"title":"new","archived":false}`)},
 	}
 	for _, record := range records {
-		if err := store.Save(ctx, record); err != nil {
+		if err := store.Create(ctx, record); err != nil {
 			t.Fatalf("Save(%s): %v", record.ID, err)
 		}
 	}
@@ -237,15 +237,14 @@ func TestOpenRejectsNewerSchemaVersion(t *testing.T) {
 	}
 }
 
-func TestSaveAndHistoryUpdatePreserveSessionMetadata(t *testing.T) {
+func TestFieldUpdatesPreserveSessionMetadata(t *testing.T) {
 	store, _ := openTestStore(t)
 	ctx := context.Background()
 	first := Snapshot{ID: "one", Workspace: "workspace", Data: json.RawMessage(`{"history":["first"],"title":"Keep me","archived":true,"settings":{"model_profile":"main"}}`)}
-	if err := store.Save(ctx, first); err != nil {
+	if err := store.Create(ctx, first); err != nil {
 		t.Fatal(err)
 	}
-	second := Snapshot{ID: "one", Workspace: "workspace", Data: json.RawMessage(`{"history":null,"title":"stale","archived":false,"settings":{"model_profile":"review"}}`)}
-	if err := store.Save(ctx, second); err != nil {
+	if err := store.UpdateSettings(ctx, "one", "workspace", json.RawMessage(`{"model_profile":"review"}`)); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.UpdateHistory(ctx, "one", "workspace", json.RawMessage(`["second"]`)); err != nil {
@@ -283,7 +282,7 @@ func TestSaveAndHistoryUpdatePreserveSessionMetadata(t *testing.T) {
 func TestUpdateConversationAtomicallySavesTranscriptAndProviderContext(t *testing.T) {
 	store, _ := openTestStore(t)
 	ctx := context.Background()
-	if err := store.Save(ctx, Snapshot{ID: "session", Workspace: "workspace", Data: json.RawMessage(`{"history":[],"model_context":["old"],"model_context_key":"old-key","title":"keep"}`)}); err != nil {
+	if err := store.Create(ctx, Snapshot{ID: "session", Workspace: "workspace", Data: json.RawMessage(`{"history":[],"model_context":["old"],"model_context_key":"old-key","title":"keep"}`)}); err != nil {
 		t.Fatal(err)
 	}
 	transcript := json.RawMessage(`[{"type":"message","role":"user","content":"visible"}]`)
@@ -327,7 +326,7 @@ func TestCompleteQueuedTurnAtomicallyPersistsConversationResultAndEvent(t *testi
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if err := store.Save(ctx, Snapshot{ID: "session", Workspace: "workspace", Data: json.RawMessage(`{"history":null}`)}); err != nil {
+	if err := store.Create(ctx, Snapshot{ID: "session", Workspace: "workspace", Data: json.RawMessage(`{"history":null}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := store.EnqueueTurn(ctx, QueuedTurn{
@@ -390,6 +389,19 @@ func TestCompleteQueuedTurnAtomicallyPersistsConversationResultAndEvent(t *testi
 	if err != nil || !found || string(stored.Response) != string(response) {
 		t.Fatalf("reopened turn result = %#v found=%t error=%v", stored, found, err)
 	}
+	// A repeated worker completion must not overwrite the committed result or
+	// conversation even though the result upsert precedes queue removal in SQL.
+	if _, err := reopened.CompleteQueuedTurn(ctx, "session", "queue", "execution", "failed", nil, json.RawMessage(`["wrong"]`), nil, "", event, nil); err == nil {
+		t.Fatal("duplicate completion accepted without queue ownership")
+	}
+	stable, found, err := reopened.TurnResult(ctx, "session", "execution")
+	if err != nil || !found || stable.Status != "completed" || string(stable.Response) != string(response) {
+		t.Fatalf("duplicate completion changed durable result: %+v,%v", stable, err)
+	}
+	snapshot, err = reopened.Get(ctx, "session", "workspace")
+	if err != nil || !strings.Contains(string(snapshot.Data), `"text":"done"`) {
+		t.Fatalf("duplicate completion changed history: %+v,%v", snapshot, err)
+	}
 	if deleted, err := reopened.Delete(ctx, "session", "workspace"); err != nil || !deleted {
 		t.Fatalf("delete session = %t, error=%v", deleted, err)
 	}
@@ -437,7 +449,7 @@ func TestReplaceDataIfUnchangedPreservesTimestampAndRejectsStalePayload(t *testi
 	updatedAt := time.Unix(123, 456)
 	oldData := json.RawMessage(`{"history":["old"],"title":"thread","archived":false}`)
 	newData := json.RawMessage(`{"data_version":1,"history":["old"],"title":"thread","archived":false}`)
-	if err := store.Save(ctx, Snapshot{ID: "one", Workspace: "workspace", UpdatedAt: updatedAt, Data: oldData}); err != nil {
+	if err := store.Create(ctx, Snapshot{ID: "one", Workspace: "workspace", UpdatedAt: updatedAt, Data: oldData}); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := store.ReplaceDataIfUnchanged(ctx, "one", "workspace", json.RawMessage(`{"history":[]}`), newData)
@@ -466,7 +478,7 @@ func TestLatestAndListFilterArchivedBeforeLimit(t *testing.T) {
 		{ID: "active-new", Workspace: "workspace", UpdatedAt: time.Unix(2, 0), Data: json.RawMessage(`{"title":"new","archived":false}`)},
 		{ID: "other-workspace", Workspace: "other", UpdatedAt: time.Unix(4, 0), Data: json.RawMessage(`{"archived":false}`)},
 	} {
-		if err := store.Save(ctx, snapshot); err != nil {
+		if err := store.Create(ctx, snapshot); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -487,7 +499,7 @@ func TestLatestAndListFilterArchivedBeforeLimit(t *testing.T) {
 func TestDeleteIsWorkspaceScopedAndIdempotent(t *testing.T) {
 	store, _ := openTestStore(t)
 	ctx := context.Background()
-	if err := store.Save(ctx, Snapshot{ID: "one", Workspace: "workspace", Data: json.RawMessage(`{}`)}); err != nil {
+	if err := store.Create(ctx, Snapshot{ID: "one", Workspace: "workspace", Data: json.RawMessage(`{}`)}); err != nil {
 		t.Fatal(err)
 	}
 	deleted, err := store.Delete(ctx, "one", "other")
@@ -504,12 +516,12 @@ func TestDeleteIsWorkspaceScopedAndIdempotent(t *testing.T) {
 	}
 }
 
-func TestStaleSnapshotSavePreservesCurrentConversation(t *testing.T) {
+func TestUsageMutationPreservesCurrentConversation(t *testing.T) {
 	for _, clearContext := range []bool{false, true} {
 		t.Run(fmt.Sprintf("clear_context_%t", clearContext), func(t *testing.T) {
 			store, _ := openTestStore(t)
 			stale := Snapshot{ID: "session", Workspace: "workspace", Data: json.RawMessage(`{"history":["old"],"model_context":["old context"],"model_context_key":"old-key","agent_context":{"categories":["old"]},"settings":{"model_profile":"main"},"session_usage":{"requests":1}}`)}
-			if err := store.Save(t.Context(), stale); err != nil {
+			if err := store.Create(t.Context(), stale); err != nil {
 				t.Fatal(err)
 			}
 			history := json.RawMessage(`["new history"]`)
@@ -531,7 +543,10 @@ func TestStaleSnapshotSavePreservesCurrentConversation(t *testing.T) {
 			update["settings"] = map[string]any{"model_profile": "review"}
 			update["session_usage"] = map[string]any{"requests": 2}
 			stale.Data, _ = json.Marshal(update)
-			if err := store.Save(t.Context(), stale); err != nil {
+			if err := store.ModifyUsage(t.Context(), stale.ID, stale.Workspace, func(json.RawMessage) (json.RawMessage, error) { return stale.Data, nil }); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.UpdateSettings(t.Context(), stale.ID, stale.Workspace, json.RawMessage(`{"model_profile":"review"}`)); err != nil {
 				t.Fatal(err)
 			}
 			latest, err := store.Get(t.Context(), stale.ID, stale.Workspace)
@@ -563,17 +578,17 @@ func mustJSON(t *testing.T, value any) json.RawMessage {
 	return data
 }
 
-func TestSnapshotSavePreservesJSONScalarConversationFields(t *testing.T) {
+func TestFieldMutationPreservesJSONScalarConversationFields(t *testing.T) {
 	for _, value := range []json.RawMessage{json.RawMessage(`"text"`), json.RawMessage(`true`), json.RawMessage(`7`), json.RawMessage(`null`)} {
 		t.Run(string(value), func(t *testing.T) {
 			store, _ := openTestStore(t)
 			payload := mustJSON(t, map[string]json.RawMessage{"history": value, "model_context": value, "agent_context": value})
 			snapshot := Snapshot{ID: "session", Workspace: "workspace", Data: payload}
-			if err := store.Save(t.Context(), snapshot); err != nil {
+			if err := store.Create(t.Context(), snapshot); err != nil {
 				t.Fatal(err)
 			}
 			snapshot.Data = json.RawMessage(`{"history":[],"session_usage":{"requests":2}}`)
-			if err := store.Save(t.Context(), snapshot); err != nil {
+			if err := store.ModifyUsage(t.Context(), snapshot.ID, snapshot.Workspace, func(json.RawMessage) (json.RawMessage, error) { return snapshot.Data, nil }); err != nil {
 				t.Fatal(err)
 			}
 			latest, err := store.Get(t.Context(), snapshot.ID, snapshot.Workspace)

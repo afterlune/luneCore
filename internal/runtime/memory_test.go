@@ -25,7 +25,7 @@ func newMemoryTestCore(t *testing.T, provider publicmodel.Provider, config Memor
 		t.Fatalf("New memory Core: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("close memory Core: %v", err)
 		}
 	})

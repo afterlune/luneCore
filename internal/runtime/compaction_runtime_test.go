@@ -56,7 +56,7 @@ func TestAutomaticCompactionUsesStoredMeasuredInput(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	writeProjectSettingsConfig(t, workspace, compactionTestConfig(server.URL))
 	client := openSettingsCore(t, workspace, stateDir)
-	defer client.Close()
+	defer client.Close(context.Background())
 	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -102,7 +102,7 @@ func TestCoreCompactReturnsResultAndEmitsEvents(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	writeProjectSettingsConfig(t, workspace, compactionTestConfig(server.URL))
 	client := openSettingsCore(t, workspace, stateDir)
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	history := model.NewResponseInputItems(
 		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("old request")},
@@ -177,7 +177,7 @@ func TestCoreManualCompactUsesResponsesCompactEndpoint(t *testing.T) {
 	)
 	writeProjectSettingsConfig(t, workspace, config)
 	client := openSettingsCore(t, workspace, stateDir)
-	defer client.Close()
+	defer client.Close(context.Background())
 	history, err := json.Marshal(model.NewResponseInputItems(
 		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("first request")},
 		model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText("first answer")},
@@ -263,7 +263,7 @@ func TestCoreManualCompactFallsBackWhenStandaloneEndpointIsUnsupported(t *testin
 	)
 	writeProjectSettingsConfig(t, workspace, config)
 	client := openSettingsCore(t, workspace, stateDir)
-	defer client.Close()
+	defer client.Close(context.Background())
 	history, err := json.Marshal(model.NewResponseInputItems(
 		model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("first request")},
 		model.InputMessage{Role: model.RoleAssistant, Content: model.NewMessageText(oldDetails)},

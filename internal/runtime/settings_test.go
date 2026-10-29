@@ -70,7 +70,7 @@ func openSettingsCore(t *testing.T, workspace, stateDir string) *Core {
 		t.Fatalf("New Core: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("close Core: %v", err)
 		}
 	})
@@ -118,7 +118,7 @@ func TestCoreTeamTreeLimitPrecedence(t *testing.T) {
 		t.Fatalf("New with host team limits: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := hostClient.Close(); err != nil {
+		if err := hostClient.Close(context.Background()); err != nil {
 			t.Errorf("close Core: %v", err)
 		}
 	})
@@ -208,7 +208,7 @@ func TestSessionModelSettingsPersistAndDefault(t *testing.T) {
 	if len(profiles) != 2 || profiles[0].Profile != "primary" || profiles[1].Profile != "review" {
 		t.Fatalf("model profiles = %#v, want sorted profiles", profiles)
 	}
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatalf("close Core before reopen: %v", err)
 	}
 
@@ -294,7 +294,7 @@ func TestSessionTaskSettingsInheritProjectDefaultsAndPersistOverrides(t *testing
 	if effective != wantOverrides {
 		t.Fatalf("effective overrides = %#v, want %#v", effective, wantOverrides)
 	}
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatalf("close before reopen: %v", err)
 	}
 
@@ -354,7 +354,7 @@ func TestLegacySessionWithoutTaskOverridesInheritsProjectDefaults(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save(context.Background(), session.Snapshot{
+	if err := store.Create(context.Background(), session.Snapshot{
 		ID: "legacy-settings", Workspace: workspace,
 		Data: json.RawMessage(`{"history":null,"settings":{"model_profile":"primary"}}`),
 	}); err != nil {
@@ -364,6 +364,9 @@ func TestLegacySessionWithoutTaskOverridesInheritsProjectDefaults(t *testing.T) 
 		t.Fatal(err)
 	}
 
+	if _, err := UpgradeState(t.Context(), stateDir); err != nil {
+		t.Fatal(err)
+	}
 	client := openSettingsCore(t, workspace, stateDir)
 	saved, err := client.GetSession(context.Background(), "legacy-settings")
 	if err != nil {
@@ -395,12 +398,15 @@ func TestLegacySessionWithoutSettingsGetsDefaultProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save(context.Background(), session.Snapshot{
+	if err := store.Create(context.Background(), session.Snapshot{
 		ID: "legacy-session", Workspace: workspace, Data: json.RawMessage(`{"history":null}`),
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UpgradeState(t.Context(), stateDir); err != nil {
 		t.Fatal(err)
 	}
 	client := openSettingsCore(t, workspace, stateDir)
@@ -433,7 +439,7 @@ func TestPausedTaskResumeUsesCheckpointModelAndEffort(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("close Core: %v", err)
 		}
 	})

@@ -23,7 +23,7 @@ func TestQuestionBatchDraftSurvivesRestartAndOnlyCompleteAnswersResume(t *testin
 	}
 	defer func() {
 		if c != nil {
-			c.Close()
+			c.Close(context.Background())
 		}
 	}()
 	saved, err := c.CreateSession(ctx, json.RawMessage("null"))
@@ -61,7 +61,7 @@ func TestQuestionBatchDraftSurvivesRestartAndOnlyCompleteAnswersResume(t *testin
 	if requests != 1 {
 		t.Fatal("saving draft resumed model")
 	}
-	if err := c.Close(); err != nil {
+	if err := c.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	c = nil

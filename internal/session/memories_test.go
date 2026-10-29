@@ -15,7 +15,7 @@ func TestWorkspaceMemoryIsolationAndSourceSessionCleanup(t *testing.T) {
 		{ID: "session-a", Workspace: "workspace-a", Data: json.RawMessage(`{}`)},
 		{ID: "session-b", Workspace: "workspace-b", Data: json.RawMessage(`{}`)},
 	} {
-		if err := store.Save(ctx, snapshot); err != nil {
+		if err := store.Create(ctx, snapshot); err != nil {
 			t.Fatal(err)
 		}
 	}

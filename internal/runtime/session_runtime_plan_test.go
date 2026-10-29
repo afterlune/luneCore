@@ -225,7 +225,11 @@ func TestPlanImplementationUsesNormalApprovalFlow(t *testing.T) {
 					t.Fatal("plan command did not request normal approval")
 				}
 			}
-			if err := runtime.ResolveApproval(approval.ID, test.allow); err != nil {
+			decision := publictool.ApprovalDeny
+			if test.allow {
+				decision = publictool.ApprovalAllowOnce
+			}
+			if err := runtime.ResolveApprovalDecision(context.Background(), approval.ID, decision); err != nil {
 				t.Fatalf("ResolveApproval: %v", err)
 			}
 			result, err := runtime.WaitTurn(context.Background(), implementation.Submission.ExecutionID)

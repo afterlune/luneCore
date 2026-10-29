@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 14
+const currentSchemaVersion = 15
 
 func Open(path string) (*Store, error) {
 	absolute, err := filepath.Abs(path)
@@ -328,7 +328,8 @@ ON CONFLICT(session_id) DO NOTHING;
 UPDATE session_goals SET data = json_set(CAST(data AS TEXT), '$.id', goal_id);
 UPDATE sessions SET data = CAST(json_remove(CAST(data AS TEXT), '$.settings.goal') AS BLOB)
 WHERE json_type(CAST(data AS TEXT), '$.settings.goal') IS NOT NULL;`); err != nil {
-			_ = tx.Rollback(); _ = db.Close()
+			_ = tx.Rollback()
+			_ = db.Close()
 			return nil, fmt.Errorf("migrate legacy goals: %w", err)
 		}
 	}

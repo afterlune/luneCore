@@ -3,12 +3,17 @@ package runtime
 import (
 	"context"
 	"errors"
-	"time"
 
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-func (c *Core) Close() error {
+func (c *Core) Close(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("context is required")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if c == nil {
 		return nil
 	}
@@ -43,8 +48,18 @@ func (c *Core) Close() error {
 		}
 		c.closing = true
 		c.mu.Unlock()
-		c.queueDrainWG.Wait()
-		c.runtimeConfigMu.Lock()
+		if err := waitContext(ctx, &c.queueDrainWG); err != nil {
+			c.mu.Lock()
+			c.closing = false
+			c.mu.Unlock()
+			return err
+		}
+		if err := lockContext(ctx, &c.runtimeConfigMu); err != nil {
+			c.mu.Lock()
+			c.closing = false
+			c.mu.Unlock()
+			return err
+		}
 		runtimeConfigLocked = true
 		closingAfterQueueDrain = true
 		c.mu.Lock()
@@ -65,8 +80,18 @@ func (c *Core) Close() error {
 		c.mu.Unlock()
 		c.runtimeConfigMu.Unlock()
 		runtimeConfigLocked = false
-		c.queueDrainWG.Wait()
-		c.runtimeConfigMu.Lock()
+		if err := waitContext(ctx, &c.queueDrainWG); err != nil {
+			c.mu.Lock()
+			c.closing = false
+			c.mu.Unlock()
+			return err
+		}
+		if err := lockContext(ctx, &c.runtimeConfigMu); err != nil {
+			c.mu.Lock()
+			c.closing = false
+			c.mu.Unlock()
+			return err
+		}
 		runtimeConfigLocked = true
 		closingAfterQueueDrain = true
 		c.mu.Lock()
@@ -91,14 +116,17 @@ func (c *Core) Close() error {
 	}
 	for _, pending := range interactions {
 		select {
-		case pending.response <- userInteractionResult{Err: errors.New("core is closing")}:
+		case pending.response <- userInteractionResult{Err: ErrMCPServerLifecycleChanged}:
 		default:
 		}
 	}
-	c.sessionOps.Wait()
-	cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 35*time.Second)
-	cleanupErr := c.commands.Close(cleanupCtx)
-	cleanupCancel()
+	if err := waitContext(ctx, &c.sessionOps); err != nil {
+		c.mu.Lock()
+		c.closing = false
+		c.mu.Unlock()
+		return err
+	}
+	cleanupErr := c.commands.Close(ctx)
 	if cleanupErr != nil {
 		c.mu.Lock()
 		c.closing = false
@@ -110,7 +138,7 @@ func (c *Core) Close() error {
 		closeMCP = c.mcpManager.Close()
 	}
 	c.mu.Lock()
-	closeErr := errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.closeSessionLocksLocked())
+	closeErr := errors.Join(closeMCP, c.checkpoints.Close(), c.sessions.Close(), c.registry.Close(), c.closeSessionLocksLocked(), c.stateLock.Close())
 	c.closed = true
 	c.closing = false
 	c.mu.Unlock()

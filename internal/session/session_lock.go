@@ -40,12 +40,17 @@ func AcquireSessionLock(stateDir, sessionID string) (*FileLock, error) {
 
 // AcquireFileLock takes an exclusive lock on path. The lock is released when
 // Close is called or when the operating system closes the underlying handle.
-func AcquireFileLock(path string) (*FileLock, error) {
+func AcquireFileLock(path string) (*FileLock, error) { return acquireFileLock(path, false) }
+
+// AcquireSharedFileLock allows live Core instances to coexist while excluding offline upgrades.
+func AcquireSharedFileLock(path string) (*FileLock, error) { return acquireFileLock(path, true) }
+
+func acquireFileLock(path string, shared bool) (*FileLock, error) {
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("open lock file: %w", err)
 	}
-	if err := lockSessionFile(file); err != nil {
+	if err := lockSessionFile(file, shared); err != nil {
 		closeErr := file.Close()
 		if errors.Is(err, ErrFileLockInUse) {
 			return nil, errors.Join(ErrFileLockInUse, closeErr)

@@ -45,7 +45,11 @@ func interruptTestTask(t *testing.T, client *Core, sessionID string) bool {
 	if err != nil {
 		t.Fatalf("OpenSessionRuntime: %v", err)
 	}
-	return runtime.Interrupt(state.ExecutionID)
+	accepted, err := runtime.Interrupt(context.Background(), state.ExecutionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return accepted
 }
 
 func runtimeTestConfig(workspace, stateDir string, provider publicmodel.Provider) Config {
@@ -100,7 +104,7 @@ func newProgrammaticCore(t *testing.T, provider publicmodel.Provider, hostTools 
 		t.Fatalf("New programmatic Core: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("close Core: %v", err)
 		}
 	})

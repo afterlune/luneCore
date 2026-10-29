@@ -133,20 +133,14 @@ func pendingRequestID(request PendingRequest) string {
 	return ""
 }
 
-func (r *SessionRuntime) ResolveApprovalDecision(id string, decision publictool.ApprovalDecision) error {
-	if r == nil || r.core == nil || id == "" {
-		return errors.New("session runtime and approval id are required")
+func (r *SessionRuntime) ResolveApprovalDecision(ctx context.Context, id string, decision publictool.ApprovalDecision) error {
+	if r == nil || r.core == nil || ctx == nil || id == "" {
+		return errors.New("session runtime, context, and approval id are required")
 	}
-	return r.core.resolveApprovalDecision(r.sessionID, id, decision)
-}
-
-// ResolveApproval permits only this invocation. Use ResolveApprovalDecision for session grants.
-func (r *SessionRuntime) ResolveApproval(id string, allowed bool) error {
-	decision := publictool.ApprovalDeny
-	if allowed {
-		decision = publictool.ApprovalAllowOnce
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-	return r.ResolveApprovalDecision(id, decision)
+	return r.core.resolveApprovalDecision(ctx, r.sessionID, id, decision)
 }
 
 // ResolveUserQuestion stores an answer and resumes the exact graph continuation.

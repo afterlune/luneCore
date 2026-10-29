@@ -46,7 +46,7 @@ func TestSessionApprovalPersistenceAndForkIsolation(t *testing.T) {
 
 	// 1. Denial should not persist
 	approvalID, resultChan := beginSessionToolApproval(t, client, session.ID, ctx, toolReq)
-	if err := client.resolveApprovalDecision(session.ID, approvalID, publictool.ApprovalDeny); err != nil {
+	if err := client.resolveApprovalDecision(context.Background(), session.ID, approvalID, publictool.ApprovalDeny); err != nil {
 		t.Fatal(err)
 	}
 	if allowed := awaitApprovalResult(t, resultChan); allowed {
@@ -60,7 +60,7 @@ func TestSessionApprovalPersistenceAndForkIsolation(t *testing.T) {
 
 	// 2. Allowance should persist and be in memory store
 	approvalID, resultChan = beginSessionToolApproval(t, client, session.ID, ctx, toolReq)
-	if err := client.resolveApprovalDecision(session.ID, approvalID, publictool.ApprovalAllowSession); err != nil {
+	if err := client.resolveApprovalDecision(context.Background(), session.ID, approvalID, publictool.ApprovalAllowSession); err != nil {
 		t.Fatal(err)
 	}
 	if allowed := awaitApprovalResult(t, resultChan); !allowed {
@@ -91,14 +91,14 @@ func TestSessionApprovalPersistenceAndForkIsolation(t *testing.T) {
 	}
 
 	// 5. Reopened Core keeps approvals
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	reopened, err := New(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = reopened.Close() })
+	t.Cleanup(func() { _ = reopened.Close(context.Background()) })
 	restored, err := reopened.GetSession(context.Background(), session.ID)
 	if err != nil || len(restored.Approvals) != 1 || restored.Approvals[0].Tool != "custom_exec" {
 		t.Fatalf("reopened approvals = %#v, error %v", restored.Approvals, err)
@@ -165,7 +165,7 @@ func TestAutoReviewToolRequest(t *testing.T) {
 func beginSessionToolApproval(t *testing.T, client *Core, sessionID string, ctx context.Context, request runtimepermission.PermissionRequest) (string, <-chan bool) {
 	t.Helper()
 	result := make(chan bool, 1)
-	go func() { result <- client.requestApproval(ctx, request) }()
+	go func() { result <- (client.requestApprovalDecision(ctx, request) != publictool.ApprovalDeny) }()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		client.mu.RLock()

@@ -2,11 +2,11 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"time"
 
 	runtimepermission "github.com/afterlune/luneCore/internal/tool"
 	publictool "github.com/afterlune/luneCore/tool"
@@ -36,16 +36,15 @@ func (c *Core) addSessionPathGrant(ctx context.Context, sessionID string, grant 
 	grant.Path = canonical
 
 	return c.withSessionLock(sessionID, func() error {
-		c.usageMu.Lock()
-		defer c.usageMu.Unlock()
-		saved, err := c.GetSession(ctx, sessionID)
-		if err != nil {
-			return err
-		}
-		store := runtimepermission.NewSessionPathGrantStore(saved.PathGrants)
-		store.Add(grant)
-		saved.PathGrants = store.Snapshot()
-		saved.UpdatedAt = time.Now()
-		return c.saveSession(ctx, saved)
+		return c.sessions.ModifyPathGrants(ctx, sessionID, c.workspace, func(previous json.RawMessage) (json.RawMessage, error) {
+			var saved Session
+			if err := json.Unmarshal(previous, &saved); err != nil {
+				return nil, err
+			}
+			store := runtimepermission.NewSessionPathGrantStore(saved.PathGrants)
+			store.Add(grant)
+			saved.PathGrants = store.Snapshot()
+			return json.Marshal(saved)
+		})
 	})
 }

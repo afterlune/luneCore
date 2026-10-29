@@ -393,7 +393,7 @@ func TestSessionRuntimeMCPInteractionIsCancelledByServerLifecycle(t *testing.T) 
 				case "reconnect":
 					lifecycleDone <- client.EnableMCPServer("host")
 				default:
-					lifecycleDone <- client.Close()
+					lifecycleDone <- client.Close(context.Background())
 				}
 			}()
 			select {

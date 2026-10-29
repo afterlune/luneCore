@@ -40,7 +40,7 @@ func BenchmarkCoreCreation(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		if err := c.Close(); err != nil {
+		if err := c.Close(context.Background()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -55,7 +55,7 @@ func BenchmarkSessionRuntimeOpenClose(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer c.Close()
+	defer c.Close(context.Background())
 
 	ctx := context.Background()
 	sess, err := c.CreateSession(ctx, json.RawMessage("null"))
@@ -71,7 +71,7 @@ func BenchmarkSessionRuntimeOpenClose(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		if err := rt.Close(); err != nil {
+		if err := rt.Close(context.Background()); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -121,7 +121,7 @@ func BenchmarkQuestionDraftSave(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer c.Close()
+	defer c.Close(context.Background())
 
 	ctx := context.Background()
 	sess, err := c.CreateSession(ctx, json.RawMessage("null"))
@@ -132,7 +132,7 @@ func BenchmarkQuestionDraftSave(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer rt.Close()
+	defer rt.Close(context.Background())
 
 	taskInput, _ := core.NewTaskInput("ask")
 	_, err = rt.SubmitTurn(ctx, core.TurnRequest{Input: taskInput}, core.StartIfIdle)
@@ -200,7 +200,7 @@ func BenchmarkSessionCoordinatorHighConcurrency(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	defer c.Close()
+	defer c.Close(context.Background())
 
 	b.ResetTimer()
 	b.ReportAllocs()

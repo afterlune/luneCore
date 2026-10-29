@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,7 +19,7 @@ func TestCoreReleasesPinnedWorkspaceRoot(t *testing.T) {
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Fatalf("Close: %v", err)
 		}
 		assertWorkspaceCanMove(t, workspace)

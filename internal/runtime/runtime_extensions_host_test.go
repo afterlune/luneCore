@@ -113,7 +113,7 @@ func TestProgrammaticModelConfigOverridesFileAndStateDirOwnsMCPState(t *testing.
 		t.Fatalf("New: %v", err)
 	}
 	defer func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("Close: %v", err)
 		}
 	}()
@@ -151,7 +151,7 @@ func TestCoreIgnoresMCPEnabledStateByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New with default MCP restore policy: %v", err)
 	}
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Errorf("Close: %v", err)
 	}
 	if data, err := os.ReadFile(statePath); err != nil || string(data) != "not json" {
@@ -174,7 +174,7 @@ func TestCoreReadsMCPEnabledStateWhenRestoreOptedIn(t *testing.T) {
 		RestoreEnabledMCP: true,
 	})
 	if err == nil {
-		_ = client.Close()
+		_ = client.Close(context.Background())
 		t.Fatal("New with opted-in MCP restore accepted malformed state")
 	}
 }

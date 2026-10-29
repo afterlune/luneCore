@@ -85,7 +85,7 @@ func TestExecutionTokenBudgetReservationsAreAtomicAcrossConcurrentBranches(t *te
 func TestDeletingSessionClearsItsExecutionTokenLedgers(t *testing.T) {
 	store, _ := openTestStore(t)
 	ctx := context.Background()
-	if err := store.Save(ctx, Snapshot{ID: "session-delete", Workspace: "workspace", Data: []byte(`{"history":null}`)}); err != nil {
+	if err := store.Create(ctx, Snapshot{ID: "session-delete", Workspace: "workspace", Data: []byte(`{"history":null}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if err := store.SetExecutionTokenBudget(ctx, "session-delete", "execution-delete", 100); err != nil {
@@ -115,7 +115,7 @@ func TestOpenV11DatabaseAddsTokenBudgetTablesAndPreservesSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Save(context.Background(), Snapshot{ID: "existing", Workspace: "workspace", Data: []byte(`{"history":null}`)}); err != nil {
+	if err := store.Create(context.Background(), Snapshot{ID: "existing", Workspace: "workspace", Data: []byte(`{"history":null}`)}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := store.db.Exec(`DROP TABLE execution_token_reservations`); err != nil {

@@ -5,7 +5,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"time"
 
 	"github.com/afterlune/luneCore/internal/model"
 )
@@ -84,14 +83,8 @@ func (c *Core) recordUsage(ctx context.Context, id string, usage Usage) error {
 }
 
 func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, agentID, profile, provider, modelID string, contextWindow, estimatedInputTokens int64, purposes ...UsagePurpose) error {
-	c.usageMu.Lock()
-	defer c.usageMu.Unlock()
 	if usage.TotalTokens <= 0 {
 		usage.TotalTokens = usage.InputTokens + usage.OutputTokens
-	}
-	saved, err := c.GetSession(ctx, id)
-	if err != nil {
-		return err
 	}
 	available := usage.InputTokens != 0 || usage.OutputTokens != 0 || usage.OutputTokensDetails.ReasoningTokens != 0 || usage.TotalTokens != 0 ||
 		usage.InputTokensDetails.CachedTokens != 0 || usage.InputTokensDetails.CacheCreationTokens != 0
@@ -102,28 +95,34 @@ func (c *Core) recordUsageForAgent(ctx context.Context, id string, usage Usage, 
 	trace := model.RequestTraceFromContext(ctx)
 	record := UsageRecord{
 		RequestID: trace.ID, RequestAttempt: trace.Attempt, RequestChanges: trace.Changes,
-		Request: saved.SessionUsage.Requests + 1, Usage: usage, Available: available,
+		Usage: usage, Available: available,
 		ContextWindow: contextWindow, EstimatedInputTokens: estimatedInputTokensIfMissing(usage.InputTokens, estimatedInputTokens),
 		AgentID: agentID, Purpose: purpose, ModelProfile: profile, Provider: provider, Model: modelID,
 	}
-	saved.UsageRequests = append(saved.UsageRequests, record)
-	if len(saved.UsageRequests) > 200 {
-		saved.UsageRequests = append([]UsageRecord(nil), saved.UsageRequests[len(saved.UsageRequests)-200:]...)
-	}
-	if saved.AgentUsage == nil {
-		saved.AgentUsage = make(map[string]UsageTotals)
-	}
-	agentTotals := saved.AgentUsage[agentID]
-	addUsage(&agentTotals, usage, available)
-	estimatedInput := estimatedInputTokensIfMissing(usage.InputTokens, estimatedInputTokens)
-	agentTotals.EstimatedInput += estimatedInput
-	saved.AgentUsage[agentID] = agentTotals
-	addUsage(&saved.SessionUsage, usage, available)
-	addUsage(&saved.TaskUsage, usage, available)
-	saved.SessionUsage.EstimatedInput += estimatedInput
-	saved.TaskUsage.EstimatedInput += estimatedInput
-	saved.UpdatedAt = time.Now()
-	return c.saveSession(ctx, saved)
+	return c.sessions.ModifyUsage(ctx, id, c.workspace, func(previous json.RawMessage) (json.RawMessage, error) {
+		var saved Session
+		if err := json.Unmarshal(previous, &saved); err != nil {
+			return nil, err
+		}
+		record.Request = saved.SessionUsage.Requests + 1
+		saved.UsageRequests = append(saved.UsageRequests, record)
+		if len(saved.UsageRequests) > 200 {
+			saved.UsageRequests = append([]UsageRecord(nil), saved.UsageRequests[len(saved.UsageRequests)-200:]...)
+		}
+		if saved.AgentUsage == nil {
+			saved.AgentUsage = make(map[string]UsageTotals)
+		}
+		agentTotals := saved.AgentUsage[agentID]
+		addUsage(&agentTotals, usage, available)
+		estimatedInput := estimatedInputTokensIfMissing(usage.InputTokens, estimatedInputTokens)
+		agentTotals.EstimatedInput += estimatedInput
+		saved.AgentUsage[agentID] = agentTotals
+		addUsage(&saved.SessionUsage, usage, available)
+		addUsage(&saved.TaskUsage, usage, available)
+		saved.SessionUsage.EstimatedInput += estimatedInput
+		saved.TaskUsage.EstimatedInput += estimatedInput
+		return json.Marshal(saved)
+	})
 }
 
 func estimatedInputTokensIfMissing(inputTokens, estimatedInputTokens int64) int64 {

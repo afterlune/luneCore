@@ -34,7 +34,7 @@ func TestApprovalWaitsWithoutSubscriberAndCanBeResolvedAfterReconnect(t *testing
 	callCtx := publictool.WithCallIdentity(context.Background(), publictool.CallIdentity{SessionID: saved.ID, TaskID: "task", ExecutionID: "execution"})
 	approvalDone := make(chan bool, 1)
 	go func() {
-		approvalDone <- client.requestApproval(callCtx, toolPermissionRequestForTest())
+		approvalDone <- (client.requestApprovalDecision(callCtx, toolPermissionRequestForTest()) != publictool.ApprovalDeny)
 	}()
 	deadline := time.Now().Add(5 * time.Second)
 	var pending []PendingRequest
@@ -72,7 +72,7 @@ func TestApprovalWaitsWithoutSubscriberAndCanBeResolvedAfterReconnect(t *testing
 	case <-time.After(time.Second):
 		t.Fatal("approval event was not replayed after reconnect")
 	}
-	if err := runtime.ResolveApproval(pending[0].Approval.ID, true); err != nil {
+	if err := runtime.ResolveApprovalDecision(context.Background(), pending[0].Approval.ID, publictool.ApprovalAllowOnce); err != nil {
 		t.Fatal(err)
 	}
 	select {

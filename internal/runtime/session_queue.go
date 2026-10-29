@@ -11,6 +11,17 @@ import (
 )
 
 func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool) (TurnSubmission, <-chan turnResult, error) {
+	if c == nil || ctx == nil {
+		return TurnSubmission{}, nil, errors.New("core and context are required")
+	}
+	if err := lockContext(ctx, &c.queueMutationMu); err != nil {
+		return TurnSubmission{}, nil, err
+	}
+	defer c.queueMutationMu.Unlock()
+	return c.submitTurnAdmitted(ctx, sessionID, request, mode, wait)
+}
+
+func (c *Core) submitTurnAdmitted(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool) (TurnSubmission, <-chan turnResult, error) {
 
 	if c == nil || ctx == nil || sessionID == "" {
 		return TurnSubmission{}, nil, errors.New("core, context, and session id are required")
@@ -76,17 +87,8 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 	if wait {
 		waiter = make(chan turnResult, 1)
 	}
-	steeringLocked := mode == SteerInput
-	if steeringLocked {
-		c.queueMutationMu.Lock()
-	}
 	c.mu.Lock()
-	unlock := func() {
-		c.mu.Unlock()
-		if steeringLocked {
-			c.queueMutationMu.Unlock()
-		}
-	}
+	unlock := c.mu.Unlock
 	if c.closed || c.closing {
 		unlock()
 		return TurnSubmission{}, nil, errors.New("core is closed")

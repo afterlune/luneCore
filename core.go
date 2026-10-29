@@ -2,6 +2,7 @@
 package core
 
 import (
+	"context"
 	projectconfig "github.com/afterlune/luneCore/internal/config"
 	"github.com/afterlune/luneCore/internal/mcp"
 	coreruntime "github.com/afterlune/luneCore/internal/runtime"
@@ -258,3 +259,12 @@ func NewTaskInput[T any](value T) (TaskInput, error) { return coreruntime.NewTas
 
 // ParseTaskInput parses command-line text as JSON input or plain text.
 func ParseTaskInput(line string) (TaskInput, error) { return coreruntime.ParseTaskInput(line) }
+
+// UpgradeReport describes an offline, backed-up execution format upgrade.
+type UpgradeReport = coreruntime.UpgradeReport
+
+var ErrUpgradeRequired = coreruntime.ErrUpgradeRequired
+
+func UpgradeState(ctx context.Context, stateDir string) (UpgradeReport, error) {
+	return coreruntime.UpgradeState(ctx, stateDir)
+}

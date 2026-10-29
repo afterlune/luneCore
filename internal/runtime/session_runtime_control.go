@@ -59,12 +59,22 @@ func (r *SessionRuntime) State(ctx context.Context) (RuntimeState, error) {
 	return result, nil
 }
 
-func (r *SessionRuntime) Interrupt(executionID string) bool {
-	if r != nil && r.core != nil && r.core.goalRun(executionID).ID != "" {
-		_, err := r.pauseGoal(context.Background(), false, executionID)
-		return err == nil
+// Interrupt accepts a cancellation request; it does not wait for task cleanup.
+func (r *SessionRuntime) Interrupt(ctx context.Context, executionID string) (bool, error) {
+	if r == nil || r.core == nil || ctx == nil || executionID == "" {
+		return false, errors.New("session runtime, context, and execution id are required")
 	}
-	return r != nil && r.core != nil && executionID != "" && r.core.interruptExecution(r.sessionID, executionID)
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	if r.core.goalRun(executionID).ID != "" {
+		_, err := r.pauseGoal(ctx, false, executionID)
+		if errors.Is(err, errStaleGoal) {
+			return false, nil
+		}
+		return err == nil, err
+	}
+	return r.core.interruptExecution(ctx, r.sessionID, executionID)
 }
 
 func (r *SessionRuntime) Recover(ctx context.Context, options ...ExecutionOptions) (TurnSubmission, error) {

@@ -11,11 +11,9 @@ import (
 	"github.com/afterlune/luneCore/internal/session"
 )
 
-func (c *Core) saveSession(ctx context.Context, saved Session) error {
-	var err error
-	saved, _, err = migrateSessionData(saved)
-	if err != nil {
-		return err
+func (c *Core) createSnapshot(ctx context.Context, saved Session) error {
+	if saved.DataVersion != CurrentSessionDataVersion {
+		return fmt.Errorf("session data version %d is unsupported", saved.DataVersion)
 	}
 	if saved.UpdatedAt.IsZero() {
 		saved.UpdatedAt = time.Now()
@@ -24,48 +22,25 @@ func (c *Core) saveSession(ctx context.Context, saved Session) error {
 	if err != nil {
 		return err
 	}
-	return c.sessions.Save(ctx, session.Snapshot{ID: saved.ID, Workspace: c.workspace, UpdatedAt: saved.UpdatedAt, Data: data})
+	return c.sessions.Create(ctx, session.Snapshot{ID: saved.ID, Workspace: c.workspace, UpdatedAt: saved.UpdatedAt, Data: data})
 }
 
 func (c *Core) decodeSession(ctx context.Context, snapshot session.Snapshot) (Session, error) {
-	for attempt := 0; attempt < 3; attempt++ {
-		var saved Session
-		if err := json.Unmarshal(snapshot.Data, &saved); err != nil {
-			return Session{}, fmt.Errorf("decode session %q: %w", snapshot.ID, err)
-		}
-		saved.ID, saved.Workspace, saved.UpdatedAt = snapshot.ID, snapshot.Workspace, snapshot.UpdatedAt
-		migrated, changed, err := migrateSessionData(saved)
-		if err != nil {
-			return Session{}, fmt.Errorf("migrate session %q: %w", snapshot.ID, err)
-		}
-		saved = migrated
-		if len(saved.History) == 0 {
-			saved.History = json.RawMessage("null")
-		}
-		if saved.Settings.ModelProfile == "" {
-			saved.Settings.ModelProfile = c.models.DefaultModel()
-		}
-		if !changed {
-			return saved, nil
-		}
-		encoded, err := json.Marshal(saved)
-		if err != nil {
-			return Session{}, fmt.Errorf("encode migrated session %q: %w", snapshot.ID, err)
-		}
-		updated, err := c.sessions.ReplaceDataIfUnchanged(ctx, snapshot.ID, snapshot.Workspace, snapshot.Data, encoded)
-		if err != nil {
-			return Session{}, fmt.Errorf("persist session %q migration: %w", snapshot.ID, err)
-		}
-		if updated {
-			return saved, nil
-		}
-		latest, err := c.sessions.Get(ctx, snapshot.ID, snapshot.Workspace)
-		if err != nil {
-			return Session{}, fmt.Errorf("reload session %q during migration: %w", snapshot.ID, err)
-		}
-		snapshot = *latest
+	var saved Session
+	if err := json.Unmarshal(snapshot.Data, &saved); err != nil {
+		return Session{}, fmt.Errorf("decode session %q: %w", snapshot.ID, err)
 	}
-	return Session{}, fmt.Errorf("session %q changed repeatedly during data migration", snapshot.ID)
+	if saved.DataVersion != CurrentSessionDataVersion {
+		return Session{}, fmt.Errorf("session %q has unsupported data version %d; run lune migrate --state-dir %s", snapshot.ID, saved.DataVersion, c.stateDir)
+	}
+	saved.ID, saved.Workspace, saved.UpdatedAt = snapshot.ID, snapshot.Workspace, snapshot.UpdatedAt
+	if len(saved.History) == 0 {
+		saved.History = json.RawMessage(`null`)
+	}
+	if saved.Settings.ModelProfile == "" {
+		saved.Settings.ModelProfile = c.models.DefaultModel()
+	}
+	return saved, nil
 }
 
 func newID() (string, error) {

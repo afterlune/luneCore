@@ -27,7 +27,7 @@ func TestInterruptGoalRejectsAnotherSessionsExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = second.PauseGoal(context.Background()); _ = second.Close() })
+	t.Cleanup(func() { _, _ = second.PauseGoal(context.Background()); _ = second.Close(context.Background()) })
 	for _, runtime := range []*SessionRuntime{first, second} {
 		if _, err := runtime.CreateGoal(t.Context(), GoalCreateOptions{Objective: "Wait for cancellation"}); err != nil {
 			t.Fatal(err)
@@ -44,7 +44,7 @@ func TestInterruptGoalRejectsAnotherSessionsExecution(t *testing.T) {
 	if !ok || state.Status != TaskRunning {
 		t.Fatalf("first state=%+v", state)
 	}
-	if second.Interrupt(state.ExecutionID) {
+	if accepted, err := second.Interrupt(context.Background(), state.ExecutionID); accepted || err != nil {
 		t.Error("accepted another session's execution ID")
 	}
 	goal, err := second.GetGoal(t.Context())
@@ -54,7 +54,7 @@ func TestInterruptGoalRejectsAnotherSessionsExecution(t *testing.T) {
 	if goal.Status != GoalActive {
 		t.Errorf("foreign interrupt changed second goal: %+v", goal)
 	}
-	if !first.Interrupt(state.ExecutionID) {
+	if accepted, err := first.Interrupt(context.Background(), state.ExecutionID); !accepted || err != nil {
 		t.Error("rejected own active goal execution")
 	}
 	goal, err = first.GetGoal(t.Context())
@@ -130,9 +130,9 @@ func TestInterruptGoalRejectsStaleGoalIdentity(t *testing.T) {
 			}
 			client.goalMu.Lock()
 			client.goalRuns = map[string]goalExecution{"stale": {ID: tc.id, Revision: tc.revision}}
-			client.goalArmed = map[string]bool{runtime.sessionID: true}
+			client.goalSessions = map[string]goalSessionConfig{runtime.sessionID: {Armed: true}}
 			client.goalMu.Unlock()
-			if runtime.Interrupt("stale") {
+			if accepted, err := runtime.Interrupt(context.Background(), "stale"); accepted || err != nil {
 				t.Error("accepted stale execution identity")
 			}
 			goal, err := runtime.GetGoal(t.Context())
@@ -143,7 +143,7 @@ func TestInterruptGoalRejectsStaleGoalIdentity(t *testing.T) {
 				t.Fatalf("stale interrupt changed goal: %+v", goal)
 			}
 			client.goalMu.Lock()
-			armed := client.goalArmed[runtime.sessionID]
+			armed := client.goalSessions[runtime.sessionID].Armed
 			client.goalMu.Unlock()
 			if !armed {
 				t.Fatal("stale interrupt disabled automatic continuation")

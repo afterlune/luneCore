@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
@@ -37,9 +36,7 @@ func (c *Core) Compact(ctx context.Context, sessionID string) (agentgraph.Compac
 }
 
 func (c *Core) compactOwned(ctx context.Context, sessionID string) (agentgraph.CompactionResult, error) {
-	if err := c.repairLegacyInterruptedTurn(ctx, sessionID); err != nil {
-		return agentgraph.CompactionResult{}, err
-	}
+
 	c.runtimeConfigMu.RLock()
 	defer c.runtimeConfigMu.RUnlock()
 	c.mu.RLock()
@@ -156,15 +153,7 @@ func (c *Core) compactOwned(ctx context.Context, sessionID string) (agentgraph.C
 }
 
 func (c *Core) resetTaskUsage(ctx context.Context, sessionID string) error {
-	c.usageMu.Lock()
-	defer c.usageMu.Unlock()
-	saved, err := c.GetSession(ctx, sessionID)
-	if err != nil {
-		return err
-	}
-	saved.TaskUsage = UsageTotals{}
-	saved.UpdatedAt = time.Now()
-	return c.saveSession(ctx, saved)
+	return c.sessions.ResetTaskUsage(ctx, sessionID, c.workspace)
 }
 
 func (c *Core) saveHistoryUsage(ctx context.Context, sessionID string, runtime *agentruntime.Responder) error {

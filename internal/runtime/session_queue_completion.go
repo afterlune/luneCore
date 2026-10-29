@@ -3,40 +3,29 @@ package runtime
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 
-	"github.com/afterlune/luneCore/internal/agentruntime"
-	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
 )
 
-func (c *Core) completeQueuedTurnFromRuntime(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response json.RawMessage, runtime *agentruntime.Responder, taskErr error) error {
-	var history, modelContext, agentContext json.RawMessage
-	contextKey := ""
-	var err error
-	if runtime != nil {
-		transcript := runtime.SessionHistory()
-		if transcript == nil {
-			transcript = model.NewResponseInputItems()
-		}
-		history, err = json.Marshal(transcript)
-		if err != nil {
-			return fmt.Errorf("encode completed transcript: %w", err)
-		}
-		context := runtime.ModelContextHistory()
-		if context != nil {
-			modelContext, err = json.Marshal(context)
-			if err != nil {
-				return fmt.Errorf("encode completed model context: %w", err)
-			}
-		}
-		contextKey = runtime.ContextKey()
-		agentContext = runtime.ConversationState()
+func (c *Core) commitRunOutcome(ctx context.Context, queued session.QueuedTurn, outcome runOutcome) error {
+	if outcome.Status != TaskPaused {
+		return c.commitQueuedTurn(ctx, queued, outcome.Status, outcome.Response, outcome.History, outcome.ModelContext, outcome.ContextKey, outcome.AgentContext, errorString(outcome.Err))
 	}
-	if status != TaskCompleted {
-		response = nil
+	state, _ := c.StateForSession(queued.SessionID)
+	event := Event{Kind: EventTaskFinished, SessionID: queued.SessionID, TaskID: state.TaskID, ExecutionID: queued.ExecutionID, QueueID: queued.QueueID, Status: TaskPaused, BudgetReason: outcome.BudgetReason, Err: errorString(outcome.Err), ContextWindow: state.ContextWindow, ModelProfile: state.ModelProfile, Provider: state.Provider, Model: state.Model}
+	failure, err := c.modelFailureArtifact(ctx, queued.SessionID)
+	if err != nil {
+		return err
 	}
-	return c.commitQueuedTurn(ctx, queued, status, response, history, modelContext, contextKey, agentContext, errorString(taskErr))
+	if _, err := c.sessions.PauseQueuedTurnWithReason(ctx, queued.SessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), string(outcome.BudgetReason), mustMarshalEvent(event), failure); err != nil {
+		return err
+	}
+	c.rememberQueuedTaskStatus(queued.SessionID, queued.ExecutionID, queued.QueueID, TaskPaused)
+	c.notifyEventHub(queued.SessionID)
+	if outcome.Question != nil {
+		c.emit(Event{Kind: EventUserQuestionRequired, SessionID: queued.SessionID, TaskID: state.TaskID, ExecutionID: queued.ExecutionID, UserQuestion: outcome.Question})
+	}
+	return nil
 }
 
 func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, status TaskStatus, response, history, modelContext json.RawMessage, contextKey string, agentContext json.RawMessage, taskError string) error {
@@ -54,10 +43,10 @@ func (c *Core) commitQueuedTurn(ctx context.Context, queued session.QueuedTurn, 
 	if err := c.runtime.DeleteCompletedRunForSession(queued.SessionID); err != nil {
 		c.logger.Warn("delete completed graph checkpoint", "error", err)
 	}
-	if err := c.sessions.DeleteToolInvocationsForSession(context.Background(), queued.SessionID); err != nil {
+	if err := c.sessions.DeleteToolInvocationsForSession(ctx, queued.SessionID); err != nil {
 		c.logger.Warn("delete completed tool invocation records", "error", err)
 	}
-	if err := c.sessions.DeleteExecutionTokenBudget(context.Background(), queued.ExecutionID); err != nil {
+	if err := c.sessions.DeleteExecutionTokenBudget(ctx, queued.ExecutionID); err != nil {
 		c.logger.Warn("delete completed execution token budget", "error", err)
 	}
 	return nil

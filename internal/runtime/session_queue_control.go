@@ -13,18 +13,21 @@ import (
 
 var errExecutionInterrupted = errors.New("execution interrupted")
 
-func (c *Core) interruptExecution(sessionID, executionID string) bool {
+func (c *Core) interruptExecution(ctx context.Context, sessionID, executionID string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	c.mu.Lock()
 	if interrupted, finishing := c.finishingExecutions[executionID]; finishing {
 		state := c.activeTasks[sessionID]
 		accepted := state.ExecutionID == executionID && interrupted
 		c.mu.Unlock()
-		return accepted
+		return accepted, nil
 	}
 	if state, ok := c.activeTasks[sessionID]; ok && state.ExecutionID == executionID {
 		if state.Status != TaskRunning {
 			c.mu.Unlock()
-			return false
+			return false, nil
 		}
 		cancel := c.taskCancels[sessionID]
 		if cancel != nil {
@@ -33,28 +36,28 @@ func (c *Core) interruptExecution(sessionID, executionID string) bool {
 		c.mu.Unlock()
 		if cancel != nil {
 			cancel()
-			return true
+			return true, nil
 		}
-		return false
+		return false, nil
 	}
-	queued, found, err := c.sessions.QueuedTurnByExecutionID(context.Background(), sessionID, executionID)
+	queued, found, err := c.sessions.QueuedTurnByExecutionID(ctx, sessionID, executionID)
 	if err != nil || !found {
 		c.mu.Unlock()
-		return false
+		return false, err
 	}
 	if queued.Status == session.QueuedTurnActive {
 		c.interruptRequests[executionID] = true
 		c.mu.Unlock()
-		return true
+		return true, nil
 	}
 	if queued.Status != session.QueuedTurnQueued {
 		c.mu.Unlock()
-		return false
+		return false, nil
 	}
 	c.interruptRequests[executionID] = true
 	c.mu.Unlock()
 	event := Event{Kind: EventTaskFinished, SessionID: sessionID, QueueID: queued.QueueID, ExecutionID: executionID, Status: TaskCancelled, Err: "interrupted before the turn started"}
-	_, deleted, err := c.sessions.CancelQueuedTurn(context.Background(), sessionID, executionID, string(TaskCancelled), func(session.QueuedTurn) json.RawMessage {
+	_, deleted, err := c.sessions.CancelQueuedTurn(ctx, sessionID, executionID, string(TaskCancelled), func(session.QueuedTurn) json.RawMessage {
 		return mustMarshalEvent(event)
 	})
 	if err == nil && deleted {
@@ -63,7 +66,7 @@ func (c *Core) interruptExecution(sessionID, executionID string) bool {
 		c.mu.Unlock()
 		c.eventHub(sessionID).notifyDurable()
 		c.resolveTurnWaiter(executionID, turnResult{err: context.Canceled})
-		return true
+		return true, nil
 	}
 	c.mu.Lock()
 	state, running := c.activeTasks[sessionID]
@@ -72,18 +75,18 @@ func (c *Core) interruptExecution(sessionID, executionID string) bool {
 		c.mu.Unlock()
 		if cancel != nil {
 			cancel()
-			return true
+			return true, nil
 		}
-		return false
+		return false, nil
 	}
-	current, exists, lookupErr := c.sessions.QueuedTurnByExecutionID(context.Background(), sessionID, executionID)
+	current, exists, lookupErr := c.sessions.QueuedTurnByExecutionID(ctx, sessionID, executionID)
 	if lookupErr == nil && exists && current.Status == session.QueuedTurnActive {
 		c.mu.Unlock()
-		return true
+		return true, nil
 	}
 	delete(c.interruptRequests, executionID)
 	c.mu.Unlock()
-	return false
+	return false, errors.Join(err, lookupErr)
 }
 
 func (c *Core) takeInterruptRequest(executionID string) bool {
@@ -102,6 +105,9 @@ func (c *Core) beginTaskFinish(executionID string) bool {
 	defer c.mu.Unlock()
 	if c.finishingExecutions == nil {
 		c.finishingExecutions = make(map[string]bool)
+	}
+	if interrupted, exists := c.finishingExecutions[executionID]; exists {
+		return interrupted
 	}
 	c.finishingExecutions[executionID] = c.interruptRequests[executionID]
 	requested := c.interruptRequests[executionID]
@@ -214,7 +220,7 @@ func (c *Core) waitForTurn(ctx context.Context, runtime *SessionRuntime, executi
 		}
 		return stored, result.err
 	case <-ctx.Done():
-		runtime.Interrupt(executionID)
+		runtime.Interrupt(context.WithoutCancel(ctx), executionID)
 		result := <-waiter
 		stored, storedErr := runtime.WaitTurn(context.Background(), executionID)
 		if storedErr != nil {
@@ -242,7 +248,7 @@ func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (TaskRes
 	if err != nil {
 		return TaskResult{}, err
 	}
-	defer runtime.Close()
+	defer runtime.Close(context.Background())
 	cursor, err := c.sessions.LatestRuntimeEventCursor(ctx, request.SessionID)
 	if err != nil {
 		return TaskResult{}, err

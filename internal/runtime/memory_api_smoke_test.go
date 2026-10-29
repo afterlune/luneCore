@@ -59,7 +59,7 @@ func TestMemoryRealAPISmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal("create isolated Core failed")
 	}
-	t.Cleanup(func() { _ = client.Close() })
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
 	if err := client.SetPermissionMode(PermissionReadOnly); err != nil {
 		t.Fatal(err)
 	}

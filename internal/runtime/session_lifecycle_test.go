@@ -83,7 +83,7 @@ func TestSessionTitleArchiveForkAndLatest(t *testing.T) {
 	}
 }
 
-func TestSessionDataVersionMigratesLegacyPayloadAndRejectsFutureVersion(t *testing.T) {
+func TestOfflinePayloadUpgradeAndFutureVersionRejection(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 	workspace, stateDir := t.TempDir(), t.TempDir()
@@ -93,10 +93,20 @@ func TestSessionDataVersionMigratesLegacyPayloadAndRejectsFutureVersion(t *testi
 
 	legacyData := json.RawMessage(`{"history":[{"type":"message","role":"user","content":"old"}],"settings":{"model_profile":"review","reasoning_effort":"high"},"title":"Legacy thread","archived":true}`)
 	legacyUpdatedAt := time.Now().Add(-time.Hour)
-	if err := client.sessions.Save(ctx, session.Snapshot{
+	if err := client.sessions.Create(ctx, session.Snapshot{
 		ID: "legacy", Workspace: workspace, UpdatedAt: legacyUpdatedAt, Data: legacyData,
 	}); err != nil {
 		t.Fatalf("save legacy session: %v", err)
+	}
+	if _, err := client.GetSession(ctx, "legacy"); err == nil {
+		t.Fatal("read unexpectedly upgraded legacy payload")
+	}
+	upgraded, upgradeErr := upgradeSessionPayload(legacyData)
+	if upgradeErr != nil {
+		t.Fatal(upgradeErr)
+	}
+	if _, err := client.sessions.ReplaceDataIfUnchanged(ctx, "legacy", workspace, legacyData, upgraded); err != nil {
+		t.Fatal(err)
 	}
 	migrated, err := client.GetSession(ctx, "legacy")
 	if err != nil {
@@ -129,8 +139,18 @@ func TestSessionDataVersionMigratesLegacyPayloadAndRejectsFutureVersion(t *testi
 	}
 
 	versionOne := json.RawMessage(`{"data_version":1,"history":null,"usage_requests":[{"request":204,"available":true,"agent_id":"lead","usage":{"input_tokens":80,"output_tokens":10,"total_tokens":90}},{"request":205,"available":true,"agent_id":"research","usage":{"input_tokens":50,"output_tokens":5,"total_tokens":55}}],"session_usage":{"requests":205,"measured":205,"input":10000}}`)
-	if err := client.sessions.Save(ctx, session.Snapshot{ID: "version-one", Workspace: workspace, Data: versionOne}); err != nil {
+	if err := client.sessions.Create(ctx, session.Snapshot{ID: "version-one", Workspace: workspace, Data: versionOne}); err != nil {
 		t.Fatalf("save version-one session: %v", err)
+	}
+	if _, err := client.GetSession(ctx, "version-one"); err == nil {
+		t.Fatal("read unexpectedly upgraded legacy payload")
+	}
+	upgraded, upgradeErr = upgradeSessionPayload(versionOne)
+	if upgradeErr != nil {
+		t.Fatal(upgradeErr)
+	}
+	if _, err := client.sessions.ReplaceDataIfUnchanged(ctx, "version-one", workspace, versionOne, upgraded); err != nil {
+		t.Fatal(err)
 	}
 	migratedV1, err := client.GetSession(ctx, "version-one")
 	if err != nil {
@@ -145,7 +165,7 @@ func TestSessionDataVersionMigratesLegacyPayloadAndRejectsFutureVersion(t *testi
 	for _, dataVersion := range []int{-1, CurrentSessionDataVersion + 1} {
 		id := "version-" + strconv.Itoa(dataVersion)
 		data, _ := json.Marshal(map[string]any{"data_version": dataVersion, "history": json.RawMessage("null")})
-		if err := client.sessions.Save(ctx, session.Snapshot{ID: id, Workspace: workspace, Data: data}); err != nil {
+		if err := client.sessions.Create(ctx, session.Snapshot{ID: id, Workspace: workspace, Data: data}); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := client.GetSession(ctx, id); err == nil {
@@ -193,7 +213,7 @@ func TestResumeRejectsCheckpointWithoutTaskSettingsSnapshot(t *testing.T) {
 	}
 }
 
-func TestCoreUsesV9CheckpointFileAndLeavesLegacyFilesUntouched(t *testing.T) {
+func TestCoreUsesCurrentCheckpointFileAndLeavesLegacyFilesUntouched(t *testing.T) {
 	server := httptest.NewServer(http.NotFoundHandler())
 	defer server.Close()
 	workspace, stateDir := t.TempDir(), t.TempDir()
@@ -207,7 +227,7 @@ func TestCoreUsesV9CheckpointFileAndLeavesLegacyFilesUntouched(t *testing.T) {
 		t.Fatal(err)
 	}
 	client := openSettingsCore(t, workspace, stateDir)
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	for name, want := range map[string][]byte{"checkpoints.db": legacyCheckpoint, "team_runs.db": legacyTeamRuns} {
@@ -216,8 +236,8 @@ func TestCoreUsesV9CheckpointFileAndLeavesLegacyFilesUntouched(t *testing.T) {
 			t.Fatalf("legacy file %q changed: %q, error=%v", name, got, err)
 		}
 	}
-	if info, err := os.Stat(filepath.Join(stateDir, "checkpoints-v10.db")); err != nil || info.IsDir() {
-		t.Fatalf("v10 checkpoint file missing: info=%v error=%v", info, err)
+	if info, err := os.Stat(filepath.Join(stateDir, "executions-v2.db")); err != nil || info.IsDir() {
+		t.Fatalf("current checkpoint file missing: info=%v error=%v", info, err)
 	}
 }
 

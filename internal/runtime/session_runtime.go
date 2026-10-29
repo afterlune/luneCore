@@ -152,11 +152,6 @@ type turnResult struct {
 	err      error
 }
 
-const (
-	legacyAcceptanceMachineID           = "lune-agent-v3"
-	legacyAcceptanceTaskSettingsVersion = 9
-)
-
 func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (_ *SessionRuntime, err error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return nil, errors.New("core, context, and session id are required")
@@ -168,7 +163,7 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (_ *Ses
 	keepSessionLock := false
 	defer func() {
 		if !keepSessionLock {
-			if releaseErr := c.releaseSessionLock(sessionID); releaseErr != nil {
+			if releaseErr := c.releaseSessionLock(ctx, sessionID); releaseErr != nil {
 				err = errors.Join(err, fmt.Errorf("release session lock after open failure: %w", releaseErr))
 			}
 		}
@@ -195,14 +190,6 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (_ *Ses
 			return nil, err
 		}
 	}
-	if err := c.repairLegacyInterruptedTurn(ctx, sessionID); err != nil {
-		c.removeEventHub(sessionID, hub)
-		return nil, err
-	}
-	if err := c.discardObsoletePausedTask(ctx, sessionID); err != nil {
-		c.removeEventHub(sessionID, hub)
-		return nil, err
-	}
 	if err := c.restoreGoal(ctx, sessionID); err != nil {
 		return nil, err
 	}
@@ -220,42 +207,24 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (_ *Ses
 
 // Close releases this runtime's session ownership. Do not use the runtime
 // after Close. Active or queued work keeps the session locked until it drains.
-func (r *SessionRuntime) Close() error {
+func (r *SessionRuntime) Close(ctx context.Context) error {
 	if r == nil || r.core == nil {
 		return nil
 	}
-	r.closeMu.Lock()
+	if ctx == nil {
+		return errors.New("context is required")
+	}
+	if err := lockContext(ctx, &r.closeMu); err != nil {
+		return err
+	}
 	defer r.closeMu.Unlock()
 	if r.closed {
 		return nil
 	}
-	if err := r.core.releaseSessionLock(r.sessionID); err != nil {
+	if err := r.core.releaseSessionLock(ctx, r.sessionID); err != nil {
 		return err
 	}
 	r.closed = true
-	return nil
-}
-
-func (c *Core) discardObsoletePausedTask(ctx context.Context, sessionID string) error {
-	cp, err := c.runtime.CheckpointForSession(ctx, sessionID)
-	if errors.Is(err, checkpoint.ErrNotFound) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	if cp.MachineID != legacyAcceptanceMachineID {
-		return nil
-	}
-	state, found, err := c.pendingState(ctx, sessionID)
-	// The immediately preceding Core version used graph v3 and task settings 9
-	// for the removed acceptance workflow. Preserve other old checkpoint paths.
-	if err != nil || !found || state.TaskSettingsVersion != legacyAcceptanceTaskSettingsVersion {
-		return err
-	}
-	if _, err := c.discardPaused(ctx, sessionID); err != nil {
-		return fmt.Errorf("discard obsolete paused task: %w", err)
-	}
 	return nil
 }
 
@@ -346,7 +315,9 @@ func (r *SessionRuntime) CancelPendingTurns(ctx context.Context) ([]string, erro
 		return nil, err
 	}
 	if activeExecutionID != "" {
-		c.interruptExecution(r.sessionID, activeExecutionID)
+		if _, err := c.interruptExecution(ctx, r.sessionID, activeExecutionID); err != nil {
+			return nil, err
+		}
 	}
 	c.queueMutationMu.Unlock()
 	locked = false

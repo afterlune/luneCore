@@ -59,7 +59,9 @@ func (c *Core) drainQueue(sessionID string) {
 				return
 			}
 		}
-		c.enqueueGoalContinuation(context.Background(), sessionID)
+		if c.goalMayContinue(context.Background(), sessionID) {
+			c.scheduleQueueDrain(sessionID)
+		}
 	}()
 	ctx := context.Background()
 	if err := c.reconcileQueuedTurns(ctx, sessionID); err != nil {
@@ -140,109 +142,60 @@ func (c *Core) drainQueue(sessionID string) {
 		c.executionRuns[queued.ExecutionID] = runDone
 		c.mu.Unlock()
 		goalStarted := time.Now()
-		response, runErr := c.run(ctx, sessionID, request.MaxToolRounds, request.Model, request.Execution, request.ExecutionOverride, request.PermissionOverride, request.PlanMode, request.PlanAuthorization, request.NoInteractiveDecisions, request.Resume, input, queued.QueueID, queued.ExecutionID)
-		c.finishGoalExecution(sessionID, queued.ExecutionID, response, runErr, time.Since(goalStarted))
-		c.goalMu.Lock()
-		delete(c.goalRuns, queued.ExecutionID)
-		c.goalMu.Unlock()
-		c.mu.Lock()
-		if c.executionRuns[queued.ExecutionID] == runDone {
-			delete(c.executionRuns, queued.ExecutionID)
+		outcome := c.run(ctx, sessionID, request.MaxToolRounds, request.Model, request.Execution, request.ExecutionOverride, request.PermissionOverride, request.PlanMode, request.PlanAuthorization, request.NoInteractiveDecisions, request.Resume, input, queued.QueueID, queued.ExecutionID)
+		interrupted := c.beginTaskFinish(queued.ExecutionID)
+		if interrupted {
+			outcome.Status = TaskCancelled
+			outcome.Response = nil
 		}
-		close(runDone)
-		c.mu.Unlock()
-		c.eventHub(sessionID).notifyDurable()
 		c.mu.RLock()
 		closing = c.closed || c.closing
 		c.mu.RUnlock()
-		if closing {
-			if _, exists, lookupErr := c.sessions.QueuedTurnByExecutionID(ctx, sessionID, queued.ExecutionID); lookupErr == nil && exists {
-				if err := c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnQueued); err != nil {
-					c.logger.Warn("preserve queued turn during close", "error", err)
-				}
+		var persistErr error
+		if closing && len(outcome.History) == 0 {
+			persistErr = c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnQueued)
+		} else {
+			persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			persistErr = c.commitRunOutcome(persistCtx, queued, outcome)
+			cancel()
+			if persistErr == nil {
+				c.finishGoalExecution(sessionID, queued.ExecutionID, outcome.Response, outcome.Err, time.Since(goalStarted))
 			}
+		}
+		c.goalMu.Lock()
+		delete(c.goalRuns, queued.ExecutionID)
+		c.goalMu.Unlock()
+		c.endTaskFinish(queued.ExecutionID)
+		c.mu.Lock()
+		delete(c.executionRuns, queued.ExecutionID)
+		close(runDone)
+		c.mu.Unlock()
+		c.notifyEventHub(sessionID)
+		if persistErr != nil {
+			c.rememberQueuedTaskStatus(sessionID, queued.ExecutionID, queued.QueueID, TaskFailed)
+			c.logger.Warn("commit execution outcome", "execution_id", queued.ExecutionID, "error", persistErr)
+			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: persistErr})
+			return
+		}
+		if closing {
 			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: errors.New("core is closing")})
 			return
 		}
-		stateAfterRun, hasStateAfterRun := c.StateForSession(sessionID)
-		if errors.Is(runErr, errExecutionInterrupted) ||
-			(hasStateAfterRun && stateAfterRun.ExecutionID == queued.ExecutionID && stateAfterRun.Status == TaskCancelled) {
-			_, exists, lookupErr := c.sessions.QueuedTurnByExecutionID(ctx, sessionID, queued.ExecutionID)
-			if lookupErr != nil {
-				c.logger.Warn("inspect interrupted queued turn", "error", lookupErr)
-				c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: lookupErr})
-				return
-			}
-			if exists {
-				persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-				persistErr := c.completeQueuedTurnFromRuntime(persistCtx, queued, TaskCancelled, nil, nil, nil)
-				cancel()
-				if persistErr != nil {
-					c.logger.Warn("persist interrupted queued turn", "error", persistErr)
-					c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: persistErr})
-					return
-				}
-			}
-			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: context.Canceled})
-			continue
+		resultErr := outcome.Err
+		if interrupted {
+			resultErr = context.Canceled
 		}
-		resumeQueued := false
-		if current, exists, lookupErr := c.sessions.QueuedTurnByExecutionID(ctx, sessionID, queued.ExecutionID); lookupErr == nil && exists {
-			state, ok := c.StateForSession(sessionID)
-			if ok && state.Status == TaskPaused {
-				if current.Status != session.QueuedTurnPaused && current.Status != session.QueuedTurnQueued {
-					event := Event{Kind: EventTaskFinished, SessionID: sessionID, TaskID: state.TaskID, QueueID: queued.QueueID, ExecutionID: queued.ExecutionID, Status: TaskPaused, BudgetReason: budgetReasonFromError(runErr), Err: errorString(runErr)}
-					if persistErr := c.persistQueuedEvent(ctx, event, func(payload json.RawMessage) (int64, error) {
-						modelFailure, failureErr := c.modelFailureArtifact(ctx, sessionID)
-						if failureErr != nil {
-							return 0, failureErr
-						}
-						return c.sessions.PauseQueuedTurnWithReason(ctx, sessionID, queued.QueueID, queued.ExecutionID, string(TaskPaused), string(event.BudgetReason), payload, modelFailure)
-					}); persistErr != nil {
-						c.logger.Warn("restore paused queued turn", "error", persistErr)
-					}
+		c.resolveTurnWaiter(queued.ExecutionID, turnResult{response: outcome.Response, err: resultErr})
+		if outcome.Status == TaskPaused {
+			// An answer can arrive while the graph commits its wait. Admit it once;
+			// the drain exit handoff picks up the queued resume without guessing a result.
+			inputs, inputErr := c.graphResumeInputs(ctx, sessionID, c.runtime.CheckpointID(sessionID), false)
+			if inputErr != nil {
+				c.logger.Warn("inspect answered graph wait", "error", inputErr)
+			} else if len(inputs) > 0 {
+				if _, _, err := c.recoverSession(ctx, sessionID, false); err != nil && !errors.Is(err, ErrSessionBusy) {
+					c.logger.Warn("queue answered graph wait", "error", err)
 				}
-				if current.Status == session.QueuedTurnQueued {
-					var request storedTurnRequest
-					resumeQueued = json.Unmarshal(current.Request, &request) == nil && request.Resume
-				} else {
-					// The host may answer as soon as the wait event is emitted, while
-					// this drain still owns the run. Queue that answer once the wait
-					// checkpoint has committed, then continue this drain in place.
-					inputs, inputErr := c.graphResumeInputs(ctx, sessionID, c.runtime.CheckpointID(sessionID), false)
-					if inputErr != nil {
-						c.logger.Warn("inspect answered graph wait", "error", inputErr)
-					} else if len(inputs) > 0 {
-						if _, _, recoverErr := c.recoverSession(ctx, sessionID, false); recoverErr == nil {
-							resumeQueued = true
-						} else if !errors.Is(recoverErr, ErrSessionBusy) {
-							c.logger.Warn("queue answer received while graph was pausing", "error", recoverErr)
-						}
-					}
-				}
-			} else {
-				completed, finalResponse, finalizeErr := c.completeQueuedTurnFromCheckpoint(ctx, current)
-				if finalizeErr != nil {
-					c.logger.Warn("finalize completed queued turn", "error", finalizeErr)
-					c.resolveTurnWaiter(queued.ExecutionID, turnResult{response: response, err: finalizeErr})
-					return
-				}
-				if completed {
-					if finalResponse != nil {
-						response = finalResponse
-					}
-				} else {
-					if runErr == nil {
-						runErr = errors.New("agent task ended without a response or completed checkpoint")
-					}
-					c.failQueuedTurn(ctx, queued, runErr)
-				}
-			}
-		}
-		c.resolveTurnWaiter(queued.ExecutionID, turnResult{response: response, err: runErr})
-		if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskPaused {
-			if resumeQueued {
-				continue
 			}
 			return
 		}

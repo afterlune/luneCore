@@ -7,7 +7,7 @@ import (
 	"os"
 )
 
-func lockSessionFile(*os.File) error {
+func lockSessionFile(*os.File, bool) error {
 	return errors.New("session locking is unsupported on this operating system")
 }
 

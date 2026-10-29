@@ -22,7 +22,7 @@ func TestDiscoveryAndHostContextPersistAcrossCoreRestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = client.Close() }()
+	defer func() { _ = client.Close(context.Background()) }()
 	ctx := context.Background()
 	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
 	if err != nil {
@@ -47,7 +47,7 @@ func TestDiscoveryAndHostContextPersistAcrossCoreRestart(t *testing.T) {
 	if !strings.Contains(string(before.AgentContext), `"host"`) || strings.Contains(string(before.History), "Lune runtime context") {
 		t.Fatal("discovery missing or host snapshot rendered")
 	}
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	client, err = New(config)

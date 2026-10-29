@@ -5,18 +5,36 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"time"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
 	"github.com/afterlune/luneCore/internal/model"
-	"github.com/afterlune/luneCore/internal/session"
 	graph "github.com/afterlune/luneGraph"
 )
 
-func (c *Core) finishTaskRun(ctx context.Context, sessionID, queueID, executionID, executionScopeID string, response *model.Response, runErr error, taskRuntime *agentruntime.Responder) (json.RawMessage, error) {
+// runOutcome is produced by execution and committed exclusively by its queue worker.
+type runOutcome struct {
+	Status       TaskStatus
+	Response     json.RawMessage
+	History      json.RawMessage
+	ModelContext json.RawMessage
+	ContextKey   string
+	AgentContext json.RawMessage
+	BudgetReason BudgetReason
+	Question     *UserQuestionRequest
+	Err          error
+}
+
+func failedRun(err error) runOutcome {
+	status := TaskFailed
+	if errors.Is(err, errExecutionInterrupted) {
+		status = TaskCancelled
+	}
+	return runOutcome{Status: status, Err: err}
+}
+
+func (c *Core) finishTaskRun(ctx context.Context, sessionID, executionID, executionScopeID string, response *model.Response, runErr error, taskRuntime *agentruntime.Responder) runOutcome {
 	explicitlyInterrupted := c.beginTaskFinish(executionID)
-	defer c.endTaskFinish(executionID)
 
 	err := runErr
 	cleanupErr := c.stopCommands(executionScopeID, "")
@@ -25,18 +43,15 @@ func (c *Core) finishTaskRun(ctx context.Context, sessionID, queueID, executionI
 	}
 	pausedByGraph := errors.Is(err, ErrTaskPaused)
 	graphCancelled := errors.Is(err, agentruntime.ErrExecutionCancelled)
+	var question *UserQuestionRequest
 	if pausedByGraph && !explicitlyInterrupted {
-		if question, found, questionErr := taskRuntime.PendingUserQuestion(ctx, sessionID); questionErr != nil {
+		pending, found, questionErr := taskRuntime.PendingUserQuestion(ctx, sessionID)
+		if questionErr != nil {
 			err = errors.Join(err, questionErr)
 		} else if found {
-			task, _ := c.StateForSession(sessionID)
-			publicQuestion := publicUserQuestionRequest(question)
-			c.emit(Event{Kind: EventUserQuestionRequired, SessionID: sessionID, TaskID: task.TaskID, ExecutionID: question.ExecutionID,
-				UserQuestion: &publicQuestion})
+			q := publicUserQuestionRequest(pending)
+			question = &q
 		}
-	}
-	if response != nil && queueID == "" {
-		_ = c.saveHistoryUsage(ctx, sessionID, taskRuntime)
 	}
 	var encoded json.RawMessage
 	if response != nil {
@@ -47,11 +62,10 @@ func (c *Core) finishTaskRun(ctx context.Context, sessionID, queueID, executionI
 		}
 	}
 	status := TaskCompleted
-	taskErr := err
 	if explicitlyInterrupted {
 		status = TaskCancelled
 	} else if pausedByGraph || graphCancelled {
-		status, taskErr = TaskPaused, err
+		status = TaskPaused
 	} else if err != nil {
 		status = TaskFailed
 		if ctx.Err() != nil {
@@ -61,7 +75,6 @@ func (c *Core) finishTaskRun(ctx context.Context, sessionID, queueID, executionI
 		// A cancelled graph can return no response and no error. Preserve its
 		// checkpoint instead of reporting a completed turn with no response.
 		status = TaskPaused
-		taskErr = ctx.Err()
 		err = ctx.Err()
 	}
 	if !explicitlyInterrupted {
@@ -72,10 +85,9 @@ func (c *Core) finishTaskRun(ctx context.Context, sessionID, queueID, executionI
 	if status == TaskCompleted && response == nil {
 		status = TaskFailed
 		err = errors.Join(err, errors.New("agent task completed without a response"))
-		taskErr = err
 	}
 	c.mu.Lock()
-	if execution := taskRuntime.Execution(); execution != nil && queueID != "" {
+	if execution := taskRuntime.Execution(); execution != nil {
 		if c.liveExecutions == nil {
 			c.liveExecutions = make(map[string]*graph.Execution[agentgraph.State])
 		}
@@ -86,45 +98,25 @@ func (c *Core) finishTaskRun(ctx context.Context, sessionID, queueID, executionI
 		}
 	}
 	c.mu.Unlock()
-	persistCtx := ctx
-	var cancelPersist context.CancelFunc
-	if explicitlyInterrupted {
-		persistCtx, cancelPersist = context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-		defer cancelPersist()
+	outcome := runOutcome{Status: status, Response: encoded, Err: err, Question: question, BudgetReason: budgetReasonFromError(err)}
+	if status != TaskCompleted {
+		outcome.Response = nil
 	}
-	if queueID != "" && status != TaskPaused {
-		queued := session.QueuedTurn{SessionID: sessionID, QueueID: queueID, ExecutionID: executionID}
-		if persistErr := c.completeQueuedTurnFromRuntime(persistCtx, queued, status, encoded, taskRuntime, taskErr); persistErr != nil {
-			err = errors.Join(err, fmt.Errorf("persist completed turn: %w", persistErr))
-		}
+	transcript := taskRuntime.SessionHistory()
+	if transcript == nil {
+		transcript = model.NewResponseInputItems()
 	}
-	if explicitlyInterrupted {
-		checkpointID := c.runtime.CheckpointID(sessionID)
-		if queueID == "" {
-			c.mu.Lock()
-			delete(c.liveExecutions, checkpointID)
-			c.mu.Unlock()
-			if cleanupErr := c.runtime.DeleteCompletedRunForSession(sessionID); cleanupErr != nil {
-				err = errors.Join(err, fmt.Errorf("delete interrupted task checkpoint: %w", cleanupErr))
-				taskErr = err
-			}
-		}
-		if cleanupErr := c.sessions.DeleteGraphResumeInputs(persistCtx, sessionID, checkpointID); cleanupErr != nil {
-			err = errors.Join(err, fmt.Errorf("delete interrupted task resume inputs: %w", cleanupErr))
-			taskErr = err
-		}
+	var snapshotErr error
+	outcome.History, snapshotErr = json.Marshal(transcript)
+	if snapshotErr == nil {
+		outcome.ModelContext, snapshotErr = json.Marshal(taskRuntime.ModelContextHistory())
 	}
-	c.finishTaskState(sessionID, status, taskErr)
-	if queueID == "" && status != TaskPaused {
-		if cleanupErr := c.sessions.DeleteToolInvocationsForSession(context.Background(), sessionID); cleanupErr != nil {
-			c.logger.Warn("delete completed tool invocation records", "error", cleanupErr)
-		}
-		if cleanupErr := c.sessions.DeleteExecutionTokenBudget(context.Background(), executionScopeID); cleanupErr != nil {
-			c.logger.Warn("delete completed execution token budget", "error", cleanupErr)
-		}
+	outcome.ContextKey = taskRuntime.ContextKey()
+	outcome.AgentContext = taskRuntime.ConversationState()
+	if snapshotErr != nil {
+		outcome.Status = TaskFailed
+		outcome.Response = nil
+		outcome.Err = errors.Join(outcome.Err, fmt.Errorf("snapshot task conversation: %w", snapshotErr))
 	}
-	if response == nil {
-		return nil, err
-	}
-	return encoded, err
+	return outcome
 }

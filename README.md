@@ -27,7 +27,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	session, found, err := client.LatestSession(ctx)
 	if err != nil {
@@ -92,7 +92,7 @@ The workspace may supply `config.json` for model profiles and project runtime se
 
 This grouped shape is required. Core rejects the previous flat config format and points to `config.example.json`; rewrite an existing file manually before upgrading.
 
-Core stores sessions, queued turns, the safe runtime event log, Graph checkpoints, and tool invocation records under `StateDir` (default `.luneagent`). Team branches share the agent run's Graph checkpoint. Graph format 10 checkpoints are stored in `checkpoints-v10.db`; older checkpoint files are left untouched and are not migrated. Enabled MCP-server state uses the same directory. Open a session-bound runtime for asynchronous control:
+Core stores sessions, queued turns, the safe runtime event log, Graph checkpoints, and tool invocation records under `StateDir` (default `.luneagent`). Team branches share the agent run's Graph checkpoint. Execution format 2 uses `executions-v2.db` for Graph format 10 checkpoints. Legacy checkpoint files are left untouched. An old state directory is rejected until explicitly upgraded offline (see below). Enabled MCP-server state uses the same directory. Open a session-bound runtime for asynchronous control:
 
 ```go
 runtime, err := client.OpenSessionRuntime(ctx, session.ID)
@@ -179,7 +179,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 
 	_, err = client.AddMemory(ctx, memory.Input{
 		Category:   memory.CategoryPreference,
@@ -216,7 +216,7 @@ Interactive command approvals can permit ordinary high-risk commands. A narrow d
 
 A Core can run tasks for different sessions concurrently. A session runtime serializes turns within its session. Use `runtime.State` to inspect the active task and durable queue; `ActiveTasks` reports currently running tasks across the Core.
 
-Call `runtime.Interrupt(executionID)` to interrupt a running turn or remove it before it starts. Cancellation is cooperative, so host providers and tools should honor their context. A turn with a saved checkpoint remains paused and blocks later queue entries until `runtime.Recover` or `runtime.DiscardPaused`. `Close` waits for queued work to finish starting, and returns an error while a task is running.
+Call `runtime.Interrupt(ctx, executionID)` to interrupt a running turn or remove it before it starts. Cancellation is cooperative, so host providers and tools should honor their context. A turn with a saved checkpoint remains paused and blocks later queue entries until `runtime.Recover` or `runtime.DiscardPaused`. `Close(ctx)` waits for queued work to finish starting and returns an error while a task is running. Deadline expiry leaves storage open so the caller can join ongoing work and retry cleanup. Cancellation is cooperative; provider and tool implementations must honor their contexts.
 
 If the process stops while a tool may have caused a side effect, recovery exposes a `PendingToolRecovery` request through `runtime.PendingRequests`. Choose `ToolRecoveryRetry` or `ToolRecoverySkip` with `runtime.ResolveToolRecovery`, then call `runtime.Recover`. Completed tool results are replayed from the invocation ledger without running the tool again. Recovery covers parent and team-worker calls. `runtime.SetUserInteractionAvailable(true)` enables MCP user interaction for that session while a runtime event subscriber is attached.
 
@@ -369,4 +369,19 @@ An opt-in real API check is available in `internal/runtime`: set `LUNE_CACHE_SMO
 
 ### Permission API changes
 
-The supported modes are read-only, workspace, auto and full-access; the obsolete PermissionAsk constant has been removed. ResolveApproval(id, true) permits only one invocation, including external-directory access. Hosts must call ResolveApprovalDecision with ApprovalAllowSession to remember a session grant. command_status is read-only; command_stop is a command permission operation and is unavailable in Plan/read-only mode.
+The supported modes are read-only, workspace, auto and full-access; the obsolete PermissionAsk constant has been removed. Use `ResolveApprovalDecision(ctx, id, ApprovalAllowOnce)` for one invocation and `ApprovalAllowSession` for an explicit session grant. The boolean approval API has been removed. command_status is read-only; command_stop is a command permission operation and is unavailable in Plan/read-only mode.
+
+## Offline execution storage upgrade
+
+Stop every process using the state directory, then call `core.UpgradeState(ctx, stateDir)`
+(or `lune migrate --state-dir <directory>` in luneAgent). No provider credentials are required.
+The upgrader takes an exclusive lifecycle lock, backs up `sessions.db` with SQLite
+`VACUUM INTO` into a private `upgrade-backup-*` directory, then upgrades in a transaction.
+History, settings, metadata, and recorded usage are retained. Old unfinished tasks
+are marked discarded; queued input is retained in the backup and is never replayed.
+Provider context is rebuilt from the canonical history. Active goals are paused
+and require explicit resume. Legacy checkpoint files remain unchanged.
+The format marker is written last; a failed upgrade can be retried. Restore a
+backup only with all processes stopped, preserving the whole original state
+folder before replacing files. This API changes execution persistence intentionally;
+old processes must not be restarted against the upgraded directory.

@@ -141,7 +141,7 @@ func runCase(configData []byte, profileConfig publicmodel.ModelProfile, profile,
 	if err != nil {
 		return caseReport{}, err
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	if len(testCase.Memories) > 0 {
 		for _, item := range testCase.Memories {
 			if _, err := client.AddMemory(context.Background(), item); err != nil {

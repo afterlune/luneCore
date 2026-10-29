@@ -162,7 +162,7 @@ func TestExternalGoPackageCanEmbedAndExtendCore(t *testing.T) {
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -197,7 +197,7 @@ func TestExternalGoPackageCanEmbedAndExtendCore(t *testing.T) {
 	}
 	closeDeadline := time.Now().Add(5 * time.Second)
 	for {
-		if err := client.Close(); err == nil {
+		if err := client.Close(context.Background()); err == nil {
 			break
 		}
 		if time.Now().After(closeDeadline) {
@@ -223,7 +223,7 @@ func TestHostPersonalInstructionsReachTaskRequests(t *testing.T) {
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	session, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +271,7 @@ func TestCoreLoggerReceivesRuntimeLogsWithoutPayloads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("core.New: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	if slog.Default() != globalLogger {
 		t.Fatal("core.New changed the process default logger")
 	}
@@ -314,13 +314,13 @@ func TestCoreCapturesDefaultLoggerAtCreation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create first Core: %v", err)
 	}
-	defer first.Close()
+	defer first.Close(context.Background())
 	slog.SetDefault(secondLogger)
 	second, err := core.New(defaultLoggerTestConfig(t))
 	if err != nil {
 		t.Fatalf("create second Core: %v", err)
 	}
-	defer second.Close()
+	defer second.Close(context.Background())
 	if slog.Default() != secondLogger {
 		t.Fatal("Core creation changed slog.Default()")
 	}
@@ -397,7 +397,7 @@ func TestHostProjectConfigSkipsWorkspaceConfigFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Core.New with host project config: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	if servers := client.MCPServers(); len(servers) != 1 || servers[0].Name != "docs" {
 		t.Fatalf("MCP servers = %#v, want docs", servers)
 	}

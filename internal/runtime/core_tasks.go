@@ -74,7 +74,13 @@ func (c *Core) sessionIsRunningLocked(sessionID string) bool {
 	return c.active.Status == TaskRunning && c.active.SessionID == sessionID
 }
 
-func (c *Core) resolveApprovalDecision(sessionID, id string, decision publictool.ApprovalDecision) error {
+func (c *Core) resolveApprovalDecision(ctx context.Context, sessionID, id string, decision publictool.ApprovalDecision) error {
+	if decision != publictool.ApprovalAllowOnce && decision != publictool.ApprovalAllowSession && decision != publictool.ApprovalDeny {
+		return errors.New("invalid approval decision")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	c.mu.Lock()
 	pending, ok := c.approvals[id]
 	if ok && pending.sessionID == sessionID {
@@ -87,7 +93,7 @@ func (c *Core) resolveApprovalDecision(sessionID, id string, decision publictool
 		return fmt.Errorf("approval request %q is no longer pending in this session", id)
 	}
 	if decision == publictool.ApprovalAllowSession && pending.request.PathGrant != nil {
-		if err := c.addSessionPathGrant(context.Background(), sessionID, *pending.request.PathGrant); err != nil {
+		if err := c.addSessionPathGrant(ctx, sessionID, *pending.request.PathGrant); err != nil {
 			pending.response <- publictool.ApprovalDeny
 			return fmt.Errorf("save session path grant: %w", err)
 		}
@@ -95,13 +101,13 @@ func (c *Core) resolveApprovalDecision(sessionID, id string, decision publictool
 			pending.pathGrants.Add(*pending.request.PathGrant)
 		}
 	}
-	if decision == publictool.ApprovalAllowSession && pending.request.Tool != "" {
+	if decision == publictool.ApprovalAllowSession && pending.request.PathGrant == nil && pending.request.Tool != "" {
 		item := publictool.SessionApproval{
 			Tool:        pending.request.Tool,
 			Arguments:   tool.NormalizeArguments(pending.request.Arguments),
 			Fingerprint: pending.request.Fingerprint,
 		}
-		if err := c.addSessionApproval(context.Background(), sessionID, item); err != nil {
+		if err := c.addSessionApproval(ctx, sessionID, item); err != nil {
 			pending.response <- publictool.ApprovalDeny
 			return fmt.Errorf("save session approval: %w", err)
 		}
@@ -197,7 +203,7 @@ func (c *Core) endTask(sessionID, taskID string, cancel context.CancelFunc) {
 			delete(c.steeringExecutions, sessionID)
 		}
 		delete(c.taskCancels, sessionID)
-		if state.Status == TaskRunning {
+		if state.Status == TaskRunning && state.QueueID == "" {
 			state.Status = TaskIdle
 			c.activeTasks[sessionID] = state
 			c.active = state
@@ -378,10 +384,6 @@ func (c *Core) requestApprovalDecision(ctx context.Context, request tool.Permiss
 		c.emit(Event{Kind: EventApprovalCancelled, SessionID: identity.SessionID, TaskID: identity.TaskID, ExecutionID: identity.ExecutionID, ApprovalID: id})
 		return publictool.ApprovalDeny
 	}
-}
-
-func (c *Core) requestApproval(ctx context.Context, request tool.PermissionRequest) bool {
-	return c.requestApprovalDecision(ctx, request) != publictool.ApprovalDeny
 }
 
 func (c *Core) autoReviewProfileID(sessionID string) string {

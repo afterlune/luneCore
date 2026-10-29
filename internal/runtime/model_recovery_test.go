@@ -68,7 +68,7 @@ func TestModelRecoverySurvivesRestartAndDoesNotReplayTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = client.Close() }()
+	defer func() { _ = client.Close(context.Background()) }()
 	saved, err := client.CreateSession(ctx, json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +93,7 @@ func TestModelRecoverySurvivesRestartAndDoesNotReplayTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	client, err = New(config)

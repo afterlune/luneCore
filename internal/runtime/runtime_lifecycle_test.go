@@ -31,7 +31,7 @@ func TestSessionLockSubprocessHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New shared Core: %v", err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	runtime, err := client.OpenSessionRuntime(context.Background(), sessionID)
 	blocked := os.Getenv(sessionLockBlockedEnv) == "1"
 	if blocked {
@@ -43,7 +43,7 @@ func TestSessionLockSubprocessHelper(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSessionRuntime for different session: %v", err)
 	}
-	if err := runtime.Close(); err != nil {
+	if err := runtime.Close(context.Background()); err != nil {
 		t.Fatalf("close helper session runtime: %v", err)
 	}
 }
@@ -59,8 +59,8 @@ func TestSessionLockIsExclusivePerSessionAndReleased(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New second Core with shared StateDir: %v", err)
 	}
-	defer first.Close()
-	defer second.Close()
+	defer first.Close(context.Background())
+	defer second.Close(context.Background())
 
 	sessionA, err := first.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
@@ -103,17 +103,17 @@ func TestSessionLockIsExclusivePerSessionAndReleased(t *testing.T) {
 	runHelper(sessionA.ID, true)
 	runHelper(sessionC.ID, false)
 
-	if err := runtimeA.Close(); err != nil {
+	if err := runtimeA.Close(context.Background()); err != nil {
 		t.Fatalf("close session A runtime: %v", err)
 	}
 	reopened, err := second.OpenSessionRuntime(context.Background(), sessionA.ID)
 	if err != nil {
 		t.Fatalf("open session A after release: %v", err)
 	}
-	if err := reopened.Close(); err != nil {
+	if err := reopened.Close(context.Background()); err != nil {
 		t.Fatalf("close reopened session A: %v", err)
 	}
-	if err := runtimeB.Close(); err != nil {
+	if err := runtimeB.Close(context.Background()); err != nil {
 		t.Fatalf("close session B runtime: %v", err)
 	}
 }
@@ -130,7 +130,7 @@ func TestCoreInitializationFailureDoesNotBlockAnotherInstance(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New after failed initialization: %v", err)
 	}
-	if err := valid.Close(); err != nil {
+	if err := valid.Close(context.Background()); err != nil {
 		t.Fatalf("close Core after failed initialization: %v", err)
 	}
 }
@@ -157,14 +157,14 @@ func TestConcurrentCoreInitializationSharedStateDir(t *testing.T) {
 		result := <-results
 		if result.err != nil {
 			for _, existing := range opened {
-				_ = existing.Close()
+				_ = existing.Close(context.Background())
 			}
 			t.Fatalf("concurrent Core.New: %v", result.err)
 		}
 		opened = append(opened, result.client)
 	}
 	for _, client := range opened {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("close concurrently initialized Core: %v", err)
 		}
 	}
@@ -188,18 +188,18 @@ func TestCoreCloseReleasesOpenSessionLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer second.Close()
+	defer second.Close(context.Background())
 	if _, err := second.OpenSessionRuntime(context.Background(), saved.ID); !errors.Is(err, ErrSessionInUse) {
 		t.Fatalf("open session while first Core owns it = %v, want ErrSessionInUse", err)
 	}
-	if err := first.Close(); err != nil {
+	if err := first.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	runtime, err := second.OpenSessionRuntime(context.Background(), saved.ID)
 	if err != nil {
 		t.Fatalf("open session after Core.Close: %v", err)
 	}
-	if err := runtime.Close(); err != nil {
+	if err := runtime.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -213,11 +213,11 @@ func TestClosedRuntimeKeepsLockUntilActiveWorkFinishes(t *testing.T) {
 	}
 	second, err := New(config)
 	if err != nil {
-		_ = first.Close()
+		_ = first.Close(context.Background())
 		t.Fatal(err)
 	}
-	defer first.Close()
-	defer second.Close()
+	defer first.Close(context.Background())
+	defer second.Close(context.Background())
 	saved, err := first.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -229,7 +229,7 @@ func TestClosedRuntimeKeepsLockUntilActiveWorkFinishes(t *testing.T) {
 	first.mu.Lock()
 	first.activeTasks[saved.ID] = TaskState{SessionID: saved.ID, Status: TaskRunning}
 	first.mu.Unlock()
-	if err := runtime.Close(); err != nil {
+	if err := runtime.Close(context.Background()); err != nil {
 		t.Fatalf("close runtime while task is active: %v", err)
 	}
 	if _, err := second.OpenSessionRuntime(context.Background(), saved.ID); !errors.Is(err, ErrSessionInUse) {
@@ -246,7 +246,7 @@ func TestClosedRuntimeKeepsLockUntilActiveWorkFinishes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open session after task finished: %v", err)
 	}
-	if err := reopened.Close(); err != nil {
+	if err := reopened.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -278,7 +278,7 @@ func TestInterruptTaskStopsProviderAndCancelsExecution(t *testing.T) {
 	if !ok || started.Status != TaskRunning {
 		t.Fatalf("task state before cancellation = %#v, ok=%t", started, ok)
 	}
-	if err := client.Close(); err == nil {
+	if err := client.Close(context.Background()); err == nil {
 		t.Fatal("Close succeeded while a task was running")
 	}
 	if !interruptTestTask(t, client, saved.ID) {
@@ -554,7 +554,7 @@ func TestCancelTaskCancelsPendingApproval(t *testing.T) {
 	}()
 	approvalDone := make(chan bool, 1)
 	go func() {
-		approvalDone <- client.requestApproval(taskCtx, toolPermissionRequestForTest())
+		approvalDone <- (client.requestApprovalDecision(taskCtx, toolPermissionRequestForTest()) != publictool.ApprovalDeny)
 	}()
 	var approvalID string
 	select {

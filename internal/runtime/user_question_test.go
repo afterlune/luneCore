@@ -144,7 +144,7 @@ func TestUserQuestionAnswerResumesAfterCoreRestart(t *testing.T) {
 	if liveExecution == nil {
 		t.Fatal("paused task did not retain its live Graph execution")
 	}
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatalf("close paused Core: %v", err)
 	}
 
@@ -153,7 +153,7 @@ func TestUserQuestionAnswerResumesAfterCoreRestart(t *testing.T) {
 		t.Fatalf("reopen Core: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := reopened.Close(); err != nil {
+		if err := reopened.Close(context.Background()); err != nil {
 			t.Errorf("close reopened Core: %v", err)
 		}
 	})
@@ -193,7 +193,7 @@ func newQuestionTestCore(t *testing.T, provider *scriptedHostProvider) (*Core, s
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
-		if err := client.Close(); err != nil {
+		if err := client.Close(context.Background()); err != nil {
 			t.Errorf("close Core: %v", err)
 		}
 	})

@@ -27,7 +27,7 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...Exec
 	if err != nil {
 		return TaskResult{}, err
 	}
-	defer runtime.Close()
+	defer runtime.Close(context.Background())
 	cursor, err := c.sessions.LatestRuntimeEventCursor(ctx, sessionID)
 	if err != nil {
 		return TaskResult{}, err
@@ -50,24 +50,24 @@ func (c *Core) ResumeTask(ctx context.Context, sessionID string, options ...Exec
 	return c.waitForTurn(ctx, runtime, submission.ExecutionID, waiter)
 }
 
-func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, permissionOverride string, planMode bool, authorization publictool.PlanAuthorization, noInteractiveDecisions bool, resume bool, input *model.ResponseInput, queueID, executionID string) (json.RawMessage, error) {
+func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOverride string, executionOptions ExecutionOptions, executionOverride bool, permissionOverride string, planMode bool, authorization publictool.PlanAuthorization, noInteractiveDecisions bool, resume bool, input *model.ResponseInput, queueID, executionID string) runOutcome {
 	if c == nil || ctx == nil {
-		return nil, errors.New("core and context are required")
+		return failedRun(errors.New("core and context are required"))
 	}
 	if sessionID == "" {
-		return nil, errors.New("session id is required")
+		return failedRun(errors.New("session id is required"))
 	}
 	if maxRounds < 0 {
-		return nil, errors.New("maximum tool rounds must not be negative")
+		return failedRun(errors.New("maximum tool rounds must not be negative"))
 	}
 	if err := validateExecutionOptions(executionOptions); err != nil {
-		return nil, err
+		return failedRun(err)
 	}
 	if err := validatePermissionOverride(permissionOverride); err != nil {
-		return nil, err
+		return failedRun(err)
 	}
 	if executionID != "" && c.takeInterruptRequest(executionID) {
-		return nil, errors.Join(context.Canceled, errExecutionInterrupted)
+		return failedRun(errors.Join(context.Canceled, errExecutionInterrupted))
 	}
 	c.runtimeConfigMu.RLock()
 	defer c.runtimeConfigMu.RUnlock()
@@ -75,7 +75,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 	closed := c.closed || c.closing
 	c.mu.RUnlock()
 	if closed {
-		return nil, errors.New("core is closed")
+		return failedRun(errors.New("core is closed"))
 	}
 	setup, err := c.prepareTaskRun(ctx, taskRunConfig{
 		sessionID: sessionID, maxRounds: maxRounds, modelOverride: modelOverride,
@@ -84,7 +84,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 		noInteractiveDecisions: noInteractiveDecisions, resume: resume, executionID: executionID,
 	})
 	if err != nil {
-		return nil, err
+		return failedRun(err)
 	}
 	saved, settings, profile := setup.saved, setup.settings, setup.profile
 	effectiveModel, taskOptions := setup.effectiveModel, setup.taskOptions
@@ -93,12 +93,11 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 	taskID, err := c.beginTask(taskCtx, sessionID, queueID, settings, profile, effectiveModel, taskOptions, saved.UpdatedAt, cancelTask)
 	if err != nil {
 		cancelTask()
-		return nil, err
+		return failedRun(err)
 	}
 	defer c.endTask(sessionID, taskID, cancelTask)
 	if err := c.commands.OpenScope(taskOptions.ExecutionID, taskCtx); err != nil {
-		c.finishTaskState(sessionID, TaskFailed, err)
-		return nil, err
+		return failedRun(err)
 	}
 	defer c.stopCommands(taskOptions.ExecutionID, "")
 	ctx = taskCtx
@@ -114,29 +113,24 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 	ctx = publictool.WithNoInteractiveDecisions(ctx, taskOptions.NoInteractiveDecisions)
 	if resume {
 		if recoveryErr := c.checkToolRecovery(ctx, sessionID, taskState); recoveryErr != nil {
-			status := TaskFailed
 			var required *ToolRecoveryRequiredError
 			if errors.As(recoveryErr, &required) {
-				status = TaskPaused
+				return runOutcome{Status: TaskPaused, Err: recoveryErr}
 			}
-			c.finishTaskState(sessionID, status, recoveryErr)
-			return nil, recoveryErr
+			return failedRun(recoveryErr)
 		}
 	}
 	taskRuntime, _, err := c.configureRuntime(settings.ModelProfile, settings.ReasoningEffort, taskState)
 	if err != nil {
-		c.finishTaskState(sessionID, TaskFailed, err)
-		return nil, err
+		return failedRun(err)
 	}
 	if err := c.sessions.SetExecutionTokenBudget(ctx, sessionID, taskOptions.ExecutionID, taskOptions.Execution.TokenBudget); err != nil {
-		c.finishTaskState(sessionID, TaskFailed, err)
-		return nil, err
+		return failedRun(err)
 	}
-	ctx = agentruntime.WithTokenBudget(ctx, &executionTokenBudget{store: c.sessions, executionID: taskOptions.ExecutionID, guard:func(ctx context.Context) error { return c.goalBeforeRequest(ctx, sessionID, taskOptions.ExecutionID) }})
+	ctx = agentruntime.WithTokenBudget(ctx, &executionTokenBudget{store: c.sessions, executionID: taskOptions.ExecutionID, guard: func(ctx context.Context) error { return c.goalBeforeRequest(ctx, sessionID, taskOptions.ExecutionID) }})
 	if !resume {
 		if err := c.resetTaskUsage(ctx, sessionID); err != nil {
-			c.finishTaskState(sessionID, TaskFailed, err)
-			return nil, err
+			return failedRun(err)
 		}
 	}
 	taskRuntime.SetSessionState(sessionID, transcript, modelContext, contextKey)
@@ -169,6 +163,6 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 			response, err = taskRuntime.Respond(ctx, input)
 		}
 	}
-	return c.finishTaskRun(ctx, sessionID, queueID, executionID, taskOptions.ExecutionID, response, err, taskRuntime)
+	return c.finishTaskRun(ctx, sessionID, executionID, taskOptions.ExecutionID, response, err, taskRuntime)
 
 }

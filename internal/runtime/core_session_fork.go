@@ -34,16 +34,19 @@ func (c *Core) forkSessionOwned(ctx context.Context, sessionID string) (Session,
 	if c.sessionIsRunningLocked(sessionID) {
 		return Session{}, errors.New("cannot fork a session while its task is running")
 	}
-	c.usageMu.Lock()
-	defer c.usageMu.Unlock()
 	saved, err := c.GetSession(ctx, sessionID)
 	if err != nil {
 		return Session{}, err
 	}
-	forked,err:=c.createSession(ctx,saved.History,saved.Settings)
-	if err!=nil { return Session{},err }
-	if _,err:=c.copyGoal(ctx,sessionID,forked.ID);err!=nil { _,_=c.sessions.Delete(ctx,forked.ID,c.workspace); return Session{},err }
-	return forked,nil
+	forked, err := c.createSession(ctx, saved.History, saved.Settings)
+	if err != nil {
+		return Session{}, err
+	}
+	if _, err := c.copyGoal(ctx, sessionID, forked.ID); err != nil {
+		_, _ = c.sessions.Delete(ctx, forked.ID, c.workspace)
+		return Session{}, err
+	}
+	return forked, nil
 }
 
 // ForkPausedTask clones a paused, nonterminal task checkpoint into a sibling
@@ -72,8 +75,6 @@ func (c *Core) forkPausedTaskOwned(ctx context.Context, sessionID string) (Sessi
 	if c.sessionIsRunningLocked(sessionID) || c.queueDraining[sessionID] {
 		return Session{}, errors.New("cannot fork a task while its session is running")
 	}
-	c.usageMu.Lock()
-	defer c.usageMu.Unlock()
 
 	saved, err := c.GetSession(ctx, sessionID)
 	if err != nil {
@@ -156,11 +157,13 @@ func (c *Core) forkPausedTaskOwned(ctx context.Context, sessionID string) (Sessi
 		return Session{}, cause
 	}
 	profileID := pending.ModelProfile
-	forkedGoal,err:=c.copyGoal(ctx,sessionID,forkedSession.ID)
-	if err!=nil { return rollback(err) }
-	if forkedGoal!=nil && pending.GoalID!="" {
-		turnRequest.GoalID,turnRequest.GoalRevision=forkedGoal.ID,forkedGoal.Revision
-		requestJSON,_=json.Marshal(turnRequest)
+	forkedGoal, err := c.copyGoal(ctx, sessionID, forkedSession.ID)
+	if err != nil {
+		return rollback(err)
+	}
+	if forkedGoal != nil && pending.GoalID != "" {
+		turnRequest.GoalID, turnRequest.GoalRevision = forkedGoal.ID, forkedGoal.Revision
+		requestJSON, _ = json.Marshal(turnRequest)
 	}
 	if profileID == "" {
 		profileID = saved.Settings.ModelProfile
@@ -176,13 +179,19 @@ func (c *Core) forkPausedTaskOwned(ctx context.Context, sessionID string) (Sessi
 	for i := range forkedCheckpoint.Invocations {
 		state := agentgraph.RekeyForkState(forkedCheckpoint.Invocations[i].State, newRunID, newExecutionID)
 		state.Execution = pending.Execution
-		if forkedGoal!=nil && state.GoalID!="" { state.GoalID,state.GoalRevision=forkedGoal.ID,forkedGoal.Revision; state.Goal=goalInstructions(forkedGoal) }
+		if forkedGoal != nil && state.GoalID != "" {
+			state.GoalID, state.GoalRevision = forkedGoal.ID, forkedGoal.Revision
+			state.Goal = goalInstructions(forkedGoal)
+		}
 		forkedCheckpoint.Invocations[i].State = state
 	}
 	if forkedCheckpoint.Final != nil {
 		state := agentgraph.RekeyForkState(*forkedCheckpoint.Final, newRunID, newExecutionID)
 		state.Execution = pending.Execution
-		if forkedGoal!=nil && state.GoalID!="" { state.GoalID,state.GoalRevision=forkedGoal.ID,forkedGoal.Revision; state.Goal=goalInstructions(forkedGoal) }
+		if forkedGoal != nil && state.GoalID != "" {
+			state.GoalID, state.GoalRevision = forkedGoal.ID, forkedGoal.Revision
+			state.Goal = goalInstructions(forkedGoal)
+		}
 		forkedCheckpoint.Final = &state
 	}
 	if err := c.checkpoints.Create(ctx, forkedCheckpoint); err != nil {

@@ -23,7 +23,7 @@ func TestUserQuestionDraftPayloadPersistence(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer c.Close()
+	defer c.Close(context.Background())
 
 	saved, err := c.CreateSession(ctx, json.RawMessage("null"))
 	if err != nil {

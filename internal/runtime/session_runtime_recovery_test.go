@@ -49,7 +49,7 @@ func TestSessionRuntimeWaitTurnResultSurvivesReopen(t *testing.T) {
 	if err != nil || result.Status != TaskCompleted || string(result.Response) != string(firstResponse) {
 		t.Fatalf("repeated WaitTurn result = %#v, error=%v", result, err)
 	}
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -58,7 +58,7 @@ func TestSessionRuntimeWaitTurnResultSurvivesReopen(t *testing.T) {
 		t.Fatalf("reopen Core: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := reopened.Close(); err != nil {
+		if err := reopened.Close(context.Background()); err != nil {
 			t.Errorf("close reopened Core: %v", err)
 		}
 	})
@@ -189,7 +189,7 @@ func TestSessionRuntimeWaitTurnReportsCancelledAndDiscardedStatuses(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !runtime.Interrupt(second.ExecutionID) {
+	if accepted, err := runtime.Interrupt(context.Background(), second.ExecutionID); !accepted || err != nil {
 		t.Fatal("Interrupt returned false for queued turn")
 	}
 	cancelled, err := runtime.WaitTurn(context.Background(), second.ExecutionID)
@@ -300,7 +300,7 @@ func TestSessionRuntimeFinalizesCompletedCheckpointAfterRestartWithoutRerunning(
 		t.Fatal(err)
 	}
 	_ = sessionDB.Close()
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -309,7 +309,7 @@ func TestSessionRuntimeFinalizesCompletedCheckpointAfterRestartWithoutRerunning(
 		t.Fatalf("reopen Core: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := reopened.Close(); err != nil {
+		if err := reopened.Close(context.Background()); err != nil {
 			t.Errorf("close reopened Core: %v", err)
 		}
 	})

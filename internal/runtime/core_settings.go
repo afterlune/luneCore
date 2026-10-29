@@ -2,12 +2,12 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	projectconfig "github.com/afterlune/luneCore/internal/config"
@@ -115,17 +115,11 @@ func (c *Core) SetSessionSettings(ctx context.Context, sessionID string, setting
 }
 
 func (c *Core) setSessionSettingsOwned(ctx context.Context, sessionID string, settings SessionSettings) error {
-	// Usage writes and settings writes both replace the JSON session snapshot.
-	// Serialize them so neither update can overwrite the other's fields.
-	c.usageMu.Lock()
-	defer c.usageMu.Unlock()
-	saved, err := c.GetSession(ctx, sessionID)
+	data, err := json.Marshal(settings)
 	if err != nil {
 		return err
 	}
-	saved.Settings = settings
-	saved.UpdatedAt = time.Now()
-	return c.saveSession(ctx, saved)
+	return c.sessions.UpdateSettings(ctx, sessionID, c.workspace, data)
 }
 
 func (c *Core) ProjectContextDefaults() ContextDefaults {

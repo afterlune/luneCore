@@ -18,6 +18,7 @@ import (
 	"github.com/afterlune/luneCore/internal/mcp"
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/session"
+	"github.com/afterlune/luneCore/internal/stateformat"
 	"github.com/afterlune/luneCore/internal/tool"
 	"github.com/afterlune/luneCore/internal/workspacememory"
 	publicmemory "github.com/afterlune/luneCore/memory"
@@ -104,14 +105,14 @@ type Core struct {
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
 	sessionLocks   map[string]*sessionLockEntry
+	stateLock      *session.FileLock
 
 	mu                  sync.RWMutex
 	goalMu              sync.Mutex
-	goalArmed           map[string]bool
+	goalSessions        map[string]goalSessionConfig
 	goalRuns            map[string]goalExecution
 	eventHubMu          sync.Mutex
 	runtimeConfigMu     sync.RWMutex
-	usageMu             sync.Mutex
 	active              TaskState
 	activeTasks         map[string]TaskState
 	taskCancels         map[string]context.CancelFunc
@@ -189,6 +190,16 @@ func New(config Config) (_ *Core, err error) {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
+	stateLock, err := stateformat.Open(stateDir)
+	if err != nil {
+		return nil, err
+	}
+	keepStateLock := false
+	defer func() {
+		if !keepStateLock {
+			_ = stateLock.Close()
+		}
+	}()
 	projectConfig, err := projectconfig.LoadForRuntime(workspace, config.ModelConfig, config.ModelProviders, config.ProjectConfig, config.MaxParallelAgents)
 	if err != nil {
 		return nil, err
@@ -215,7 +226,7 @@ func New(config Config) (_ *Core, err error) {
 	if err != nil {
 		return nil, err
 	}
-	checkpoints, err := sqlite.Open[agentgraph.State](context.Background(), filepath.Join(stateDir, "checkpoints-v10.db"), checkpoint.JSON[agentgraph.State]{})
+	checkpoints, err := sqlite.Open[agentgraph.State](context.Background(), filepath.Join(stateDir, stateformat.CheckpointFile), checkpoint.JSON[agentgraph.State]{})
 	if err != nil {
 		return nil, fmt.Errorf("open task checkpoints: %w", err)
 	}
@@ -252,6 +263,7 @@ func New(config Config) (_ *Core, err error) {
 		logger:           logger,
 		workspace:        workspace,
 		stateDir:         stateDir,
+		stateLock:        stateLock,
 		registry:         registry,
 		models:           models,
 		attachmentLimits: projectConfig.Attachments,
@@ -337,6 +349,7 @@ func New(config Config) (_ *Core, err error) {
 	registry.SetPermissionApprovalDecisionHandler(c.requestApprovalDecision)
 	registry.SetPermissionAutoReviewHandler(c.autoReviewToolRequest)
 	closeCheckpoints, closeSessions, closeRegistry, closeMCPManager = false, false, false, false
+	keepStateLock = true
 	return c, nil
 }
 

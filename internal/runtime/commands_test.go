@@ -157,7 +157,7 @@ func TestLongCommandRuntimeOutputAndTermination(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	if err := client.SetPermissionMode(PermissionFullAccess); err != nil {
 		t.Fatal(err)
 	}
@@ -214,7 +214,7 @@ func TestBackgroundCommandSurvivesTaskAndCanBeStoppedBySession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	if err := client.SetPermissionMode(PermissionFullAccess); err != nil {
 		t.Fatal(err)
 	}
@@ -252,27 +252,27 @@ func TestCoreClosePersistsTerminalCommandEvent(t *testing.T) {
 	}
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
-		_ = client.Close()
+		_ = client.Close(context.Background())
 		t.Fatal(err)
 	}
 	identity := publictool.CallIdentity{SessionID: saved.ID, ExecutionID: "close-event-execution", AgentID: "lead", InvocationID: "close-event-call"}
 	if err := client.commands.OpenScope(identity.ExecutionID, context.Background()); err != nil {
-		_ = client.Close()
+		_ = client.Close(context.Background())
 		t.Fatal(err)
 	}
 	ctx := publictool.WithCallIdentity(context.Background(), identity)
 	if _, err := client.commands.Start(ctx, publictool.CommandRequest{Command: "close-event", Workspace: workspace}, 0, 0); err != nil {
-		_ = client.Close()
+		_ = client.Close(context.Background())
 		t.Fatal(err)
 	}
 	select {
 	case <-probe.started:
 	case <-time.After(time.Second):
-		_ = client.Close()
+		_ = client.Close(context.Background())
 		t.Fatal("command did not start")
 	}
 	closed := make(chan error, 1)
-	go func() { closed <- client.Close() }()
+	go func() { closed <- client.Close(context.Background()) }()
 	select {
 	case err := <-closed:
 		if err != nil {
@@ -287,7 +287,7 @@ func TestCoreClosePersistsTerminalCommandEvent(t *testing.T) {
 		t.Fatalf("reopen Core: %v", err)
 	}
 	defer func() {
-		if err := reopened.Close(); err != nil {
+		if err := reopened.Close(context.Background()); err != nil {
 			t.Errorf("close reopened Core: %v", err)
 		}
 	}()
@@ -317,7 +317,7 @@ func TestRunningCommandsBlockCompletionAndSurviveRestartAsRecords(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func() { _ = client.Close() }()
+	defer func() { _ = client.Close(context.Background()) }()
 	if err := client.SetPermissionMode(PermissionFullAccess); err != nil {
 		t.Fatal(err)
 	}
@@ -360,7 +360,7 @@ func TestRunningCommandsBlockCompletionAndSurviveRestartAsRecords(t *testing.T) 
 	if err != nil || len(forkCommands) != 1 || forkCommands[0].ID != provider.id || forkCommands[0].SessionID != fork.ID || forkCommands[0].ExecutionID == result.ExecutionID || forkCommands[0].Status != CommandCancelled {
 		t.Fatalf("fork commands=%+v error=%v", forkCommands, err)
 	}
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	client, err = New(config)
@@ -397,7 +397,7 @@ func TestClarificationStopsCommandsWithoutReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	if err := client.SetPermissionMode(PermissionFullAccess); err != nil {
 		t.Fatal(err)
 	}
@@ -441,14 +441,14 @@ func TestCommandStartupMarksUnfinishedRecordsInterrupted(t *testing.T) {
 	if err := client.sessions.SaveCommand(context.Background(), record); err != nil {
 		t.Fatal(err)
 	}
-	if err := client.Close(); err != nil {
+	if err := client.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	client, err = New(config)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	runtime, _ := client.OpenSessionRuntime(context.Background(), saved.ID)
 	output, err := runtime.ReadCommand(context.Background(), record.Info.ID, CommandReadOptions{})
 	if err != nil || output.Command.Status != CommandInterrupted || output.Output != "saved before crash" {

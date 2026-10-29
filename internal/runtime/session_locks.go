@@ -39,7 +39,7 @@ func (c *Core) beginSessionOpen(sessionID string) error {
 	return nil
 }
 
-func (c *Core) releaseSessionLock(sessionID string) error {
+func (c *Core) releaseSessionLock(ctx context.Context, sessionID string) error {
 	if c == nil || sessionID == "" {
 		return nil
 	}
@@ -84,7 +84,7 @@ func (c *Core) releaseSessionLock(sessionID string) error {
 	c.mu.Unlock()
 	defer c.sessionOps.Done()
 
-	queued, err := c.sessions.QueuedTurns(context.Background(), sessionID)
+	queued, err := c.sessions.QueuedTurns(ctx, sessionID)
 	if err != nil {
 		return fmt.Errorf("check queued session work before releasing lock: %w", err)
 	}

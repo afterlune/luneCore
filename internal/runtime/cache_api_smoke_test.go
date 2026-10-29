@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	publictool "github.com/afterlune/luneCore/tool"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -70,7 +71,7 @@ func TestCacheRealAPISmoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer client.Close()
+	defer client.Close(context.Background())
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Minute)
 	defer cancel()
 	if err = client.SetPermissionMode(PermissionWorkspace); err != nil {
@@ -103,7 +104,7 @@ func TestCacheRealAPISmoke(t *testing.T) {
 				eventMu.Lock()
 				approvals++
 				eventMu.Unlock()
-				_ = rt.ResolveApproval(e.Approval.ID, true)
+				_ = rt.ResolveApprovalDecision(context.Background(), e.Approval.ID, publictool.ApprovalAllowOnce)
 			}
 		}
 	}()
