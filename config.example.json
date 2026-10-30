@@ -1,0 +1,77 @@
+{
+  "models": {
+    "providers": {
+      "deepseek": {
+        "protocol": "responses",
+        "baseURL": "https://api.deepseek.com",
+        "apiKey": "",
+        "serverCompaction": true
+      },
+      "openai-responses": {
+        "protocol": "responses",
+        "baseURL": "https://api.openai.com/v1",
+        "apiKey": "",
+        "serverCompaction": true
+      },
+      "anthropic": {
+        "protocol": "anthropic-messages",
+        "baseURL": "https://api.anthropic.com",
+        "apiKey": ""
+      }
+    },
+    "profiles": {
+      "deepseek-flash": {
+        "provider": "deepseek",
+        "model": "deepseek-chat",
+        "displayName": "DeepSeek V3",
+        "contextWindow": 0,
+        "supportsInputAudio": false
+      },
+      "openai-model": {
+        "provider": "openai-responses",
+        "model": "gpt-5",
+        "displayName": "GPT-5",
+        "contextWindow": 0,
+        "supportsInputAudio": false
+      },
+      "anthropic-model": {
+        "provider": "anthropic",
+        "model": "claude-3-7-sonnet-20250219",
+        "displayName": "Claude 3.7 Sonnet",
+        "contextWindow": 0,
+        "maxOutputTokens": 8192,
+        "supportsInputAudio": false
+      }
+    },
+    "defaultProfile": "deepseek-flash"
+  },
+  "runtime": {
+    "maxParallelAgents": 4,
+    "maxTeamChildrenPerAgent": 4,
+    "maxTeamDepth": 2,
+    "contextWindow": 0,
+    "autoCompact": true,
+    "autoCompactThreshold": 0.8,
+    "reserveOutputTokens": 0
+  },
+  "attachments": {
+    "maxFiles": 5,
+    "maxFileBytes": 10485760,
+    "maxTotalBytes": 20971520
+  },
+  "mcpServers": {
+    "example-stdio-server": {
+      "transport": "stdio",
+      "command": "replace-with-your-mcp-server-command",
+      "args": [],
+      "env": {
+        "EXAMPLE_TOKEN": "replace-me"
+      }
+    },
+    "example-http-server": {
+      "transport": "streamable-http",
+      "url": "https://mcp.invalid/mcp",
+      "clientMetadataURL": "https://client.invalid/oauth/lune.json"
+    }
+  }
+}

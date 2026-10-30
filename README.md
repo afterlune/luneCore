@@ -1,6 +1,6 @@
 # Lune Core
 
-Lune Core is the Go runtime library used by the Lune front ends. Applications construct `*core.Core` in their own process and use the public API for sessions, tasks, approvals, streaming events, usage, and tools. It does not run a daemon or expose an IPC/network service.
+Lune Core is the Go runtime library used by the Lune front ends (TUI, CLI, desktop, and A2A service). Applications construct `*core.Core` in their own process and use the public API for sessions, queued turns, persistent goals, approvals, streaming events, usage tracking, MCP integrations, and tools. It does not run an external background daemon or expose an IPC/network service.
 
 ## Install
 
@@ -23,6 +23,8 @@ import (
 
 func main() {
 	ctx := context.Background()
+	// Core loads config.json from the workspace by default, or accepts
+	// programmatic model/project settings via core.Config.
 	client, err := core.New(core.Config{Workspace: "."})
 	if err != nil {
 		log.Fatal(err)
@@ -51,15 +53,27 @@ func main() {
 }
 ```
 
-The workspace may supply `config.json` for model profiles and project runtime settings. Provider credentials and profiles live under `models`; execution defaults live under `runtime`:
+The workspace supplies `config.json` for model profiles, project runtime settings, and tool configurations. Provider credentials and model profiles live under `models`; execution defaults live under `runtime`; attachment limits live under `attachments`; external tool servers live under `mcpServers`:
 
 ```json
 {
   "models": {
     "providers": {
+      "deepseek": {
+        "protocol": "responses",
+        "baseURL": "https://api.deepseek.com",
+        "apiKey": "your-api-key",
+        "serverCompaction": true
+      },
       "primary": {
         "protocol": "responses",
         "baseURL": "https://api.example.com",
+        "apiKey": "your-api-key",
+        "serverCompaction": true
+      },
+      "anthropic": {
+        "protocol": "anthropic-messages",
+        "baseURL": "https://api.anthropic.com",
         "apiKey": "your-api-key"
       }
     },
@@ -67,7 +81,10 @@ The workspace may supply `config.json` for model profiles and project runtime se
       "main": {
         "provider": "primary",
         "model": "model-id",
-        "contextWindow": 1000000
+        "displayName": "Primary Model",
+        "contextWindow": 1000000,
+        "maxOutputTokens": 8192,
+        "supportsInputAudio": false
       }
     },
     "defaultProfile": "main"
@@ -75,30 +92,50 @@ The workspace may supply `config.json` for model profiles and project runtime se
   "runtime": {
     "contextWindow": 0,
     "maxParallelAgents": 4,
-    "maxTeamChildrenPerAgent": 0,
+    "maxTeamChildrenPerAgent": 4,
     "maxTeamDepth": 2,
     "autoCompact": true,
     "autoCompactThreshold": 0.8,
     "reserveOutputTokens": 0
   },
   "attachments": {
-    "maxFiles": 0,
-    "maxFileBytes": 0,
-    "maxTotalBytes": 0
+    "maxFiles": 5,
+    "maxFileBytes": 10485760,
+    "maxTotalBytes": 20971520
   },
-  "mcpServers": {}
+  "mcpServers": {
+    "local-tools": {
+      "transport": "stdio",
+      "command": "tool-binary",
+      "args": ["--mode", "server"],
+      "env": {
+        "SERVER_TOKEN": "secret-value"
+      }
+    },
+    "remote-tools": {
+      "transport": "streamable-http",
+      "url": "https://mcp.example.com/api",
+      "clientMetadataURL": "https://example.com/oauth/client.json"
+    }
+  }
 }
 ```
 
-This grouped shape is required. Core rejects the previous flat config format and points to `config.example.json`; rewrite an existing file manually before upgrading.
+This grouped shape is required. Core rejects the previous flat config format and points to `config.example.json`; update existing files before upgrading. Providers with the `responses` protocol may enable `serverCompaction: true` to request server-side context compaction.
 
-Core stores sessions, queued turns, the safe runtime event log, Graph checkpoints, and tool invocation records under `StateDir` (default `.luneagent`). Team branches share the agent run's Graph checkpoint. Execution format 2 uses `executions-v2.db` for Graph format 10 checkpoints. Legacy checkpoint files are left untouched. An old state directory is rejected until explicitly upgraded offline (see below). Enabled MCP-server state uses the same directory. Open a session-bound runtime for asynchronous control:
+## Storage and Session Runtime
+
+Core stores sessions, queued turns, the durable safe runtime event log, Graph checkpoints, and tool invocation records under `StateDir` (default `.luneagent`). Team branches share the agent run's Graph checkpoint. Execution format 2 uses `executions-v2.db` for Graph format 10 checkpoints. Legacy checkpoint files are left untouched. An old state directory is rejected until explicitly upgraded offline (see [Offline execution storage upgrade](#offline-execution-storage-upgrade)). Enabled MCP-server state uses the same directory.
+
+Open a session-bound runtime for asynchronous control:
 
 ```go
 runtime, err := client.OpenSessionRuntime(ctx, session.ID)
 if err != nil {
 	log.Fatal(err)
 }
+defer runtime.Close(ctx)
+
 events, err := runtime.SubscribeEvents(ctx, 0)
 if err != nil {
 	log.Fatal(err)
@@ -123,272 +160,288 @@ if result.Status == core.TaskCompleted {
 }
 ```
 
-MCP prompts and resources are host-controlled: use `runtime.ListMCPPrompts`, `GetMCPPrompt`, `ListMCPResources`, `ListMCPResourceTemplates`, and `ReadMCPResource` to fetch them explicitly. `GetMCPPrompt` and `ReadMCPResource` return `model.ResponseInput`; pass it to `core.NewTaskInput` and submit it only when appropriate. These calls do not add model tools or inject content into a task. MCP servers that request user input use the same `PendingRequests` and `ResolveUserInteraction` flow as tool calls. An in-flight host request canceled by server disable, reconnect, or Core shutdown matches `core.ErrMCPServerLifecycleChanged`; caller-context cancellation remains `context.Canceled`.
+### Event subscriptions and replay boundary
 
-`go test ./...` runs a live DeepSeek MCP-input smoke test when `DEEPSEEK_API_KEY` is set. It makes one request each to the Responses and Anthropic-compatible APIs using the same model ID; `DEEPSEEK_MODEL` optionally selects that ID (default `deepseek-flash`).
+`runtime.SubscribeEvents(ctx, afterCursor)` replays durable events strictly after `afterCursor`, followed by live notifications and model stream events.
 
-`RunTask`, `ResumeTask`, and `WaitTurn` return the same `TaskResult`. A normal final response completes the task. When needed, the lead agent can ask a concise clarification question; the host resolves it through the pending-request API and the same turn resumes.
+To distinguish between historical replay and subsequent real-time execution, use `runtime.SubscribeEventsWithReplayComplete(ctx, afterCursor)`. It emits a transient `EventRuntimeReplayComplete` once durable replay catches up, before delivering any new live events. The marker is purely transient and is never stored in the database.
 
-Core reads workspace `AGENTS.md` as project guidance when a task starts. Built-in file tools load applicable nested `AGENTS.md` files for their target paths; when a new rule is found, the current batch of file calls is skipped so the model can reconsider it. Shell commands receive workspace-root guidance only. Instruction snapshots are saved with the execution and reused after recovery. These files cannot override the user's request, tool permissions, or safety requirements.
+## Submission modes and queue control
 
-Hosts can pass `Config.PersonalInstructions` to provide user-level preferences shared by all sessions in that Core. Core does not discover personal instruction files; the host supplies their text at startup. New tasks snapshot it for recovery, while resumed tasks keep their saved text. Workspace `AGENTS.md` guidance takes precedence over personal preferences; neither expands the user's request. Recreate Core to apply changed personal instructions to new tasks.
+`SessionRuntime` provides three turn submission modes:
 
-`StartIfIdle` rejects work if the session is running, queued, or paused. `QueueInput` appends a durable FIFO turn. Admitted work starts without an event subscriber, and opening a session runtime starts that session's persisted, unpaused queue. Event subscriptions are optional observers; they replay the durable lifecycle log when attached. The lead agent can pause for a batch of clarifications with optional choices. The `ask_user` arguments are `{"questions":[{"id":"target","question":"Which target?","options":[{"label":"Local","description":"Use the workspace"}]}]}`. Each question requires a unique nonempty ID and question text; an empty options array permits a free-text answer. `runtime.PendingRequests(ctx)` returns the full pending question and its `ExecutionID` and stable `RunID`, `InvocationID`, and `CallID`. Resolve it with `runtime.ResolveUserQuestion(ctx, core.UserQuestionAnswer{ExecutionID: question.ExecutionID, RunID: question.RunID, InvocationID: question.InvocationID, CallID: question.CallID, Answers: answers})`; where `answers` is an ordered `[]core.UserQuestionResponse` containing one nonempty answer per question ID; the same turn resumes automatically only after the entire batch is complete. Use `runtime.SaveUserQuestionDraft(ctx, wait, draft)` to save unsubmitted choices, notes, custom answers and the current question without resuming the model. `PendingRequests` restores this draft after restart; completion or discarding the wait clears it. Identical answer retries are accepted, while a different answer for the same wait is rejected. The question and answer remain in the checkpoint/input receipt as needed for recovery, but the durable event projection omits question text, options, and answers. After a host restart, the same question and wait IDs are available through `PendingRequests`; answering resumes the original continuation rather than asking again. The submission context controls admission only; admitted work continues until completion, failure, interruption, or pause. Canceling a `WaitTurn` context stops only that wait. A paused result returns promptly. Use `Recover` for budget, tool, or cancellation pauses. After resuming, call `WaitTurn` again with the same execution ID. Results remain available until the session is deleted. A failed task may have no response. `RunTask` and `ResumeTask` are blocking wrappers. A task waiting for host input returns `ErrTaskPaused`; use `SessionRuntime` to resolve the request and continue it. The durable event log omits model deltas, tool arguments, approval arguments, interaction payloads, clarification text/options, and free-form errors. If approval or an enabled MCP interaction is needed without an event subscriber, the request remains pending until the host resolves it; full requests are available through `runtime.PendingRequests(ctx)` while the Core instance is alive. MCP elicitation from lead and team agents uses the same host interaction flow. Both `EventUserInteractionRequired.AgentID` and `Interaction.AgentID` identify the requester; resolve pending requests with `runtime.ResolveUserInteraction`. The full request remains process-local and requires `runtime.SetUserInteractionAvailable(true)`.
+- `core.StartIfIdle`: Rejects work immediately with `core.ErrSessionBusy` if the session has an active running turn, queued turns, or a paused execution.
+- `core.QueueInput`: Appends a durable FIFO turn to the session queue. Admitted work starts as soon as earlier turns complete.
+- `core.SteerInput`: Injects an instruction into the active execution without waiting for it to finish. Core injects steering messages after the current tool-call round and before the next model request; if the model is already streaming its final answer, Core checks for steering before finalizing that answer. Emits `EventTaskInputInjected` containing `InputExecutionID` and `ParentExecutionID`. If the active turn has already passed its steering boundary, the submission becomes a normal queued turn.
 
-`SteerInput` is a separate submission mode for hosts that want a follow-up to continue the active execution. Core injects accepted messages after the current tool-call round and before the next model request; when the model is already returning a final answer, Core checks for steering before finalizing that answer. `EventTaskInputInjected` identifies both the active parent execution and the consumed input receipt. The input remains cancelable while queued and is consumed only when Core acknowledges it for injection. If the active execution has already closed its steering boundary, the submission remains a normal queued turn. `QueueInput` retains its independent FIFO-turn behavior.
+### Queue inspection and manipulation
 
-Multiple Core instances may share a `StateDir` and its SQLite stores. Each opened session is exclusively owned across process boundaries: opening the same session in another Core returns an error matching `core.ErrSessionInUse`. Close a `SessionRuntime` when leaving a session; `Core.Close` releases any remaining session locks.
+Hosts can inspect and modify queued turns without stopping the runtime:
 
-Question options may include `recommended: true` on at most one option per question. Clients should display that option as the suggested default and may preselect it, while submitting the original `label` unchanged. A question with no recommendation remains valid.
+- `runtime.CancelQueuedTurn(ctx, executionID)`: Removes one turn that has not yet started. Returns `core.ErrTurnNotFound` if the turn does not exist, or `core.ErrQueuedTurnStarted` if it has already been claimed by the worker.
+- `runtime.CancelPendingTurns(ctx)`: Atomically cancels every unstarted turn in the session queue and interrupts the currently running execution. It waits for active cleanup to complete before returning, returning the slice of cancelled `ExecutionID`s.
+- `runtime.ReplaceQueuedTurnInput(ctx, executionID, newInput)`: Replaces the prompt/input of an unstarted queued turn in-place, preserving its queue position and atomically cancelling any subsequent turns.
 
-## Host extensions
+## Persistent Cross-Turn Goals
 
-Hosts can provide a model catalog through `core.Config.ModelConfig`, custom implementations through `core.Config.ModelProviders`, and custom tools through `core.Config.Tools`. These are programmatic equivalents of the corresponding `config.json` model fields; explicit Go entries override file entries with the same provider or profile name, and the file supplies entries not given in Go. A programmatic model config can be used without a `config.json` file.
-
-Hosts that own project settings storage can instead pass a complete `core.ProjectConfig` through `core.Config.ProjectConfig`. When this field is non-nil, Core does not read the workspace `config.json`; the supplied value includes the model catalog, context and attachment limits, auto-compaction options, and MCP server definitions. Start with `core.DefaultProjectConfig()` to apply Core's defaults, then set `ModelConfig` and the project settings. Attachment limits use `core.ProjectAttachmentLimits`. When `ProjectConfig` is nil, Core keeps its `config.json` behavior for hosts such as the TUI and CLI. Core does not persist the host-supplied configuration.
-
-Set `core.Config.Logger` to route Core-owned structured diagnostics to a host `*slog.Logger`. If omitted, Core captures `slog.Default()` when `core.New` is called and does not replace the process default. Host-provided providers, tools, and command executors remain responsible for their own logs.
-
-Workspace memory is enabled by default. After a task, Core makes a separate model call to extract a few reusable preferences, decisions, conventions, or verified facts. Future tasks receive a small summary of important preferences and locally matched memories, and can call the read-only `search_memory` tool for details. Memories are scoped to the workspace and stored with the session database. Deleting a source session also deletes memories extracted from it; manually added memories remain. Use `ListMemories`, `SearchMemories`, `AddMemory`, `UpdateMemory`, `DeleteMemory`, and `ClearMemories` to manage them. Set `Config.Memory.Disabled` to opt out of automatic memory use and extraction.
-
-Extraction uses an instructed tool submission without forced tool choice, supporting reasoning models that reject `required`. Strict schema and local evidence validation still apply. A `memory_failed` event retains only the failure phase and safe model error metadata; logs omit provider bodies and memory contents. Extraction failure leaves the main task completed.
-
-To explicitly run the live memory regression, set `LUNE_MEMORY_SMOKE_CONFIG` to a private luneAgent config path and run `go test -trimpath ./internal/runtime -run '^TestMemoryRealAPISmoke$' -count=1 -v`. It uses a temporary workspace and database, reads a file through a tool, and checks that an explicit preference is saved. It allows at most three HTTP requests, disables model retries, and sets a 10,000-token budget. Normal test runs skip this API test.
-
-Each `UsageRecord` includes a `Purpose` (`main`, `compaction`, `memory`, or `team`) so hosts can see which model stages consume tokens. Provider-measured totals are authoritative; estimated input remains separate. Cached token counts are reported separately from total input where the protocol defines them as a subset.
-
-Hosts may provide an `Embedder` through `Config.Memory.Embedder` for semantic retrieval. Core stores the returned vectors and combines vector and SQLite full-text rankings; if embedding fails, full-text search remains available. Keep `Embedder.ID()` stable for one model and vector format, and call `ReindexMemories` after changing it.
+Core provides persistent, multi-turn user goals that remain active across repeated task executions until completed, paused, blocked, or cleared:
 
 ```go
-import (
-	"context"
-	"log"
+// Create a persistent goal with an optional token budget.
+budget := int64(100000)
+goal, err := runtime.CreateGoal(ctx, core.GoalCreateOptions{
+	Objective:              "Implement OAuth2 PKCE login flow and verify with tests",
+	TokenBudget:            &budget,
+	NoInteractiveDecisions: false,
+})
 
-	core "github.com/afterlune/luneCore"
-	"github.com/afterlune/luneCore/memory"
-)
+// Query goal status and progress.
+currentGoal, err := runtime.GetGoal(ctx)
+```
 
-var myEmbedder memory.Embedder // supplied by the host application
+### Goal lifecycle and statuses
 
-func main() {
-	ctx := context.Background()
-	client, err := core.New(core.Config{
-		Workspace: ".",
-		Memory:    core.MemoryConfig{Embedder: myEmbedder},
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer client.Close(context.Background())
+A goal's lifecycle is represented by `core.GoalStatus`:
 
-	_, err = client.AddMemory(ctx, memory.Input{
-		Category:   memory.CategoryPreference,
-		Content:    "Prefers concise explanations.",
-		Importance: 3,
-	})
-	if err != nil {
-		log.Fatal(err)
-	}
+- `core.GoalActive`: The goal is active. As long as a goal is active, the runtime automatically enqueues continuation turns (`enqueueGoalContinuation`) once earlier turns finish, prompting the model to verify and complete the objective.
+- `core.GoalPaused`: The goal is temporarily suspended by user request (`runtime.PauseGoal`) or when a task pauses. Automatic continuations cease.
+- `core.GoalBlocked`: Progress cannot continue without user intervention (e.g. 3 consecutive turns without text output or tool progress, unhandled task failure, or explicit blocking).
+- `core.GoalBudgetLimited`: Total uncached token usage has reached or exceeded `goal.TokenBudget`.
+- `core.GoalComplete`: Objective verified and completed.
+
+### Goal runtime APIs
+
+`SessionRuntime` exposes full management methods for goals:
+
+- `CreateGoal(ctx, options core.GoalCreateOptions) (*core.Goal, error)`: Creates or replaces the active session goal.
+- `GetGoal(ctx) (*core.Goal, error)`: Fetches the current goal, status, token usage, and stop reason.
+- `PauseGoal(ctx) (*core.Goal, error)`: Pauses an active goal and interrupts any running automatic continuation.
+- `ResumeGoal(ctx, options ...core.GoalResumeOptions) (*core.Goal, error)`: Resumes a paused, blocked, or budget-limited goal, optionally updating its budget or interaction mode.
+- `EditGoal(ctx, objective string) (*core.Goal, error)`: Updates the objective text without clearing token usage.
+- `SetGoalBudget(ctx, budget *int64) (*core.Goal, error)`: Adjusts the token budget cap (`nil` removes the limit).
+- `ClearGoal(ctx) error`: Discards the active goal and releases any paused user queue turns.
+
+Changes to goals emit `core.EventGoalUpdated` and `core.EventGoalCleared`.
+
+### Built-in goal tools
+
+Core automatically registers two session-control tools for the model:
+
+- `get_goal`: Available to any agent. Reads the current goal objective, status, uncached token usage, optional token budget, and stop reason.
+- `update_goal`: Reserved for the **lead agent** only. Marks the goal `complete` (only after verifying the full objective) or `blocked` (with a required concrete explanation). Creation, pausing, editing, and budget changes remain reserved for the host and user.
+
+## Clarifications and User Questions
+
+The lead agent can pause execution to ask a batch of structured clarification questions using the built-in `ask_user` tool.
+
+The question arguments follow:
+```json
+{
+  "questions": [
+    {
+      "id": "target",
+      "question": "Which backend database should be targeted?",
+      "options": [
+        {"label": "PostgreSQL", "description": "Production PostgreSQL cluster", "recommended": true},
+        {"label": "SQLite", "description": "Local embedded file database"}
+      ]
+    }
+  ]
 }
 ```
 
-`myEmbedder` implements `memory.Embedder` from `github.com/afterlune/luneCore/memory`. Embedding services and their credentials remain host-owned; Core persists only the vectors and embedder ID.
+Each question requires a unique nonempty ID and question text; an empty options array permits free-text input. At most one option per question may include `recommended: true`.
 
-Implement model providers with the public `model.Provider` interface and register tools with the public `tool.Tool` interface. Provider methods receive normalized request, response, and stream types; the runtime owns history, tool execution, and checkpointing. Provider implementations must support concurrent calls from different sessions. Every registered tool must declare a category, permission class, and JSON parameter schema. The built-in lead-agent tool name `ask_user` is reserved.
+### Answering questions
 
-The `delegate_team` tool runs member agents as `luneGraph` fan-out branches in the same run. Delegation is disabled by default. Set a positive `runtime.maxTeamChildrenPerAgent` in workspace `config.json`, `Config.Execution`, or `TaskRequest.Execution`/`TurnRequest.Execution` to enable it; each agent's child limit is cumulative across repeated delegations. Set `runtime.maxTeamDepth` to cap recursion (root is depth zero; the default is two). Task-level zero inherits the host default. Precedence is task override, host execution defaults, workspace config, then built-in defaults. `runtime.maxParallelAgents` and `MaxConcurrency` only control scheduling concurrency. By default, results join in assignment order after every member finishes. Set `Config.Execution.TeamQuorum` for a host default, or pass `minimum_successes` for one delegation; `null` inherits the host default and `0` waits for every member. Reaching the threshold cancels unfinished branches, and their results are marked incomplete for the lead. Model profiles may set `contextWindow`; session/task/project context settings take precedence for the lead, while a worker's selected profile window takes precedence for that worker and an unset profile window inherits the effective task context.
+1. `runtime.PendingRequests(ctx)` returns pending questions along with their `ExecutionID`, `RunID`, `InvocationID`, and `CallID`.
+2. Hosts submit answers with:
+   ```go
+   err := runtime.ResolveUserQuestion(ctx, core.UserQuestionAnswer{
+       ExecutionID:  question.ExecutionID,
+       RunID:        question.RunID,
+       InvocationID: question.InvocationID,
+       CallID:       question.CallID,
+       Answers: []core.UserQuestionResponse{
+           {QuestionID: "target", Answer: "PostgreSQL"},
+       },
+   })
+   ```
+3. To save unsubmitted user choices, notes, or custom form input before final submission without resuming the model, call:
+   ```go
+   err := runtime.SaveUserQuestionDraft(ctx, wait, draft)
+   // Or save an arbitrary opaque frontend payload:
+   err := runtime.SaveUserQuestionDraftPayload(ctx, wait, rawJSONBytes)
+   ```
+   `UserQuestionDraft.RawPayload` retains frontend view-model state across restarts.
 
-Each `delegate_team` call may choose `mode: "task"` or `mode: "fork"`. `task` is the default and gives each member only its assigned task. `fork` copies the input sent to the parent model before its current response, including completed tool results, then appends the member's task; the pending assistant response and its delegation call are excluded. Only members with the same provider and model inherit the forked context. Other model profiles receive task-only context; their prompt cache remains isolated. Prompt-cache hints are scoped by dispatch, provider, and actual model: OpenAI Responses receives a cache key, Anthropic Messages receives a breakpoint at the shared prefix, and DeepSeek uses its automatic cache without an unsupported key. Providers decide whether a cache hit occurs.
+## Plan Mode and Plan Implementation
 
-`Config.Execution` sets host defaults for `MaxSteps`, `MaxInvocations`, `TokenBudget`, `MaxConcurrency`, `ModelTimeout`, `ToolTimeout`, `JoinTimeout`, `TeamEntryTimeout`, `MaxTeamChildrenPerAgent`, and `MaxTeamDepth`; `TaskRequest.Execution` and `TurnRequest.Execution` can override non-zero values for one task. A zero task override inherits the host default; an effective `TokenBudget` of zero is unlimited. `TokenBudget` caps combined input and output tokens across the lead agent, team members, retries, and memory extraction. Requests reserve estimated input plus output capacity before sending; provider usage reconciles the reservation, while missing usage or an uncertain request outcome keeps the full reservation charged. Input estimates can be inaccurate, so reported overrun stops later requests but cannot undo an in-flight response. A token budget pause reports `BudgetMaxTokens`; pass replacement execution options with a higher absolute `TokenBudget` to `SessionRuntime.Recover` or `ResumeTask` to continue under the same execution ID and prior usage. `Config.MaxConcurrentCallbacks` optionally caps callback work across all sessions. `TeamEntryTimeout` only bounds a worker's first model callback. Other budget pauses report their limit through `TaskResult.BudgetReason`.
+Core supports separating read-only architectural planning from plan execution:
 
-Commands run through the `lune-sandbox` companion executable. Windows workspace mode uses AppContainer; Windows full access uses a restricted current-user token with privileges removed; Linux uses Landlock and seccomp. Build the helper with `go build -trimpath ./cmd/lune-sandbox` and place it beside the host executable, on `PATH`, or set `Config.SandboxHelperPath`. If the helper or kernel feature is unavailable, commands fail closed. `Config.CommandExecutor` remains an explicit trusted host override and must enforce `CommandRequest.Sandbox` itself. `AllowLocalCommand` is deprecated and no longer enables an unsandboxed fallback.
+1. During planning, the model outputs an approved plan wrapped in `<proposed_plan>...</proposed_plan>` (or `<proposed_plan>...<proposed_plan_end/>`).
+2. When the turn completes, `TaskResult.ProposedPlan` contains `*core.ProposedPlan{Text: "..."}`.
+3. The host presents the plan for review and executes it via `runtime.ImplementPlan`:
 
-On Linux, the built-in sandbox keeps Go build, module, and XDG caches in a per-workspace directory under the current user's cache root. `TMPDIR` and `GOTMPDIR` remain command-scoped; the helper creates the Go temporary directory before starting the shell. Host-shell exports are not inherited by sandbox commands; set command-specific environment variables in that invocation and configure extra binary directories through `CommandToolchainPaths`.
-
-Permission modes apply to every registered tool: `read-only` permits workspace reads and prompts for external-directory reads or web access, while blocking writes and commands; `workspace` permits workspace reads and writes while prompting for external filesystem paths, commands, and web access; `auto` adds single-invocation model review to workspace permissions; `full-access` permits registered tools without prompts. External paths used by built-in file tools can be granted per session, for a directory and its descendants, as `read` or `read_write` (`read_write` also allows reads). Grants survive reopening that session, are not inherited by new or forked sessions, and are removed with the session. They do not change command sandbox grants. Full access exposes the broadest current-user resources the host OS can provide while dropping elevation: Linux keeps normal filesystem permissions and supports current-user root access in containers; Windows removes token privileges, disables the Administrators group, and lowers elevated tokens to medium integrity.
-
-The built-in `read_image` tool sends one PNG, JPEG, or WebP image to the model as multimodal tool output. It uses the lower of the configured per-file and total attachment-size limits.
-
-Interactive command approvals can permit ordinary high-risk commands. A narrow denylist blocks known spellings of destructive disk/partition operations, boot and security control destruction, privilege elevation, and recursive deletion of critical OS directories in every mode. This is an additional safeguard, not a complete shell security policy: expansion or arbitrary programs can evade string matching. OS sandbox capabilities and explicit authorization define the isolation boundary. Non-interactive plan execution still requires exact entries in `ApprovedHighRiskCommands`, plus the relevant `PlanAuthorization` capabilities. `SessionRuntime.ImplementPlan` accepts the host-confirmed authorization snapshot and disables execution-time questions; a permission blocker pauses the turn for re-planning instead of opening an execution-time approval popup.
-
-## Concurrent sessions and tool recovery
-
-A Core can run tasks for different sessions concurrently. A session runtime serializes turns within its session. Use `runtime.State` to inspect the active task and durable queue; `ActiveTasks` reports currently running tasks across the Core.
-
-Call `runtime.Interrupt(ctx, executionID)` to interrupt a running turn or remove it before it starts. Cancellation is cooperative, so host providers and tools should honor their context. A turn with a saved checkpoint remains paused and blocks later queue entries until `runtime.Recover` or `runtime.DiscardPaused`. `Close(ctx)` waits for queued work to finish starting and returns an error while a task is running. Once resource shutdown starts, new work stays blocked. A deadline limits the caller’s wait; the single owned cleanup continues, keeps storage open until MCP operations and transports have exited, then closes the stores. Calling Close again joins the same cleanup and returns its result. Cancellation is cooperative; a custom callback that never exits can keep cleanup pending.
-
-If the process stops while a tool may have caused a side effect, recovery exposes a `PendingToolRecovery` request through `runtime.PendingRequests`. Choose `ToolRecoveryRetry` or `ToolRecoverySkip` with `runtime.ResolveToolRecovery`, then call `runtime.Recover`. Completed tool results are replayed from the invocation ledger without running the tool again. Recovery covers parent and team-worker calls. `runtime.SetUserInteractionAvailable(true)` enables MCP user interaction for that session while a runtime event subscriber is attached.
-
-Use `Core.ForkPausedTask` to clone a paused checkpoint into a new session. The clone stays paused; recover it independently with its new session runtime. Its tool and user-answer receipts are copied under the new run identity so replay does not repeat completed side effects.
-
-Disconnected MCP stdio calls are not automatically replayed. Reconnection refreshes the tools for future calls. Canceling one request leaves the shared MCP server running; closing a stdio transport allows 1.5 seconds for graceful exit before terminating the process tree, with a total shutdown wait of at most 3 seconds.
-
-Task concurrency is coordinated within each Core instance. The `StateDir` lock prevents another Core instance from opening the same directory concurrently.
-
-Public consumers should import the root `core` package plus `model` and `tool` only when implementing host extensions. The `internal` packages remain implementation details.
-
-### Model request recovery
-
-`ExecutionOptions.ModelMaxAttempts` limits attempts for each model request, including
-its first attempt. Zero defaults to three; one disables automatic retry. Host
-providers should disable their own retries and return `model.RequestError` for
-classified failures. Unclassified errors, invalid requests, authentication failures
-and quota exhaustion are not automatically retried.
-
-Transient rate limits, service failures, transport failures and timeouts use
-exponential backoff (1–8 seconds plus up to 250 ms of jitter), honoring
-`Retry-After`. Requests and waits share the model node deadline. A wait exceeding
-30 seconds or the remaining deadline requires explicit recovery. Once a stream
-event is delivered, a later failure also requires recovery; partial tool calls
-are never executed.
-
-The lead agent pauses with `TaskResult.ModelFailure` and a `PendingModelRecovery`
-request. Check `runtime.PendingModelRecovery(ctx)` for the saved wait and
-`Failure.RetryNotBefore`, then call `runtime.Recover(ctx)` or `Core.ResumeTask`.
-Early recovery returns `ErrModelRetryNotReady` without queueing a request. Recovery
-starts a fresh attempt cycle with the same ExecutionID, permissions, checkpoint
-and completed tool receipts, and a new TaskID for stream consumers. A paused turn
-blocks the session queue until recovered or discarded with `DiscardPaused`.
-
-Worker failures remain branch failures. Model request failures pause for explicit
-recovery. Memory extraction failures leave the completed response intact. Manual
-compaction retries and returns an error when attempts are exhausted.
-
-`model_retry`, `model_recovery_required` and `model_recovery_resumed` events contain
-safe failure metadata, never provider error bodies or causes. Task checkpoints
-use settings version 10; older execution checkpoints must be discarded. Existing
-session histories and completed results remain readable.
-
-### Long-running commands
-
-Rebuild `lune-sandbox` alongside Core. Helper protocol version 2 is required;
-older binaries fail closed rather than running without process supervision.
-
-`command` runs non-interactive commands in the existing kernel sandbox. It waits
-up to one second by default, then returns JSON containing the command ID, state,
-and bounded output. Use `command_status` with `command_id`, a byte `cursor`, and
-optional `wait_ms` (0–5000) to read more output; use `command_stop` to stop it.
-`yield_time_ms` (0–5000) controls the initial wait. An optional `timeout_ms` can
-set a bounded timeout. A start receipt does not prove successful completion.
-Set `background: true` for a workspace service the user wants to keep running
-after the task. Keep the service in the foreground rather than shell-detaching
-it with `&` or `nohup`; Core retains and supervises the process, and its status
-and output remain available by command ID. Background services have no default
-timeout and stop when explicitly stopped, their session is deleted, or Core
-closes.
-
-`Config.Commands.Timeout` defaults to ten minutes for ordinary commands and
-bounds any explicit background timeout. `Config.Commands.MaxConcurrent`
-defaults to four running commands across Core.
-Ordinary commands belong to the current execution and agent and stop when the
-task ends. Background services belong to their session and can be inspected or
-stopped by later turns in that session; they cannot be controlled from another
-session. Controlling an already-authorized command requires no additional
-approval. Existing high-risk command approval and sandbox policies apply to
-every new launch. Windows workspace commands use a PowerShell filesystem
-drive rooted at the workspace; native programs use its actual directory. Commands
-continue across model requests. Ordinary commands stop when the task pauses,
-ends, is interrupted, or is discarded. Team branches also clean up their
-ordinary commands when they finish or are cancelled by an early join.
-
-If an agent submits a final answer while its commands still run, Core first
-reminds it to inspect or stop them. A second consecutive submission pauses the
-lead and stops its commands; `Recover` or `ResumeTask` can then continue. Workers
-instead report a branch failure. The model can inspect command results directly
-through the saved `command_status` tool output.
-
-Hosts use `SessionRuntime.ListCommands(ctx)`,
-`ReadCommand(ctx, id, core.CommandReadOptions{Cursor: cursor, Wait: wait})`, and
-`StopCommand(ctx, id)`. Read cancellation cancels only the wait. Stop is
-idempotent and does not relaunch the process. Exit codes are optional for host
-executors that cannot supply them. Status distinguishes success, failure,
-cancellation, timeout and interruption across a restart.
-
-Each command keeps its latest 1 MiB of output. A read returns at most 64 KiB;
-`Cursor`, `NextCursor` and `EndCursor` are absolute byte offsets, and `Truncated`
-reports output that has fallen out of the retained buffer. Snapshots are saved
-before reads return and at termination. Unread live output is not guaranteed to
-survive a crash. Restart marks unfinished records interrupted without rerunning
-commands. Forking a paused task copies saved command records under the new
-session/execution identity, without copying processes. Deleting a session removes
-its records.
-
-The optional `tool.CommandRequest.OnOutput` callback lets host command executors
-provide incremental stdout/stderr; its byte slice is transient, errors require
-stopping, and the callback is excluded from JSON. Old executors still work by
-returning `CommandResult.Output` at completion. Executors must honor cancellation
-and terminate their child processes before returning. Command lifecycle events
-contain identifiers, status and exit codes, never command text or output.
-
-## Token benchmark
-
-`cmd/lune-tokenbench` runs the synthetic request corpus against a configured
-model profile in temporary workspaces and writes per-case token, duration,
-task status, and objective-check results. Reports include final answers for
-manual side-by-side quality review, but omit prompts and tool transcripts. Live
-runs call the configured provider and incur its normal usage charges.
-
-```sh
-go run ./cmd/lune-tokenbench run --config ./config.json --profile main --repeat 3 --out baseline.json
-go run ./cmd/lune-tokenbench run --config ./config.json --profile main --repeat 3 --out candidate.json
-go run ./cmd/lune-tokenbench compare --baseline baseline.json --candidate candidate.json
+```go
+implementation, err := runtime.ImplementPlan(ctx, result.ExecutionID, core.PlanImplementationOptions{
+	Mode:           core.PlanImplementSameContext, // or core.PlanImplementNewContext
+	PermissionMode: core.PermissionWorkspace,
+	Authorization: core.PlanAuthorization{
+		Paths:                    []tool.PathGrant{{Path: "/path/to/dir", Access: tool.PathReadWrite}},
+		AllowNetwork:             true,
+		AllowedTools:             []string{"read_file", "write_file", "edit_file", "command"},
+		ApprovedHighRiskCommands: []string{"npm install"},
+	},
+})
 ```
 
-Run one report from the unmodified revision and the other from the candidate
-revision, using the same configuration and profile. If the baseline predates
-this command, copy `cmd/lune-tokenbench` and `testdata/tokenbench` into a
-temporary baseline worktree and run it there; the runner uses the existing Core
-API and accepts usage records without the newer purpose field. Review each
-report's `finalText` fields before treating the automated token, request-count,
-status, and p95 checks as a quality result.
+- `PlanImplementSameContext`: Continues executing in the existing session context.
+- `PlanImplementNewContext`: Forks execution into a fresh sibling session containing only the plan text as initial context.
 
+### Execution blockers
 
-### Host execution details
+During non-interactive plan execution or automated goals (`NoInteractiveDecisions = true`), interactive permission prompts and questions are suppressed. If an operation requires ungranted authorization, the task is immediately paused, emits `core.EventExecutionBlocked`, and surfaces a `core.PendingExecutionBlocker` request in `runtime.PendingRequests(ctx)`. Hosts should notify the user to re-plan rather than presenting an execution-time popup.
 
-`EventToolDetails` is a live-only companion to durable tool lifecycle events. It carries transient arguments and `ToolCall.Details`: bounded textual output, command snapshots (status, output and exit code), or structured file changes. Hosts merge records by execution and invocation identity; command status polls refer to the original command invocation. These bodies are excluded from JSON logging and durable runtime events. File changes are captured by the tool after successful writes, not inferred by the host from a later filesystem read.
+## Tool Permissions, Approvals, and Toolchains
 
-Clarification options contain `label` and `description`. `UserQuestionRequest.Questions` contains the ordered batch; `UserQuestionAnswer.Answers` contains `{question_id, answer}` responses in the same order. `UserQuestionAnswer.ExecutionID` is required along with the graph wait identity, so a stale UI cannot answer a question from a later execution that reused the graph counters. Starting a new execution clears earlier graph input receipts. The batch representation is a breaking checkpoint format change for pending questions; discard older paused-question checkpoints before starting a fresh task.
+Every tool belongs to a permission class:
+- `workspace-read`: Local reading (e.g. `read_file`, `list_dir`, `glob`, `grep`, `read_image`).
+- `workspace-write`: Modifying workspace files (e.g. `write_file`, `edit_file`).
+- `command`: Running processes (e.g. `command`, `command_stop`).
+- `network`: External HTTP/network access (e.g. `web_search`, `web_fetch`).
+- `session-control`: Session lifecycle tools (e.g. `get_goal`, `update_goal`).
 
+### Permission modes
 
-### Prompt stability and diagnostics
+Set via `Core.SetPermissionMode(mode)`:
+- `read-only`: Reads workspace files; prompts before external directories, web, or unclassified tools; blocks writes and commands.
+- `workspace`: Reads and writes workspace files; prompts before external filesystem paths, commands, web access, and unclassified tools.
+- `auto`: Reads and writes workspace files; uses a structured model review (`AutoReviewApprove` / `AutoReviewAskUser`) to automatically evaluate commands and external operations, asking the user only when risky.
+- `full-access`: Allows registered tools and current-user files without interactive prompts; narrow denylist for destructive commands still applies.
 
-Tool categories are discovered cumulatively within each session. Selecting a category adds its tools; it does not replace previously discovered categories. Discovery survives task completion and restart. Permission and Plan-mode metadata still filter every request and every execution. If a model calls a registered, discoverable tool before selecting its category, Core discovers it and executes the original call through the normal instruction, permission, approval and sandbox checks. Unknown or prohibited tools remain rejected. Independent team tasks start with empty discovery; same-model forks inherit the parent's discoveries.
+### Explicit approval decisions and session memory
 
-Instructions contain fixed host rules. Changing task goals, Plan state, personal/project guidance and memory notes adds a model-only runtime context snapshot to history, rather than rewriting the fixed prompt prefix. Identical snapshots are not repeated; memory retrieval is snapshotted once per task. These messages are not part of the user-visible transcript. `Session.AgentContext` stores the associated opaque host metadata atomically with the conversation. Replacing canonical history clears it; older sessions bootstrap it on their next task.
+When approval is required (`EventApprovalRequired`), resolve it with:
+```go
+err := runtime.ResolveApprovalDecision(ctx, request.ApprovalID, tool.ApprovalAllowOnce)
+```
+Supported decisions:
+- `tool.ApprovalAllowOnce`: Allows this single invocation.
+- `tool.ApprovalAllowSession`: Permanently approves the tool call for the remainder of the session. Persisted as a `SessionApproval` keyed by tool name, canonical normalized arguments, and tool invocation fingerprint.
+- `tool.ApprovalDeny`: Rejects the invocation, returning an error to the model.
 
-Delegation limits are validated at execution, not encoded as a shrinking schema. Ordinary cache hints remain stable across task boundaries for the same session, agent and provider/model identity. DeepSeek still uses automatic caching and receives no unsupported cache-key parameter.
+### External path grants
 
-`UsageRecord` and usage events expose `RequestID`, `RequestAttempt` and `RequestChanges`. Request-attempt logs include instruction, tool and history fingerprints, never prompt text or tool arguments. Local changes describe what Core changed, not why the provider did or did not return a cache hit. Cache hits remain provider-dependent.
+Filesystem access outside the workspace can be granted on a per-session basis via `core.SessionRuntime`:
+- `tool.PathRead`: Read-only access to an external directory and its subdirectories.
+- `tool.PathReadWrite`: Read and write access to the external directory tree.
 
-中文：工具类别在会话内累计发现，跨任务和重启保留；发现不等于授权，自动纠正未发现类别的调用仍需经过项目指令、权限、授权与沙箱检查。动态任务信息以模型专用上下文快照追加，固定指令不随运行状态重写；会话元数据与对话原子保存。委派额度由执行层校验，不再修改工具声明。诊断记录请求身份、重试次数、本地变化与内容指纹，不记录正文或参数，也不把本地变化冒充服务端缓存失效原因。
+### Command toolchain paths
 
-An opt-in real API check is available in `internal/runtime`: set `LUNE_CACHE_SMOKE_CONFIG` to a private config.json, optionally set `LUNE_CACHE_SMOKE_DIR` and `LUNE_CACHE_SMOKE_HELPER`, then run `go test ./internal/runtime -run '^TestCacheRealAPISmoke$' -count=1 -v`. Each invocation is limited to 12 API requests, 250,000 estimated/counted input tokens and 10,000 output tokens, with at most 2,048 output tokens per response and no automatic model retries. A budget stop fails the smoke test and must be reported as incomplete validation, even if tools already produced the expected file. It uses a separate temporary workspace and does not alter the source configuration.
+To grant sandbox commands read and execute access to external toolchains (e.g. Go, Node.js, Rust binaries):
+- Configure `core.Config.CommandToolchainPaths` at startup.
+- Dynamically query or update paths via `client.CommandToolchainPaths()` and `client.SetCommandToolchainPaths(paths)`.
 
-中文：真实 API 验证需显式设置配置路径，每次最多调用 12 次，并受输入、输出预算限制。到达上限即停止，不自动增加费用；工具结果正确但最后回复尚未完成时，也必须记录为未完成验证。测试使用独立临时目录，不修改源配置。
+## Built-in Tools Reference
 
-### Permission API changes
+| Category | Tool | Parameters | Permission Class | Always Visible | Description |
+| --- | --- | --- | --- | --- | --- |
+| `files` | `read_file` | `path`, `start_line` (default 1), `limit` (default 200, max 500) | `workspace-read` | Yes | Read lines with 1-based numbering |
+| `files` | `write_file` | `path`, `content` | `workspace-write` | Yes | Write entire file contents |
+| `files` | `edit_file` | `path`, `old_text`, `new_text` | `workspace-write` | Yes | Exact text replacement |
+| `files` | `read_image` | `path` | `workspace-read` | Yes | Visual input for PNG, JPEG, or WebP |
+| `files` | `list_dir` | `path`, `limit` (max 500) | `workspace-read` | Yes | List directory entries |
+| `files` | `glob` | `pattern` | `workspace-read` | Yes | Fast file glob matching |
+| `files` | `grep` | `query`, `path` | `workspace-read` | Yes | Search file contents |
+| `command` | `command` | `command`, `background` (bool), `yield_time_ms` (0-5000), `timeout_ms` | `command` | Yes | Run shell command in kernel sandbox |
+| `command` | `command_status` | `command_id`, `cursor` (offset), `wait_ms` (0-5000) | `workspace-read` | Yes | Read incremental output buffer |
+| `command` | `command_stop` | `command_id` | `command` | Yes | Terminate command process |
+| `web` | `web_search` | `query`, `limit` | `network` | No | Search internet resources |
+| `web` | `web_fetch` | `url` | `network` | No | Fetch webpage content |
+| `memory` | `search_memory` | `query`, `limit` | `workspace-read` | No | Search long-term workspace memories |
+| `team` | `delegate_team` | `mode` (`"task"` or `"fork"`), `teammates`, `minimum_successes` | `session-control` | No | Spawn worker agents in team graph |
+| `goal` | `get_goal` | _(none)_ | `session-control` | Yes | Read current goal and token budget |
+| `goal` | `update_goal` | `status` (`"complete"` or `"blocked"`), `reason` | `session-control` | Yes | Update persistent goal (lead agent only) |
+| _lead_ | `ask_user` | `questions: [{id, question, options}]` | _(reserved)_ | Yes | Ask clarification questions |
 
-The supported modes are read-only, workspace, auto and full-access; the obsolete PermissionAsk constant has been removed. Use `ResolveApprovalDecision(ctx, id, ApprovalAllowOnce)` for one invocation and `ApprovalAllowSession` for an explicit session grant. The boolean approval API has been removed. command_status is read-only; command_stop is a command permission operation and is unavailable in Plan/read-only mode.
+## Model Request Recovery and Backoff
 
-## Offline execution storage upgrade
+`ExecutionOptions.ModelMaxAttempts` limits attempts for each model request (default 3; 1 disables retries).
 
-Stop every process using the state directory, then call `core.UpgradeState(ctx, stateDir)`
-(or `lune migrate --state-dir <directory>` in luneAgent). No provider credentials are required.
-The upgrader takes an exclusive lifecycle lock, backs up `sessions.db` with SQLite
-`VACUUM INTO` into a private `upgrade-backup-*` directory, then upgrades in a transaction.
-History, settings, metadata, and recorded usage are retained. Old unfinished tasks
-are marked discarded; queued input is retained in the backup and is never replayed.
-Provider context is rebuilt from the canonical history. Active goals are paused
-and require explicit resume. Legacy checkpoint files remain unchanged.
-The format marker is written last; a failed upgrade can be retried. Restore a
-backup only with all processes stopped, preserving the whole original state
-folder before replacing files. This API changes execution persistence intentionally;
-old processes must not be restarted against the upgraded directory.
+- Host providers should classify errors via `model.RequestError`. Unclassified errors, authentication failures, and quota exhaustion are not retried.
+- Transient rate limits and server errors use exponential backoff (1–8 seconds plus up to 250 ms jitter), honoring `Retry-After`.
+- When retries are exhausted or wait exceeds 30 seconds, the lead agent pauses with `TaskResult.ModelFailure` and a `PendingModelRecovery` request.
+- Resume with `runtime.Recover(ctx)` or `client.ResumeTask`. If called before the backoff timer elapses, Core returns `core.ErrModelRetryNotReady`.
 
-When queue coordination or outcome persistence fails, the drain stops rather than
-immediately rescheduling the same failing work. `WaitTurn` reports the transient
-storage error; this is not a durable failed outcome. The queue and checkpoint
-remain available. After fixing storage, explicitly reopen the session runtime or
-retry `WaitTurn` to trigger reconciliation. Completed checkpoints are committed
-without repeating model or completed tool calls. No automatic retry timer is installed.
+## Long-Running Commands and Sandbox
+
+Build the companion sandbox binary:
+```sh
+go build -trimpath ./cmd/lune-sandbox
+```
+Place it beside the host executable, on `PATH`, or set `core.Config.SandboxHelperPath`. Helper protocol version 2 is required.
+- Linux uses Landlock and seccomp. Go build, module, and XDG caches are placed in a per-workspace persistent cache directory.
+- Windows workspace mode uses AppContainer; Windows full access drops privileges to a medium integrity token.
+- `command` returns output up to 1 MiB. Poll output with `command_status` and stop with `command_stop`.
+- Passing `background: true` keeps services running across turns. Background services are owned by the session and stop when the session is closed or explicitly stopped.
+- Host inspection methods: `runtime.ListCommands(ctx)`, `runtime.ReadCommand(ctx, id, options)`, and `runtime.StopCommand(ctx, id)`.
+
+## Model Context Protocol (MCP)
+
+Core supports both standard stdio and remote streamable HTTP transports for MCP servers:
+
+### Transport configuration
+
+```json
+"mcpServers": {
+  "cli-tools": {
+    "transport": "stdio",
+    "command": "/usr/local/bin/tools-server",
+    "args": ["--listen"],
+    "env": {"DEBUG": "0"}
+  },
+  "remote-service": {
+    "transport": "streamable-http",
+    "url": "https://mcp.service.com/mcp",
+    "clientMetadataURL": "https://service.com/oauth/metadata.json"
+  }
+}
+```
+
+### OAuth authentication and browser customization
+
+When a streamable HTTP server requires OAuth authorization:
+- `client.AuthenticateMCPServer(ctx, serverName)` initiates the authorization workflow.
+- `core.Config.BrowserOpener` configures URL handling: defaults to `core.SystemBrowserOpener{}`, or can be set to `core.HeadlessBrowserOpener{}` or a custom `core.BrowserOpener`.
+- `core.Config.CredentialStorage` configures OAuth token persistence: defaults to `core.KeyringStorage{}` (OS keyring), or `core.NewMemoryCredentialStorage()` for testing and headless usage, or a custom `core.CredentialStorage`.
+- `client.OpenMCPURL(serverName, target)` opens elicitation URLs.
+
+### Host-controlled prompts and resources
+
+MCP prompts and resources are host-driven and never injected into model context automatically:
+- `runtime.ListMCPPrompts`, `runtime.GetMCPPrompt`
+- `runtime.ListMCPResources`, `runtime.ListMCPResourceTemplates`, `runtime.ReadMCPResource`
+- `GetMCPPrompt` and `ReadMCPResource` return `*model.ResponseInput`, which hosts may pass to `core.NewTaskInput` if desired.
+
+## Workspace Memory
+
+Workspace memory is enabled by default. After each task, Core performs an auxiliary instructed model call to extract reusable facts, preferences, conventions, and decisions.
+
+- Stored in SQLite alongside sessions. Deleting a session cleans up memories extracted from it; manually added memories persist.
+- Manage memories via `client.ListMemories`, `client.SearchMemories`, `client.AddMemory`, `client.UpdateMemory`, `client.DeleteMemory`, `client.ClearMemories`.
+- Hosts can provide semantic retrieval by implementing `memory.Embedder` and passing it to `core.Config.Memory.Embedder`. Call `client.ReindexMemories(ctx)` if embedder parameters change.
+- Disable automatic memory extraction with `core.Config.Memory.Disabled = true`.
+
+## Offline Execution Storage Upgrade
+
+When upgrading state directories containing earlier execution formats:
+
+```go
+report, err := core.UpgradeState(ctx, stateDir)
+```
+Or via CLI: `lune migrate --state-dir <directory>`.
+
+The upgrader takes an exclusive lock, backs up `sessions.db` via SQLite `VACUUM INTO` into an `upgrade-backup-*` folder, and upgrades checkpoints to execution format 2 / Graph format 10. History, settings, metadata, and recorded usage are retained. Old active goals are paused and require explicit resume.
+
+If queue drain or SQLite persistence encounters a storage error during execution, the drain worker stops safely instead of triggering an infinite retry loop. Re-opening the session runtime or retrying `WaitTurn` triggers safe reconciliation.
