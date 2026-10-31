@@ -156,9 +156,6 @@ func (c *Core) emit(event Event) {
 
 func safeEventProjection(event Event) Event {
 	safeErr := ""
-	if event.Kind == EventMemoryFailed {
-		safeErr = safeMemoryFailureSummary(event.Err)
-	}
 	event.Cursor, event.OccurredAt, event.Err = 0, time.Time{}, safeErr
 	event.Tool.Arguments = nil
 	event.Tool.Details = nil

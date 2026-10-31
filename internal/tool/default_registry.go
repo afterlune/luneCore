@@ -23,7 +23,7 @@ func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry
 	workspaceRead := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceRead, ReadOnly: true, AlwaysVisible: true}
 	workspaceWrite := model.ToolMetadata{Category: filesCategory, PermissionClass: model.ToolPermissionWorkspaceWrite, AlwaysVisible: true}
 	command := model.ToolMetadata{Category: commandCategory, PermissionClass: model.ToolPermissionCommand, AlwaysVisible: true}
-	network := model.ToolMetadata{Category: webCategory, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true}
+	network := model.ToolMetadata{Category: webCategory, PermissionClass: model.ToolPermissionNetwork, ReadOnly: true, AlwaysVisible: true}
 	registry, err := newRegistry(registryOptions.Logger,
 		ToolRegistration{Tool: ListDirTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},
 		ToolRegistration{Tool: GlobTool{Workspace: workspacePath, workspace: workspaceID}, Metadata: workspaceRead},

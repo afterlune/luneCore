@@ -27,8 +27,6 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 	}
 	requester := agentruntime.NewUsageTrackingRequester(client, "lead", profileID, profile.Provider, profile.Model)
 	requester.SetMaxOutputTokens(profile.MaxOutputTokens)
-	memoryRequester := agentruntime.NewUsageTrackingRequester(client, "memory", profileID, profile.Provider, profile.Model)
-	memoryRequester.SetMaxOutputTokens(profile.MaxOutputTokens)
 	usageObserver := func(ctx context.Context, usage publicmodel.ResponseUsage, agentID, profile, provider, modelName string, estimatedInputTokens int64) {
 		state := taskState
 		identity := publictool.CallIdentityFromContext(ctx)
@@ -38,7 +36,6 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		c.onAgentUsageForTask(state, usage, agentID, profile, provider, modelName, estimatedInputTokens, model.UsagePurposeFromContext(ctx), model.RequestTraceFromContext(ctx))
 	}
 	requester.SetContextAgentUsageObserver(usageObserver)
-	memoryRequester.SetContextAgentUsageObserver(usageObserver)
 	activeCommands, stopCommands := c.commandHooks()
 	agent, err := agentgraph.NewWithOptions(requester, c.registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: profileID, Provider: profile.Provider, Model: profile.Model,
@@ -56,11 +53,6 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		ModelObserver: func(state agentgraph.State, stage string, failure publicmodel.Failure) {
 			c.onModelRecoveryEvent(taskState.SessionID, state, stage, failure)
 		},
-		MemoryEnabled:              !c.memoryConfig.Disabled,
-		MemoryRequester:            memoryRequester,
-		MemorySummaryFor:           c.memorySummaryForTask,
-		MemoryWriter:               c.saveExtractedMemories,
-		MemoryObserver:             c.onMemoryEvent,
 		ProjectInstructionsForTask: c.projectInstructionsForTask,
 		GoalForTask: func(ctx context.Context, state agentgraph.State) (string, error) {
 			goal, err := c.sessions.Goal(ctx, taskState.SessionID)

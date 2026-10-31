@@ -82,14 +82,11 @@ func TestRunBenchmarkUsesMeasuredCoreUsageWithoutExternalProvider(t *testing.T) 
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatal(err)
 	}
-	if len(report.Cases) != 1 || report.Cases[0].Status != "completed" || !report.Cases[0].Measured || report.Cases[0].Usage.Total != 204 {
+	if len(report.Cases) != 1 || report.Cases[0].Status != "completed" || !report.Cases[0].Measured || report.Cases[0].Usage.Total != 102 {
 		t.Fatalf("benchmark report = %#v", report)
 	}
-	if report.Cases[0].RequestCount != 2 || requests != 2 || !report.Cases[0].Checks[0].Passed {
+	if report.Cases[0].RequestCount != 1 || requests != 1 || !report.Cases[0].Checks[0].Passed {
 		t.Fatalf("request count=%d provider requests=%d checks=%#v", report.Cases[0].RequestCount, requests, report.Cases[0].Checks)
-	}
-	if report.Cases[0].PurposeUsage["memory"].Requests != 1 {
-		t.Fatalf("memory extraction usage = %#v", report.Cases[0].PurposeUsage["memory"])
 	}
 	if !strings.Contains(report.Cases[0].FinalText, "4") {
 		t.Fatalf("final response = %q", report.Cases[0].FinalText)

@@ -241,19 +241,10 @@ func TestDefaultCommonToolsAreVisibleOnFirstRequest(t *testing.T) {
 		t.Fatalf("model requests = %d, want one direct read request and one final response", len(requester.requests))
 	}
 	firstNames := toolNames(requester.requests[0].Tools)
-	for _, name := range []string{"read_file", "list_dir", "glob", "grep", "write_file", "edit_file", "command", model.CategorySelectorName} {
+	for _, name := range []string{"read_file", "list_dir", "glob", "grep", "write_file", "edit_file", "command", "web_search", "web_fetch"} {
 		if !contains(firstNames, name) {
 			t.Errorf("first request tools %v missing %q", firstNames, name)
 		}
-	}
-	for _, name := range []string{"web_search", "web_fetch"} {
-		if contains(firstNames, name) {
-			t.Errorf("first request exposed deferred tool %q: %v", name, firstNames)
-		}
-	}
-	selector := requester.requests[0].Tools[len(requester.requests[0].Tools)-1].(model.FunctionTool)
-	if !strings.Contains(string(selector.Parameters), `"enum":["web"]`) {
-		t.Errorf("selector should only list the deferred web category: %s", selector.Parameters)
 	}
 }
 

@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/afterlune/luneCore/internal/model"
-	"github.com/afterlune/luneCore/memory"
 	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
 )
@@ -94,11 +93,6 @@ type AgentOptions struct {
 	Execution                  ExecutionOptions
 	Team                       TeamExecutor
 	AskUser                    bool
-	MemoryEnabled              bool
-	MemoryRequester            Requester
-	MemorySummaryFor           func(context.Context, State) (string, error)
-	MemoryWriter               func(context.Context, State, []memory.Candidate) ([]string, error)
-	MemoryObserver             func(State, string, []string, error)
 	ProjectInstructionsForTask func(context.Context, State) ([]ProjectInstruction, error)
 	GoalForTask                func(context.Context, State) (string, error)
 	ProjectInstructionsForTool func(context.Context, State, model.OutputFunctionCall) ([]ProjectInstruction, error)
@@ -181,8 +175,6 @@ type State struct {
 	CompactionWarningEmitted bool                         `json:"compaction_warning_emitted,omitempty"`
 	LastRequest              model.RequestTrace           `json:"last_request,omitzero"`
 	HostContext              string                       `json:"host_context,omitempty"`
-	MemorySummary            string                       `json:"memory_summary,omitempty"`
-	MemoryLoaded             bool                         `json:"memory_loaded,omitempty"`
 	ContextAtTaskStart       bool                         `json:"context_at_task_start,omitempty"`
 	ContextInsertIndex       int                          `json:"context_insert_index,omitempty"`
 	SelectedCategories       []string                     `json:"selected_categories,omitempty"`

@@ -116,8 +116,7 @@ func TestAutomaticDiscoveryPreservesPermissionsAndArguments(t *testing.T) {
 func TestHostSnapshotsAppendOnModeAndProjectChanges(t *testing.T) {
 	registry, _ := tool.NewRegistry()
 	defer registry.Close()
-	loads := 0
-	agent, _ := NewWithOptions(&scriptedRequester{}, registry, AgentOptions{MemorySummaryFor: func(context.Context, State) (string, error) { loads++; return "notes", nil }})
+	agent, _ := NewWithOptions(&scriptedRequester{}, registry, AgentOptions{})
 	state, _ := initialState(nil, nil, model.NewResponseInputText("request"))
 	state.ContextAtTaskStart = true
 	state = agent.prepareHostContext(context.Background(), state, "read-only", nil)
@@ -125,7 +124,7 @@ func TestHostSnapshotsAppendOnModeAndProjectChanges(t *testing.T) {
 	state.PlanMode = true
 	state.ProjectInstructions = []ProjectInstruction{{Path: "AGENTS.md", Content: "new rule"}}
 	state = agent.prepareHostContext(context.Background(), state, "read-only", nil)
-	if loads != 1 || countHostMessages(state.History) != 2 || !reflect.DeepEqual(first, state.History.Items[0]) {
+	if countHostMessages(state.History) != 2 || !reflect.DeepEqual(first, state.History.Items[0]) {
 		t.Fatal("snapshot rewrote prefix or reloaded memory")
 	}
 	if !strings.Contains(state.HostContext, "new rule") || !strings.Contains(state.HostContext, "You are in Plan mode.") {

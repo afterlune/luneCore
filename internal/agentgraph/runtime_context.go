@@ -23,17 +23,7 @@ func (s State) ConversationState() ConversationState {
 const stableInstructions = `You are Lune, an autonomous coding agent. Use available tools to fulfill the user's request accurately, directly, and efficiently. Reply in the same language as the user's prompt. When the user provides or references specific file or directory paths, inspect them directly using local file tools (e.g. list_dir, read_file) before searching elsewhere or making assumptions.`
 
 func (a *Agent) prepareHostContext(ctx context.Context, state State, mode string, visible []string) State {
-	if !state.MemoryLoaded {
-		if !state.TeamBranch && a.options.MemorySummaryFor != nil {
-			summary, err := a.options.MemorySummaryFor(ctx, state)
-			if err != nil {
-				a.options.Logger.WarnContext(ctx, "load workspace memory summary", "error_type", fmt.Sprintf("%T", err))
-			} else {
-				state.MemorySummary = summary
-			}
-		}
-		state.MemoryLoaded = true
-	}
+	
 	text := taskInstructions(state.Goal, mode, state.PlanMode, a.options.Team != nil)
 	if contains(visible, teamDispatchToolName) {
 		text += fmt.Sprintf("\n\nDelegation is available. This agent may create at most %d children per task. Current depth: %d; maximum depth: %d. Obey the remaining allowance reported in tool results.", state.Execution.MaxTeamChildrenPerAgent, state.TeamDepth, state.Execution.MaxTeamDepth)
@@ -41,7 +31,7 @@ func (a *Agent) prepareHostContext(ctx context.Context, state State, mode string
 	if state.NoInteractiveDecisions {
 		text += "\n\nThis task cannot request interactive decisions. Use only permitted or already approved actions; stop and report if a new user decision or approval is required."
 	}
-	for _, part := range []string{state.MemorySummary, personalInstructionContext(state.PersonalInstructions), projectInstructionContext(state.ProjectInstructions)} {
+	for _, part := range []string{personalInstructionContext(state.PersonalInstructions), projectInstructionContext(state.ProjectInstructions)} {
 		if strings.TrimSpace(part) != "" {
 			text += "\n\n" + part
 		}

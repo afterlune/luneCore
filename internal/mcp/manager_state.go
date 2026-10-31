@@ -15,6 +15,9 @@ import (
 func (manager *Manager) readEnabled() error {
 	data, err := os.ReadFile(manager.stateFile)
 	if errors.Is(err, os.ErrNotExist) {
+		if _, exists := manager.servers["engram"]; exists {
+			manager.enabled["engram"] = true
+		}
 		return nil
 	}
 	if err != nil {

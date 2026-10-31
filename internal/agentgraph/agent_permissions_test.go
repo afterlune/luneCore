@@ -318,7 +318,7 @@ func TestReadOnlyPermissionExposesExplorationToolsAndBlocksWrites(t *testing.T) 
 			visible[function.Name] = true
 		}
 	}
-	for _, name := range []string{"list_dir", "glob", "grep", "read_file", model.CategorySelectorName} {
+	for _, name := range []string{"list_dir", "glob", "grep", "read_file"} {
 		if !visible[name] {
 			t.Errorf("read-only mode did not expose %q: %#v", name, visible)
 		}

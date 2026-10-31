@@ -12,7 +12,6 @@ import (
 
 	core "github.com/afterlune/luneCore"
 	projectconfig "github.com/afterlune/luneCore/internal/config"
-	"github.com/afterlune/luneCore/memory"
 	publicmodel "github.com/afterlune/luneCore/model"
 )
 
@@ -21,7 +20,6 @@ type benchmarkCase struct {
 	Input               string              `json:"input"`
 	History             json.RawMessage     `json:"history,omitempty"`
 	Files               map[string]string   `json:"files,omitempty"`
-	Memories            []memory.Input      `json:"memories,omitempty"`
 	ResponseMustContain []string            `json:"responseMustContain,omitempty"`
 	FilesMustContain    map[string][]string `json:"filesMustContain,omitempty"`
 }
@@ -142,13 +140,6 @@ func runCase(configData []byte, profileConfig publicmodel.ModelProfile, profile,
 		return caseReport{}, err
 	}
 	defer client.Close(context.Background())
-	if len(testCase.Memories) > 0 {
-		for _, item := range testCase.Memories {
-			if _, err := client.AddMemory(context.Background(), item); err != nil {
-				return caseReport{}, fmt.Errorf("seed memory: %w", err)
-			}
-		}
-	}
 	history := testCase.History
 	if len(history) == 0 {
 		history = json.RawMessage("null")

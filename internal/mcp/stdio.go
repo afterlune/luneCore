@@ -10,6 +10,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -56,7 +57,8 @@ type stdioTransport struct {
 }
 
 func startStdio(config projectconfig.MCPServerConfig, workspace string) (*stdioTransport, error) {
-	cmd := exec.Command(config.Command, config.Args...)
+	command := resolveStdioCommand(config.Command)
+	cmd := exec.Command(command, config.Args...)
 	cmd.Dir = workspace
 	cmd.Env = mergeEnvironment(os.Environ(), config.Env)
 	cmd.Stderr = io.Discard
@@ -323,4 +325,28 @@ func mergeEnvironment(parent []string, overrides map[string]string) []string {
 		result = append(result, key+"="+merged[key])
 	}
 	return result
+}
+
+func resolveStdioCommand(command string) string {
+	if _, err := exec.LookPath(command); err == nil {
+		return command
+	}
+	if command == "engram" {
+		candidates := []string{
+			filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "luneAgent", "bin", "engram.exe"),
+			filepath.Join(os.Getenv("GOBIN"), "engram.exe"),
+			filepath.Join(os.Getenv("GOPATH"), "bin", "engram.exe"),
+			filepath.Join(os.Getenv("USERPROFILE"), "go", "bin", "engram.exe"),
+			filepath.Join(os.Getenv("HOME"), "go", "bin", "engram"),
+			filepath.Join("/usr/local/bin", "engram"),
+		}
+		for _, candidate := range candidates {
+			if candidate != "" {
+				if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+					return candidate
+				}
+			}
+		}
+	}
+	return command
 }

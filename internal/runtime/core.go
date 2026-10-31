@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
@@ -20,7 +19,6 @@ import (
 	"github.com/afterlune/luneCore/internal/session"
 	"github.com/afterlune/luneCore/internal/stateformat"
 	"github.com/afterlune/luneCore/internal/tool"
-	"github.com/afterlune/luneCore/internal/workspacememory"
 	publicmemory "github.com/afterlune/luneCore/memory"
 	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
@@ -100,7 +98,6 @@ type Core struct {
 	callbackLimiter      *graph.Limiter
 	personalInstructions string
 	memoryConfig         MemoryConfig
-	memory               *workspacememory.Service
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
@@ -148,11 +145,8 @@ func New(config Config) (_ *Core, err error) {
 	if err := validateExecutionOptions(config.Execution); err != nil {
 		return nil, fmt.Errorf("invalid execution defaults: %w", err)
 	}
-	if !config.Memory.Disabled && config.Memory.Embedder != nil && strings.TrimSpace(config.Memory.Embedder.ID()) == "" {
-		return nil, errors.New("memory embedder ID must not be empty")
-	}
 	for _, registration := range config.Tools {
-		if registration.Tool != nil && (registration.Tool.Definition().Name == publicmemory.SearchToolName || registration.Tool.Definition().Name == "command" || registration.Tool.Definition().Name == "command_status" || registration.Tool.Definition().Name == "command_stop") {
+		if registration.Tool != nil && (registration.Tool.Definition().Name == "command" || registration.Tool.Definition().Name == "command_status" || registration.Tool.Definition().Name == "command_stop") {
 			return nil, fmt.Errorf("tool name is reserved: %s", registration.Tool.Definition().Name)
 		}
 	}
@@ -279,7 +273,6 @@ func New(config Config) (_ *Core, err error) {
 		callbackLimiter:       callbackLimiter,
 		personalInstructions:  config.PersonalInstructions,
 		memoryConfig:          config.Memory,
-		memory:                workspacememory.New(sessions, workspace, config.Memory.Embedder, logger),
 		liveExecutions:        make(map[string]*graph.Execution[agentgraph.State]),
 		active:                TaskState{Status: TaskIdle},
 		activeTasks:           make(map[string]TaskState),
@@ -298,22 +291,6 @@ func New(config Config) (_ *Core, err error) {
 	}
 	if err := c.configureCommands(config); err != nil {
 		return nil, err
-	}
-	if !c.memoryConfig.Disabled {
-		registrations, err := tool.HostToolRegistrations([]publictool.Registration{{
-			Tool: workspacememory.NewSearchTool(c.memory),
-			Metadata: publictool.Metadata{
-				Category:        publictool.Category{Name: "workspace_memory", Description: "Search saved workspace memories from earlier tasks."},
-				PermissionClass: publictool.PermissionWorkspaceRead,
-				ReadOnly:        true,
-			},
-		}})
-		if err != nil {
-			return nil, fmt.Errorf("prepare workspace memory search tool: %w", err)
-		}
-		if err := registry.Register(registrations[0]); err != nil {
-			return nil, fmt.Errorf("register workspace memory search tool: %w", err)
-		}
 	}
 	attachmentLimits := c.ProjectAttachmentLimits()
 	mcpManager, err := mcp.NewManager(mcp.Options{

@@ -21,7 +21,6 @@ const (
 	teamToolNode       = "team_execute_tool"
 	teamJoinNode       = "team_join"
 	teamBranchJoinNode = "team_branch_join"
-	memoryNode         = "extract_workspace_memory"
 	machineID          = "lune-agent-v4"
 )
 
@@ -88,9 +87,7 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: toolNode, Run: agent.executeLeadTool, OnError: graph.FailExecution, Timeout: options.Execution.ToolTimeout}); err != nil {
 		return nil, fmt.Errorf("add tool node: %w", err)
 	}
-	if err := workflow.AddNode(graph.NodeSpec[State]{Name: memoryNode, Run: agent.extractMemory, OnError: graph.FailExecution, Timeout: options.Execution.ModelTimeout}); err != nil {
-		return nil, fmt.Errorf("add memory node: %w", err)
-	}
+	
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: teamModelNode, Run: agent.requestTeam, OnError: graph.FailInvocation, Timeout: options.Execution.ModelTimeout}); err != nil {
 		return nil, fmt.Errorf("add team model node: %w", err)
 	}
@@ -136,10 +133,8 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	}); err != nil {
 		return nil, fmt.Errorf("register token budget continuation: %w", err)
 	}
-	for _, edge := range [][2]string{{modelNode, modelNode}, {modelNode, memoryNode}, {toolNode, memoryNode}} {
-		if err := workflow.AddEdge(edge[0], edge[1]); err != nil {
-			return nil, fmt.Errorf("add %s-to-%s edge: %w", edge[0], edge[1], err)
-		}
+	if err := workflow.AddEdge(modelNode, modelNode); err != nil {
+		return nil, fmt.Errorf("add model-to-model edge: %w", err)
 	}
 	if err := workflow.AddEdge(modelNode, toolNode); err != nil {
 		return nil, fmt.Errorf("add model-to-tool edge: %w", err)

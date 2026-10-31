@@ -64,9 +64,6 @@ func (a *Agent) finishAgent(state State) (graph.Transition[State], error) {
 		}
 	}
 	if !state.TeamBranch {
-		if state.TaskError == "" && state.FinalResponse != nil && a.options.MemoryEnabled && a.options.MemoryRequester != nil && a.options.MemoryWriter != nil {
-			return graph.To(state, memoryNode), nil
-		}
 		return graph.EndExecution(state), nil
 	}
 	state.TeamText = responseText(state.FinalResponse.Output)

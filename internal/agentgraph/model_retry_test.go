@@ -10,7 +10,6 @@ import (
 
 	"github.com/afterlune/luneCore/internal/model"
 	"github.com/afterlune/luneCore/internal/tool"
-	"github.com/afterlune/luneCore/memory"
 	publicmodel "github.com/afterlune/luneCore/model"
 	graph "github.com/afterlune/luneGraph"
 	checkpointmemory "github.com/afterlune/luneGraph/checkpoint/memory"
@@ -169,34 +168,6 @@ func TestModelRetryTeamFailureIsMerged(t *testing.T) {
 	_, result, err := agent.Start(context.Background(), "team-retry", nil, input, TaskOptions{}, store, graph.Options{MaxSteps: 6})
 	if err != nil || result.Status != graph.StatusCompleted || result.Final == nil || result.Final.ModelFailure != nil || team.failed.calls != 3 {
 		t.Fatalf("status=%s failure=%v attempts=%d error=%v", result.Status, result.Final, team.failed.calls, err)
-	}
-}
-
-func TestModelRetryMemoryFailureKeepsTaskComplete(t *testing.T) {
-	a, _ := retryTestAgent()
-	r := &retryRequester{failures: 9, err: &publicmodel.RequestError{Category: publicmodel.ErrorUnavailable}}
-	a.options.MemoryRequester = r
-	var status string
-	a.options.MemoryObserver = func(_ State, stage string, _ []string, _ error) { status = stage }
-	a.options.MemoryWriter = func(context.Context, State, []memory.Candidate) ([]string, error) {
-		t.Fatal("failed memory request reached writer")
-		return nil, nil
-	}
-	workflow := graph.New[State](memoryNode)
-	if err := workflow.AddNode(graph.NodeSpec[State]{Name: memoryNode, Run: a.extractMemory}); err != nil {
-		t.Fatal(err)
-	}
-	runner, err := workflow.Compile(graph.Config[State]{MachineID: "memory-retry", Clone: graph.JSONClone[State]})
-	if err != nil {
-		t.Fatal(err)
-	}
-	store, err := checkpointmemory.New[State](graph.JSONClone[State])
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, result, err := runner.Start(context.Background(), "memory-retry", State{}, store, graph.Options{})
-	if err != nil || result.Status != graph.StatusCompleted || status != "failed" || r.calls != 3 {
-		t.Fatalf("status=%s memory=%s calls=%d error=%v", result.Status, status, r.calls, err)
 	}
 }
 

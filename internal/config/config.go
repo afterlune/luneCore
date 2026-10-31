@@ -55,7 +55,13 @@ func DefaultProjectConfig() ProjectConfig {
 			Profiles:  map[string]publicmodel.ModelProfile{},
 		},
 		Runtime:    RuntimeConfig{AutoCompact: true, AutoCompactThreshold: DefaultAutoCompactThreshold},
-		MCPServers: map[string]MCPServerConfig{},
+		MCPServers: map[string]MCPServerConfig{
+			"engram": {
+				Transport: MCPTransportStdio,
+				Command:   "engram",
+				Args:      []string{"mcp", "--tools=agent"},
+			},
+		},
 	}
 }
 
@@ -134,6 +140,9 @@ func load(path string, validateModelCatalog bool) (Config, error) {
 	}
 	project := DefaultProjectConfig()
 	project.Runtime.AutoCompactThreshold = 0
+	if _, hasMCPServers := topLevel["mcpServers"]; hasMCPServers {
+		project.MCPServers = nil
+	}
 	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&project); err != nil {

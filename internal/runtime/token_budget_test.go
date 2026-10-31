@@ -146,8 +146,8 @@ func TestExecutionTokenBudgetPersistsAcrossPauseAndRecovery(t *testing.T) {
 	}
 	provider.mu.Lock()
 	defer provider.mu.Unlock()
-	if provider.calls["model"] != 2 || provider.calls["memory"] != 1 {
-		t.Fatalf("execution model calls = %v; want two lead requests and one memory call", provider.calls)
+	if provider.calls["model"] != 2 {
+		t.Fatalf("execution model calls = %v; want two lead requests", provider.calls)
 	}
 	for _, request := range provider.seen {
 		if request.MaxOutputTokens == nil || *request.MaxOutputTokens != 2048 {
