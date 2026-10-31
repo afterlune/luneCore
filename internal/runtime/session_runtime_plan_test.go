@@ -371,8 +371,8 @@ func TestPlanModeHandoffStartsPlanOnlySession(t *testing.T) {
 	if !strings.Contains(string(encodedInput), "Only update the README") || strings.Contains(string(encodedInput), "Old conversation context") {
 		t.Fatalf("new-context input = %s", encodedInput)
 	}
-	if !strings.Contains(requestHostText(request), "Full-access mode permits") || client.PermissionMode() != PermissionFullAccess {
-		t.Fatalf("new-context implementation did not use full-access: instructions=%q mode=%q", requestHostText(request), client.PermissionMode())
+	if client.PermissionMode() != PermissionFullAccess {
+		t.Fatalf("new-context implementation did not use full-access: mode=%q", client.PermissionMode())
 	}
 }
 

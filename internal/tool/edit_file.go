@@ -13,7 +13,7 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-const editFileSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative path, or an absolute path outside the workspace (which requires a session read-write directory grant)"},"old_text":{"type":"string","description":"Exact text to find; must occur once"},"new_text":{"type":"string","description":"Replacement text"}},"required":["path","old_text","new_text"],"additionalProperties":false}`
+const editFileSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative or absolute file path"},"old_text":{"type":"string","description":"Exact text to find; must occur once"},"new_text":{"type":"string","description":"Replacement text"}},"required":["path","old_text","new_text"],"additionalProperties":false}`
 
 // EditFileTool replaces one exact, unique text occurrence inside a file.
 type EditFileTool struct {
@@ -22,7 +22,7 @@ type EditFileTool struct {
 }
 
 func (EditFileTool) Definition() model.FunctionTool {
-	return functionDefinition("edit_file", "Replace one unique exact text match in a workspace or session-granted external file; large files are streamed in chunks.", editFileSchema)
+	return functionDefinition("edit_file", "Replace one unique exact text match in a file; large files are streamed in chunks.", editFileSchema)
 }
 
 func (t EditFileTool) Run(ctx context.Context, raw json.RawMessage) Result {

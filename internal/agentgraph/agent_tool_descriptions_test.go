@@ -14,9 +14,7 @@ func TestRuntimeToolDescriptionsRetainDecisionAndDispatchConstraints(t *testing.
 	}
 	want := map[string][]string{
 		"ask_user": {
-			"user-owned decision", "blocks safe, correct progress", "plan mode", "inspect available facts",
-			"defaults for routine details", "unique IDs", "answer choices", "free text",
-			"each description to one brief, distinguishing phrase", "avoid redundant explanations",
+			"clarification", "decisions",
 		},
 		"delegate_team": {
 			"independent tasks", "distinct deliverables", "task gives each member only its assignment",
@@ -47,16 +45,19 @@ func TestAskUserOptionDescriptionSchemaRequestsBriefText(t *testing.T) {
 	optionItem := options["items"].(map[string]any)
 	optionProperties := optionItem["properties"].(map[string]any)
 	description := optionProperties["description"].(map[string]any)["description"].(string)
-	if !strings.Contains(strings.ToLower(description), "brief phrase") || !strings.Contains(strings.ToLower(description), "repeating the label") {
-		t.Fatalf("ask_user option description schema should request concise, non-redundant text, got %q", description)
+	if !strings.Contains(strings.ToLower(description), "brief phrase") {
+		t.Fatalf("ask_user option description schema should request concise text, got %q", description)
 	}
 	recommended, ok := optionProperties["recommended"].(map[string]any)
 	if !ok || recommended["type"] != "boolean" {
 		t.Fatalf("ask_user option schema should include a boolean recommendation flag: %#v", optionProperties["recommended"])
 	}
 	required, ok := optionItem["required"].([]any)
-	if !ok || !containsAny(required, "recommended") {
-		t.Fatalf("ask_user option schema should require recommended: %#v", optionItem["required"])
+	if !ok || !containsAny(required, "label") || !containsAny(required, "description") {
+		t.Fatalf("ask_user option schema should require label and description: %#v", optionItem["required"])
+	}
+	if containsAny(required, "recommended") {
+		t.Fatalf("ask_user option schema should not require recommended: %#v", optionItem["required"])
 	}
 }
 

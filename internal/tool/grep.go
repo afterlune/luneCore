@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	grepSchema      = `{"type":"object","properties":{"pattern":{"type":"string","description":"Case-sensitive regular expression matched against each text line"},"path":{"type":"string","description":"Workspace-relative or absolute file or directory; outside paths require a session read grant. Defaults to the workspace root"},"offset":{"type":"integer","minimum":0,"description":"Zero-based match offset; defaults to 0"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum matches to return; defaults to 100"}},"required":["pattern"],"additionalProperties":false}`
+	grepSchema      = `{"type":"object","properties":{"pattern":{"type":"string","description":"Case-sensitive regular expression matched against each text line"},"path":{"type":"string","description":"Workspace-relative or absolute file or directory; defaults to the workspace root"},"offset":{"type":"integer","minimum":0,"description":"Zero-based match offset; defaults to 0"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum matches to return; defaults to 100"}},"required":["pattern"],"additionalProperties":false}`
 	maxGrepLineSize = 1 << 20
 )
 
@@ -31,7 +31,7 @@ type GrepTool struct {
 }
 
 func (GrepTool) Definition() model.FunctionTool {
-	return optionalPathDefinition("grep", "Recursively search workspace or session-granted external files with a case-sensitive regex; skips .git and .map. Use offset and limit to page.", grepSchema)
+	return optionalPathDefinition("grep", "Recursively search files with a case-sensitive regex; skips .git and .map. Use offset and limit to page.", grepSchema)
 }
 
 func (t GrepTool) Run(ctx context.Context, raw json.RawMessage) Result {

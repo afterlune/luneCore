@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	globSchema = `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to path; supports ** for recursive matching"},"path":{"type":"string","description":"Workspace-relative or absolute directory to search; outside directories require a session read grant. Defaults to the workspace root"},"offset":{"type":["integer","null"],"minimum":0,"description":"Zero-based match offset; defaults to 0"},"limit":{"type":["integer","null"],"minimum":1,"maximum":500,"description":"Maximum matches to return; defaults to 100"}},"required":["pattern","offset","limit"],"additionalProperties":false}`
+	globSchema = `{"type":"object","properties":{"pattern":{"type":"string","description":"Glob pattern relative to path; supports ** for recursive matching"},"path":{"type":"string","description":"Workspace-relative or absolute directory to search; defaults to the workspace root"},"offset":{"type":["integer","null"],"minimum":0,"description":"Zero-based match offset; defaults to 0"},"limit":{"type":["integer","null"],"minimum":1,"maximum":500,"description":"Maximum matches to return; defaults to 100"}},"required":["pattern","offset","limit"],"additionalProperties":false}`
 )
 
 // GlobTool returns workspace-relative paths matching a glob pattern.
@@ -25,7 +25,7 @@ type GlobTool struct {
 }
 
 func (GlobTool) Definition() model.FunctionTool {
-	return functionDefinition("glob", "Find paths matching a pattern under a workspace or session-granted external directory; ** matches recursively. Use offset and limit to page.", globSchema)
+	return functionDefinition("glob", "Find paths matching a pattern under a directory; ** matches recursively. Use offset and limit to page.", globSchema)
 }
 
 func (t GlobTool) Run(ctx context.Context, raw json.RawMessage) Result {

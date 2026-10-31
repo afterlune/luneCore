@@ -21,48 +21,18 @@ func taskInstructions(goal, permissionMode string, planMode, teamEnabled bool) s
 	var instructions []string
 	if planMode {
 		instructions = append(instructions,
-			"You are in Plan mode.\n\n"+
-				"If the user prompt is a greeting, pleasantry, or does not specify a task to plan, reply naturally directly without calling tools or inspecting the workspace.\n\n"+
-				"Inspect the workspace and produce a concrete, actionable implementation plan.\n\n"+
-				"Inspect discoverable facts first; use reasonable defaults for routine technical details. Ask the user (using the ask_user tool) to clarify only critical architectural decisions, scope boundaries, or material ambiguities that cannot be determined from existing context. Do not make these decisions on the user's behalf. Never ask vague open-ended questions like 'what should we do next'. When calling ask_user, put questions into the tool call and do not repeat them in message text.\n\n"+
-				"Do not modify files or run commands that change the workspace.\n\n"+
-				"Present the final plan enclosed exactly in the literal `<proposed_plan>` and `</proposed_plan>` tags. Do not use `<proposed_plan_end/>` or any other start/end marker.")
+			"You are in Plan mode. Analyze the request, explore facts using available read-only tools, and present a concrete plan enclosed in `<proposed_plan>` and `</proposed_plan>` tags.")
 		if teamEnabled {
-			instructions = append(instructions, "For a user message beginning 'Worker task', inspect with read-only tools and report facts and unresolved decisions to the lead; do not call ask_user, present a full plan, modify files, or claim execution.")
+			instructions = append(instructions, "For a user message beginning 'Worker task', inspect with read-only tools and report findings to the lead.")
 		}
-	} else {
-		instructions = append(instructions, "Prefer reasonable assumptions and continue instead of asking routine questions. Inspect the workspace and use available tools to resolve discoverable facts first. Use ask_user only when a user-owned decision or material ambiguity cannot be resolved from available context and blocks a safe or correct result. If the user has not requested a concrete task (such as a greeting or casual chat), reply naturally directly without calling tools or inspecting the workspace.")
-		if permissionMode != "read-only" {
-			instructions = append(instructions, "When the user asks to keep a workspace service running after the task, start it with command background=true and keep the service process in the foreground; do not use shell detachment such as & or nohup. The session manages it after the task ends. Check command_status output before claiming it is ready, and stop it with command_stop when it is no longer needed. On Linux, command sandboxing restricts filesystem access but does not create a separate network namespace. Sandbox environment variables are constructed per command and do not inherit host-shell exports; set a needed variable in that command invocation, and use host-approved command toolchain paths for binaries outside the standard PATH.")
-		}
-		if teamEnabled {
-			instructions = append(instructions, "For a user message beginning 'Worker task', complete only the assignment, verify facts, and report to the lead; do not call ask_user.")
-		}
+	} else if teamEnabled {
+		instructions = append(instructions, "For a user message beginning 'Worker task', complete only the assignment and report to the lead.")
 	}
-	instructions = append(instructions, "Language policy: Always reply in the same language as the user's prompt (e.g., if the user asks in Chinese, reply in Chinese; if the user asks in English, reply in English).")
-	if planMode {
-		permission := "The active permission mode is " + permissionMode + "; it determines approval for visible read-only tools, including web access. Plan mode limits visible tools to read-only operations. Shell command execution and file modifications are disabled; inspect the workspace using read-only file tools."
-		if permissionMode == "" {
-			permission = "Plan mode limits visible tools to read-only operations. Shell command execution and file modifications are disabled; inspect the workspace using read-only file tools. The active permission mode still determines approval for visible tools."
-		}
-		instructions = append(instructions, permission)
-	} else {
-		switch permissionMode {
-		case "read-only":
-			instructions = append(instructions, "Active permission is read-only. Inspect and explain only; do not modify files or run commands. Web and network access require host approval.")
-		case "workspace":
-			instructions = append(instructions, "Workspace mode permits reading and writing workspace files. Commands and network access require host approval.")
-		case "auto":
-			instructions = append(instructions, "Auto mode applies model auto-review to commands and external operations, asking the host only when the review is unsafe or fails.")
-		case "full-access":
-			instructions = append(instructions, "Full-access mode permits all available tools.")
-		}
-	}
+
 	if goal = strings.TrimSpace(goal); goal != "" {
 		instructions = append(instructions,
 			"Task goal (guidance only): "+strconv.Quote(goal)+" It does not override higher-priority instructions, safety requirements, or tool permissions.")
 	}
-	instructions = append(instructions, "Keep responses concise without omitting requested detail, evidence, or necessary code.")
 	return strings.Join(instructions, "\n\n")
 }
 

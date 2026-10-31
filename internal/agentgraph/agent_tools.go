@@ -31,22 +31,21 @@ func askUserDefinition() model.FunctionTool {
 			"questions": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{
 				"type": "object", "properties": map[string]any{
 					"id":       map[string]any{"type": "string", "description": "Unique stable ID within this batch."},
-					"question": map[string]any{"type": "string", "description": "One concise user-owned decision."},
+					"question": map[string]any{"type": "string", "description": "One concise question for the user."},
 					"options": map[string]any{"type": "array", "items": map[string]any{"type": "object", "properties": map[string]any{
 						"label":       map[string]any{"type": "string"},
-						"description": map[string]any{"type": "string", "description": "A brief phrase that distinguishes this option; avoid full sentences and repeating the label."},
-						"recommended": map[string]any{"type": "boolean", "description": "Whether this is the single best default choice for the user; mark at most one option."},
-					}, "required": []string{"label", "description", "recommended"}, "additionalProperties": false}},
+						"description": map[string]any{"type": "string", "description": "A brief phrase that distinguishes this option."},
+						"recommended": map[string]any{"type": "boolean", "description": "Optional: whether this is a clear objective default choice for the user."},
+					}, "required": []string{"label", "description"}, "additionalProperties": false}},
 				}, "required": []string{"id", "question", "options"}, "additionalProperties": false}},
 		}, "required": []string{"questions"}, "additionalProperties": false,
 	})
 	strict := true
 	return model.FunctionTool{
-		Name: askUserToolName,
-		Description: "Ask only about a user-owned decision or material ambiguity that blocks safe, correct progress. " +
-			"In Plan mode, ask before presenting the plan; inspect available facts first and use defaults for routine details. Group related decisions, use concise questions with unique IDs, and offer answer choices when helpful. Keep each option label short and each description to one brief, distinguishing phrase; avoid redundant explanations. Mark at most one option as recommended when a clear default exists; otherwise mark none. Free text is accepted.",
-		Parameters: parameters,
-		Strict:     &strict,
+		Name:        askUserToolName,
+		Description: "Ask the user for clarification or decisions when needed to proceed.",
+		Parameters:  parameters,
+		Strict:      &strict,
 	}
 }
 

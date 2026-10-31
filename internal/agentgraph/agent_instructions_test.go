@@ -50,35 +50,8 @@ func TestTaskGoalIsAppliedWithoutForcingPlanInstructions(t *testing.T) {
 			t.Errorf("instructions %q are missing %q", instructions, expected)
 		}
 	}
-	if strings.Contains(instructions, "You are in plan mode.") {
+	if strings.Contains(instructions, "You are in Plan mode.") {
 		t.Errorf("task instructions force planning: %q", instructions)
-	}
-}
-
-func TestDelegationGuidanceIsConditionalAndBounded(t *testing.T) {
-	for _, expected := range []string{"When delegate_team is available", "at least two independent subtasks", "benefit from parallel work", "obey task and depth limits"} {
-		if !strings.Contains(stableInstructions, expected) {
-			t.Fatalf("fixed instructions missing %q", expected)
-		}
-	}
-}
-
-func TestWorkspaceServiceGuidanceUsesManagedBackgroundMode(t *testing.T) {
-	instructions := taskInstructions("", "workspace", false, false)
-	for _, expected := range []string{
-		"command background=true",
-		"keep the service process in the foreground",
-		"do not use shell detachment such as & or nohup",
-		"does not create a separate network namespace",
-		"do not inherit host-shell exports",
-	} {
-		if !strings.Contains(instructions, expected) {
-			t.Errorf("service guidance is missing %q: %s", expected, instructions)
-		}
-	}
-	readOnly := taskInstructions("", "read-only", false, false)
-	if strings.Contains(readOnly, "command background=true") {
-		t.Fatalf("read-only instructions advertise command execution: %s", readOnly)
 	}
 }
 
@@ -118,7 +91,7 @@ func TestInstructionsStayStableAcrossToolRounds(t *testing.T) {
 	}
 }
 
-func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing.T) {
+func TestPlanModeInstructionsIncludePlanFormat(t *testing.T) {
 	requester := &scriptedRequester{responses: []*model.Response{
 		mustDecodeResponse(t, `{"status":"completed","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"<proposed_plan>Done.</proposed_plan>"}]}]}`),
 	}}
@@ -145,37 +118,16 @@ func TestPlanModeInstructionsRequireClarificationForMaterialDecisions(t *testing
 	instructions := requestContextText(requester.requests[0])
 	for _, expected := range []string{
 		"You are in Plan mode.",
-		"If the user prompt is a greeting, pleasantry, or does not specify a task to plan, reply naturally directly without calling tools or inspecting the workspace.",
-		"Inspect the workspace and produce a concrete, actionable implementation plan.",
-		"Ask the user (using the ask_user tool) to clarify",
-		"Do not make these decisions on the user's behalf.",
-		"When calling ask_user, put questions into the tool call and do not repeat them in message text.",
-		"Do not modify files or run commands that change the workspace.",
 		"<proposed_plan>",
 		"</proposed_plan>",
-		"Do not use `<proposed_plan_end/>`",
 	} {
 		if !strings.Contains(instructions, expected) {
 			t.Errorf("Plan mode instructions missing %q: %s", expected, instructions)
 		}
 	}
-	if strings.Contains(instructions, "Prefer reasonable assumptions and continue instead of asking routine questions") {
-		t.Fatalf("generic no-routine-questions instruction should not override Plan mode: %s", instructions)
-	}
 	workerInstructions := taskInstructions("", "workspace", true, true)
-	if !strings.Contains(workerInstructions, "report facts and unresolved decisions to the lead") || !strings.Contains(workerInstructions, "do not call ask_user") {
+	if !strings.Contains(workerInstructions, "report findings to the lead") {
 		t.Fatalf("shared Plan mode instructions = %q", workerInstructions)
-	}
-	workerInput, _, err := teamAssignmentInput(TeamDispatchTask, nil, "inspect the plan risks", true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(workerInput)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(encoded), "Worker task (Plan mode):") {
-		t.Fatalf("delegated plan task marker is missing: %s", encoded)
 	}
 }
 

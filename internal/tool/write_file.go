@@ -12,7 +12,7 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-const writeFileSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative path, or an absolute path outside the workspace (which requires a session read-write directory grant)"},"content":{"type":"string","description":"Complete file contents to write"}},"required":["path","content"],"additionalProperties":false}`
+const writeFileSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative or absolute file path"},"content":{"type":"string","description":"Complete file contents to write"}},"required":["path","content"],"additionalProperties":false}`
 
 // WriteFileTool creates or replaces a file inside the workspace.
 type WriteFileTool struct {
@@ -21,7 +21,7 @@ type WriteFileTool struct {
 }
 
 func (WriteFileTool) Definition() model.FunctionTool {
-	return functionDefinition("write_file", "Create or replace a workspace or session-granted external file with complete contents.", writeFileSchema)
+	return functionDefinition("write_file", "Create or replace a file with complete contents.", writeFileSchema)
 }
 
 func (t WriteFileTool) Run(ctx context.Context, raw json.RawMessage) Result {

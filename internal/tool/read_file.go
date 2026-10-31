@@ -14,7 +14,7 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-const readFileSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative path, or an absolute path outside the workspace (which requires a session directory grant)"},"start_line":{"type":["integer","null"],"minimum":1,"description":"One-based first line to read; defaults to 1"},"limit":{"type":["integer","null"],"minimum":1,"maximum":500,"description":"Maximum lines to return; defaults to 200"}},"required":["path","start_line","limit"],"additionalProperties":false}`
+const readFileSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative or absolute file path"},"start_line":{"type":["integer","null"],"minimum":1,"description":"One-based first line to read; defaults to 1"},"limit":{"type":["integer","null"],"minimum":1,"maximum":500,"description":"Maximum lines to return; defaults to 200"}},"required":["path","start_line","limit"],"additionalProperties":false}`
 
 // ReadFileTool reads a bounded line range from a UTF-8 or plain-text file.
 type ReadFileTool struct {
@@ -23,7 +23,7 @@ type ReadFileTool struct {
 }
 
 func (ReadFileTool) Definition() model.FunctionTool {
-	return functionDefinition("read_file", "Read a workspace or session-granted external file by line range; output includes line numbers and the next start_line when more content remains.", readFileSchema)
+	return functionDefinition("read_file", "Read a file by line range; output includes line numbers and the next start_line when more content remains.", readFileSchema)
 }
 
 func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {

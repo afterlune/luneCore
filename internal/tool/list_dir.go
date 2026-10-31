@@ -12,7 +12,7 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-const listDirSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative or absolute directory; use . for the workspace root. Outside directories require a session read grant"},"offset":{"type":"integer","minimum":0,"description":"Zero-based entry offset; defaults to 0"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum entries to return; defaults to 100"}},"additionalProperties":false}`
+const listDirSchema = `{"type":"object","properties":{"path":{"type":"string","description":"Workspace-relative or absolute directory; use . for the workspace root."},"offset":{"type":"integer","minimum":0,"description":"Zero-based entry offset; defaults to 0"},"limit":{"type":"integer","minimum":1,"maximum":500,"description":"Maximum entries to return; defaults to 100"}},"additionalProperties":false}`
 
 // ListDirTool lists a page of sorted direct children of a workspace directory.
 type ListDirTool struct {
@@ -21,7 +21,7 @@ type ListDirTool struct {
 }
 
 func (ListDirTool) Definition() model.FunctionTool {
-	return optionalPathDefinition("list_dir", "List sorted workspace or session-granted external directory entries; use offset and limit to page.", listDirSchema)
+	return optionalPathDefinition("list_dir", "List sorted directory entries; use offset and limit to page.", listDirSchema)
 }
 
 func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {
