@@ -23,7 +23,7 @@ type ReadFileTool struct {
 }
 
 func (ReadFileTool) Definition() model.FunctionTool {
-	return functionDefinition("read_file", "Read a file by line range; output includes line numbers and the next start_line when more content remains.", readFileSchema)
+	return functionDefinition("read_file", "Read a workspace or absolute file by line range; output includes line numbers and the next start_line when more content remains.", readFileSchema)
 }
 
 func (t ReadFileTool) Run(ctx context.Context, raw json.RawMessage) Result {

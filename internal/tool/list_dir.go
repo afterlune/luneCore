@@ -21,7 +21,7 @@ type ListDirTool struct {
 }
 
 func (ListDirTool) Definition() model.FunctionTool {
-	return optionalPathDefinition("list_dir", "List sorted directory entries; use offset and limit to page.", listDirSchema)
+	return optionalPathDefinition("list_dir", "List sorted directory entries for a workspace or absolute directory path; use offset and limit to page.", listDirSchema)
 }
 
 func (t ListDirTool) Run(ctx context.Context, raw json.RawMessage) Result {

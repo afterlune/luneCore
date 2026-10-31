@@ -95,12 +95,12 @@ func ProjectInstructionPath(workspace, requested string, allowDot bool) (string,
 	}
 	if filepath.IsAbs(requested) {
 		absolute := filepath.Clean(requested)
+		if !pathWithin(workspace, absolute) {
+			return "", false, nil
+		}
 		relative, err := filepath.Rel(workspace, absolute)
 		if err != nil {
 			return "", false, fmt.Errorf("resolve workspace instruction path: %w", err)
-		}
-		if relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-			return "", false, nil
 		}
 		if relative == "." && !allowDot {
 			return "", false, errors.New("path refers to a directory; use list_dir to inspect it")

@@ -89,6 +89,15 @@ func TestInstructionsStayStableAcrossToolRounds(t *testing.T) {
 	if requester.requests[0].Instructions != requester.requests[1].Instructions {
 		t.Fatalf("instructions changed across tool round:\nfirst: %s\nsecond: %s", requester.requests[0].Instructions, requester.requests[1].Instructions)
 	}
+	for _, expected := range []string{
+		"autonomous coding agent",
+		"file or directory paths",
+		"inspect them directly using local file tools",
+	} {
+		if !strings.Contains(requester.requests[0].Instructions, expected) {
+			t.Errorf("Instructions missing %q: %s", expected, requester.requests[0].Instructions)
+		}
+	}
 }
 
 func TestPlanModeInstructionsIncludePlanFormat(t *testing.T) {

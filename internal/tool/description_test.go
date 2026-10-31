@@ -22,16 +22,16 @@ func TestBuiltInDescriptionsRetainKeyConstraints(t *testing.T) {
 		"web_fetch":  WebFetchTool{}.Definition(),
 	}
 	want := map[string][]string{
-		"read_file":  {"line range", "line numbers", "next start_line", "more content"},
+		"read_file":  {"line range", "line numbers", "next start_line", "more content", "workspace or absolute"},
 		"write_file": {"create or replace", "complete contents"},
 		"edit_file":  {"unique exact text match", "large files", "chunks"},
-		"list_dir":   {"sorted", "offset and limit"},
+		"list_dir":   {"sorted", "offset and limit", "workspace or absolute"},
 		"glob":       {"** matches recursively", "offset and limit"},
 		"grep":       {"recursively", "case-sensitive regex", ".git", ".map", "offset and limit"},
 		"command":    {"workspace command", "background=true", "session", "command_status", "command_stop"},
 		"status":     {"this agent's command", "byte cursor", "wait up to 5 seconds", "start receipt"},
 		"stop":       {"command owned by this agent", "does not mean it succeeded"},
-		"web_search": {"titles", "URLs", "snippets"},
+		"web_search": {"titles", "URLs", "snippets", "do not use for local"},
 		"web_fetch":  {"HTTP(S)", "title", "readable text"},
 	}
 	for name, terms := range want {

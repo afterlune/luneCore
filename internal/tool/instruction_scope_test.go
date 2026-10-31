@@ -83,3 +83,54 @@ func TestProjectInstructionPathEscapeGuidance(t *testing.T) {
 		t.Fatalf("error %q does not contain guidance 'session directory grant'", err.Error())
 	}
 }
+
+func TestProjectInstructionPathCrossVolumeAndOutsideWorkspace(t *testing.T) {
+	workspace := t.TempDir()
+
+	var crossTarget string
+	if filepath.Separator == '\\' {
+		vol := strings.ToUpper(filepath.VolumeName(workspace))
+		targetVol := "D:"
+		if vol == "D:" {
+			targetVol = "C:"
+		}
+		crossTarget = targetVol + `\test\dir`
+	} else {
+		crossTarget = "/tmp/outside_workspace_test"
+	}
+
+	clean, inWorkspace, err := ProjectInstructionPath(workspace, crossTarget, true)
+	if err != nil {
+		t.Fatalf("ProjectInstructionPath with cross-target %q failed: %v", crossTarget, err)
+	}
+	if inWorkspace {
+		t.Fatalf("expected inWorkspace=false for %q in workspace %q, got clean=%q", crossTarget, workspace, clean)
+	}
+
+	outsideSameDrive := filepath.Dir(workspace)
+	clean, inWorkspace, err = ProjectInstructionPath(workspace, outsideSameDrive, true)
+	if err != nil {
+		t.Fatalf("ProjectInstructionPath with outside directory failed: %v", err)
+	}
+	if inWorkspace {
+		t.Fatalf("expected inWorkspace=false for outside directory %q, got clean=%q", outsideSameDrive, clean)
+	}
+
+	reg, err := NewDefaultRegistry(workspace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reg.Close()
+
+	args, _ := json.Marshal(map[string]string{"path": crossTarget})
+	dirs, relevant, err := reg.InstructionDirectoriesForCall(context.Background(), "list_dir", args)
+	if err != nil {
+		t.Fatalf("InstructionDirectoriesForCall failed for crossTarget %q: %v", crossTarget, err)
+	}
+	if !relevant {
+		t.Fatal("expected list_dir to still be relevant")
+	}
+	if len(dirs) != 0 {
+		t.Fatalf("expected no workspace instruction directories for external path, got %v", dirs)
+	}
+}

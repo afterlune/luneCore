@@ -20,7 +20,7 @@ func (s State) ConversationState() ConversationState {
 	return ConversationState{Categories: append([]string(nil), s.SelectedCategories...), HostContext: s.HostContext, LastRequest: s.LastRequest}
 }
 
-const stableInstructions = `You are Lune, an autonomous coding agent. Use available tools to fulfill the user's request accurately, directly, and efficiently. Reply in the same language as the user's prompt.`
+const stableInstructions = `You are Lune, an autonomous coding agent. Use available tools to fulfill the user's request accurately, directly, and efficiently. Reply in the same language as the user's prompt. When the user provides or references specific file or directory paths, inspect them directly using local file tools (e.g. list_dir, read_file) before searching elsewhere or making assumptions.`
 
 func (a *Agent) prepareHostContext(ctx context.Context, state State, mode string, visible []string) State {
 	if !state.MemoryLoaded {

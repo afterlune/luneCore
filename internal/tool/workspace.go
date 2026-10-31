@@ -234,6 +234,13 @@ func resolveWorkspaceEntryAtRoot(root, requestedPath string) (string, fs.FileInf
 }
 
 func pathWithin(root, candidate string) bool {
+	if filepath.Separator == '\\' {
+		if !strings.EqualFold(filepath.VolumeName(root), filepath.VolumeName(candidate)) {
+			return false
+		}
+	} else if filepath.VolumeName(root) != filepath.VolumeName(candidate) {
+		return false
+	}
 	rel, err := filepath.Rel(root, candidate)
 	if err != nil {
 		return false

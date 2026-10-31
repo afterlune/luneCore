@@ -26,7 +26,7 @@ type WebSearchTool struct {
 }
 
 func (WebSearchTool) Definition() model.FunctionTool {
-	return functionDefinition("web_search", "Search the web and return result titles, URLs, and snippets.", webSearchSchema)
+	return functionDefinition("web_search", "Search the web for public online information, documentation, or external resources; returns titles, URLs, and snippets. Do not use for local paths or local files.", webSearchSchema)
 }
 
 func (t WebSearchTool) Run(ctx context.Context, raw json.RawMessage) Result {
