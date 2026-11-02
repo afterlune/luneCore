@@ -50,8 +50,8 @@ func TestTaskGoalIsAppliedWithoutForcingPlanInstructions(t *testing.T) {
 			t.Errorf("instructions %q are missing %q", instructions, expected)
 		}
 	}
-	if strings.Contains(instructions, "You are in Plan mode.") {
-		t.Errorf("task instructions force planning: %q", instructions)
+	if !strings.Contains(instructions, "Current interaction mode: Normal (not Plan).") {
+		t.Errorf("task instructions do not state normal mode: %q", instructions)
 	}
 }
 
@@ -126,7 +126,8 @@ func TestPlanModeInstructionsIncludePlanFormat(t *testing.T) {
 	}
 	instructions := requestContextText(requester.requests[0])
 	for _, expected := range []string{
-		"You are in Plan mode.",
+		"Current interaction mode: Plan.",
+		"This host-provided mode overrides earlier conversation messages.",
 		"<proposed_plan>",
 		"</proposed_plan>",
 	} {

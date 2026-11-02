@@ -127,11 +127,14 @@ func TestHostSnapshotsAppendOnModeAndProjectChanges(t *testing.T) {
 	if countHostMessages(state.History) != 2 || !reflect.DeepEqual(first, state.History.Items[0]) {
 		t.Fatal("snapshot rewrote prefix or reloaded memory")
 	}
-	if !strings.Contains(state.HostContext, "new rule") || !strings.Contains(state.HostContext, "You are in Plan mode.") {
+	if !strings.Contains(state.HostContext, "new rule") || !strings.Contains(state.HostContext, "Current interaction mode: Plan.") {
 		t.Fatal("snapshot lost current guidance")
 	}
 	state.PlanMode = false
 	state = agent.prepareHostContext(context.Background(), state, "read-only", nil)
+	if !strings.Contains(state.HostContext, "Current interaction mode: Normal (not Plan).") {
+		t.Fatalf("normal-mode snapshot = %q, want explicit current mode", state.HostContext)
+	}
 	// Simulate compaction losing the newest snapshot while retaining an older
 	// matching snapshot followed by a conflicting mode snapshot.
 	state.History = *model.NewResponseInputItems(hostContextMessage(state.HostContext), hostContextMessage("outdated mode"))

@@ -18,10 +18,14 @@ func (a *Agent) requestTeam(ctx context.Context, call graph.CallInfo, state Stat
 }
 
 func taskInstructions(goal, permissionMode string, planMode, teamEnabled bool) string {
-	var instructions []string
+	mode := "Normal (not Plan)"
+	if planMode {
+		mode = "Plan"
+	}
+	instructions := []string{"Current interaction mode: " + mode + ". This host-provided mode overrides earlier conversation messages."}
 	if planMode {
 		instructions = append(instructions,
-			"You are in Plan mode. Analyze the request, explore facts using available read-only tools, and present a concrete plan enclosed in `<proposed_plan>` and `</proposed_plan>` tags.")
+			"Analyze the request using available read-only tools and present a concrete plan enclosed in `<proposed_plan>` and `</proposed_plan>` tags.")
 		if teamEnabled {
 			instructions = append(instructions, "For a user message beginning 'Worker task', inspect with read-only tools and report findings to the lead.")
 		}
