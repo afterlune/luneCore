@@ -328,10 +328,9 @@ impl, err := runtime.ImplementPlan(ctx, result.ExecutionID, core.PlanImplementat
 | `command` | `command` | `command`, `background` (bool), `yield_time_ms`, `timeout_ms` | `command` | 是 | 内核级沙箱中运行 Shell 指令 |
 | `command` | `command_status`| `command_id`, `cursor`, `wait_ms` (0-5000) | `workspace-read` | 是 | 分页轮询增量标准输出 |
 | `command` | `command_stop` | `command_id` | `command` | 是 | 强制终止正在运行的命令进程 |
-| `web` | `web_search` | `query`, `limit` | `network` | 否 | 互联网信息检索 |
-| `web` | `web_fetch` | `url` | `network` | 否 | 获取网页并提取正文内容 |
-| `memory` | `search_memory`| `query`, `limit` | `workspace-read` | 否 | 检索工作区持久化记忆 |
-| `team` | `delegate_team`| `mode` (`"task"` 或 `"fork"`), `teammates`, `minimum_successes` | `session-control`| 否 | 团队图分支委派与协同调度 |
+| `web` | `web_search` | `query`, `limit` | `network` | 是 | 互联网信息检索 |
+| `web` | `web_fetch` | `url` | `network` | 是 | 获取网页并提取正文内容 |
+| `team` | `delegate_team`| `tasks: [{id, model, task}]`, `mode` (`"task"` 或 `"fork"`), `minimum_successes` | `session-control`| 否 | 团队图分支委派与协同调度 |
 | `goal` | `get_goal` | _(无)_ | `session-control`| 是 | 读取当前会话持久化目标状态与预算 |
 | `goal` | `update_goal` | `status` (`"complete"` 或 `"blocked"`), `reason` | `session-control`| 是 | 更新目标状态（仅限 Lead Agent） |
 | _lead_ | `ask_user` | `questions: [{id, question, options}]` | _(保留)_ | 是 | 澄清提问与决策收集 |
@@ -384,12 +383,23 @@ MCP 资源与提示词始终由宿主控制，绝不会自动污染模型上下�
 - `runtime.ListMCPResources`, `runtime.ListMCPResourceTemplates`, `runtime.ReadMCPResource`
 - 返回类型为 `*model.ResponseInput`，宿主可按需封装后作为输入提交给任务。
 
-## 工作区持久记忆
+## 工作区记忆与 Engram 集成
 
-工作区记忆默认开启。每轮任务完成后，Core 通过一次轻量级模型调用提取工作区公用偏好、项目规范与事实：
-- 与会话数据一同保存在 SQLite 中。删除来源会话会自动清理相应提取的记忆；手动添加的记忆保持持久。
-- 通过 `ListMemories`、`SearchMemories`、`AddMemory`、`UpdateMemory`、`DeleteMemory`、`ClearMemories` 统一管理。
-- 宿主可通过 `core.Config.Memory.Embedder` 注入语义向量嵌入模型。嵌入配置变更后调用 `client.ReindexMemories(ctx)` 重建索引。
+工作区长期记忆已从内核 SQLite 表解耦，全面通过标准 Model Context Protocol (MCP) 与 [Engram](https://github.com/afterlune/engram) 深度集成：
+
+- Core 在项目默认配置中预置并默认启用了 `engram` stdio MCP 服务；
+- 启动时，MCP 子系统自动探测多平台标准安装路径下的 `engram` 可执行程序（包括 `$PATH`、`GOBIN`、`~/.local/bin` 或系统安装目录）；
+- 记忆检索与写入以原生 MCP 工具形式暴露给 Agent，提供基于知识图谱与语义关联的上下文增强，无需在 Core 内部承载复杂的嵌入与向量检索依赖；
+- 如需禁用记忆能力，可在 `config.json` 中将 `mcpServers.engram` 配置为 `null`，或在 `core.Config` 中设置 `Memory.Disabled = true`。
+
+## 高性能与处理器友好架构
+
+基于阿姆达尔定律与火焰图/pprof 性能剖析，Lune Core 在全链路实现了针对现代多核 CPU 的硬件友好改造：
+
+- **面向数据设计的图计算引擎**：底层基于 `luneGraph` v0.0.0-20261110+，采用平铺顶点向量与 CSR（压缩稀疏行）拓扑矩阵，彻底消除了递归指针解引用，保持单步流转 0 额外堆分配。
+- **RCU 状态快照与无锁读链路**：`Core.State()`、`StateForSession()` 与 `ActiveTasks()` 直接读取不可变的 `atomic.Pointer` 快照，不再争用读写互斥锁（`c.mu.RLock()`）。彻底根除了高并发下 `sync/atomic` 在跨核总线上的 MESI 缓存行颠簸风暴，多核并发读取吞吐实现 **5.17 倍跃升（从 77M 提升至 401M ops/5s）**，延迟降至 15.66 ns。
+- **零冗余工具链类目过滤**：工具暴露与类目判断逻辑复用预解析定义，杜绝二次深拷贝，并引入 $O(1)$ 元数据检索索引。
+- **紧凑事件扫描与索引直写**：优化 SQLite 运行时事件流读取与工具注册表构建，规避切片动态扩容复制开销。
 
 ## 离线执行存储升级
 

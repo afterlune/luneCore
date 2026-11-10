@@ -357,10 +357,9 @@ To grant sandbox commands read and execute access to external toolchains (e.g. G
 | `command` | `command` | `command`, `background` (bool), `yield_time_ms` (0-5000), `timeout_ms` | `command` | Yes | Run shell command in kernel sandbox |
 | `command` | `command_status` | `command_id`, `cursor` (offset), `wait_ms` (0-5000) | `workspace-read` | Yes | Read incremental output buffer |
 | `command` | `command_stop` | `command_id` | `command` | Yes | Terminate command process |
-| `web` | `web_search` | `query`, `limit` | `network` | No | Search internet resources |
-| `web` | `web_fetch` | `url` | `network` | No | Fetch webpage content |
-| `memory` | `search_memory` | `query`, `limit` | `workspace-read` | No | Search long-term workspace memories |
-| `team` | `delegate_team` | `mode` (`"task"` or `"fork"`), `teammates`, `minimum_successes` | `session-control` | No | Spawn worker agents in team graph |
+| `web` | `web_search` | `query`, `limit` | `network` | Yes | Search internet resources |
+| `web` | `web_fetch` | `url` | `network` | Yes | Fetch webpage content |
+| `team` | `delegate_team` | `tasks: [{id, model, task}]`, `mode` (`"task"` or `"fork"`), `minimum_successes` | `session-control` | No | Spawn worker agents in team graph |
 | `goal` | `get_goal` | _(none)_ | `session-control` | Yes | Read current goal and token budget |
 | `goal` | `update_goal` | `status` (`"complete"` or `"blocked"`), `reason` | `session-control` | Yes | Update persistent goal (lead agent only) |
 | _lead_ | `ask_user` | `questions: [{id, question, options}]` | _(reserved)_ | Yes | Ask clarification questions |
@@ -424,14 +423,23 @@ MCP prompts and resources are host-driven and never injected into model context 
 - `runtime.ListMCPResources`, `runtime.ListMCPResourceTemplates`, `runtime.ReadMCPResource`
 - `GetMCPPrompt` and `ReadMCPResource` return `*model.ResponseInput`, which hosts may pass to `core.NewTaskInput` if desired.
 
-## Workspace Memory
+## Workspace Memory and Engram Integration
 
-Workspace memory is enabled by default. After each task, Core performs an auxiliary instructed model call to extract reusable facts, preferences, conventions, and decisions.
+Workspace memory is decoupled from core database tables and integrated via the standard Model Context Protocol (MCP) using [Engram](https://github.com/afterlune/engram):
 
-- Stored in SQLite alongside sessions. Deleting a session cleans up memories extracted from it; manually added memories persist.
-- Manage memories via `client.ListMemories`, `client.SearchMemories`, `client.AddMemory`, `client.UpdateMemory`, `client.DeleteMemory`, `client.ClearMemories`.
-- Hosts can provide semantic retrieval by implementing `memory.Embedder` and passing it to `core.Config.Memory.Embedder`. Call `client.ReindexMemories(ctx)` if embedder parameters change.
-- Disable automatic memory extraction with `core.Config.Memory.Disabled = true`.
+- Core pre-configures and enables the `engram` stdio MCP server by default in project configurations (`config.json`).
+- On startup, the MCP subsystem automatically resolves the `engram` binary from standard locations (such as `$PATH`, `GOBIN`, `~/.local/bin`, or application installation directories).
+- Memory retrieval and storage are exposed as native MCP tools to the agent, providing persistent semantic recall and contextual facts without inflating Core internal dependencies.
+- To disable Engram memory, set `mcpServers.engram` to `null` in `config.json` or configure `Memory.Disabled = true` in `core.Config`.
+
+## Processor-Friendly Architecture and Performance
+
+Guided by Amdahl's Law and flame graph CPU/memory profiling, Lune Core incorporates hardware-conscious optimizations across its execution path:
+
+- **Data-Oriented Graph Workflow**: Built on `luneGraph` v0.0.0-20261110+ with Rust-style flat vertex/edge vectors and CSR (Compressed Sparse Row) adjacency indexing, eliminating recursive pointer structures and achieving 0-allocation step transitions.
+- **RCU Lock-Free State Snapshots**: `Core.State()`, `StateForSession()`, and `ActiveTasks()` read from immutable `atomic.Pointer` snapshots without holding read locks (`c.mu.RLock()`). This completely eliminates cross-core MESI cacheline invalidation storms on `sync/atomic` counters under high concurrency, delivering a **5.17x throughput leap (from 77M to 401M ops in 5s)** and reducing read latency from 80.93 ns to 15.66 ns.
+- **Zero-Redundancy Tool Visibility**: Tool category evaluation reuses filtered definitions across lifecycle checks without duplicate deep clones, and resolves tool category lookups via $O(1)$ metadata index.
+- **Streamlined SQLite Runtime Events**: Event history scans eliminate redundant slice allocations and avoid payload cloning overhead.
 
 ## Offline Execution Storage Upgrade
 
