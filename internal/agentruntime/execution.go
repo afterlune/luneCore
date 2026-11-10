@@ -67,7 +67,7 @@ func (r *Responder) options() graph.Options {
 
 func (r *Responder) logGraphEvent(ctx context.Context, event graph.Event) {
 	level := slog.LevelDebug
-	if event.Operation == graph.OperationStart || event.Operation == graph.OperationResume || event.Operation == graph.OperationAdvance || event.Operation == graph.OperationRecover {
+	if event.Operation == graph.OperationStart || event.Operation == graph.OperationResume || event.Operation == graph.OperationAdvance || event.Operation == graph.OperationRecover || event.Operation == graph.OperationDelete {
 		level = slog.LevelInfo
 	}
 	if event.Err != nil {

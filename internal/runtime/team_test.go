@@ -130,6 +130,7 @@ func TestTeamBranchesRunConcurrentlyAndJoinInAssignmentOrder(t *testing.T) {
 		t.Fatal(err)
 	}
 	core.activeTasks[saved.ID] = TaskState{SessionID: saved.ID, TaskID: "team-task", ExecutionID: "team-execution", Status: TaskRunning}
+	core.publishTaskSnapshotLocked()
 	core.team = &teamExecutor{core: core, models: catalog, tools: registry}
 	profile, _ := catalog.Profile("lead")
 	requesterClient, err := catalog.NewClient("lead", registry, nil)

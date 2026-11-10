@@ -61,5 +61,6 @@ func (c *Core) rememberQueuedTaskStatus(sessionID, executionID, queueID string, 
 	state.Status = status
 	c.activeTasks[sessionID] = state
 	c.active = state
+	c.publishTaskSnapshotLocked()
 	c.mu.Unlock()
 }

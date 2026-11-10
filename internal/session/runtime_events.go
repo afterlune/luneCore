@@ -56,7 +56,11 @@ func (s *Store) RuntimeEventsAfter(ctx context.Context, sessionID string, cursor
 		return nil, fmt.Errorf("read runtime events: %w", err)
 	}
 	defer rows.Close()
-	var events []RuntimeEvent
+	capacity := limit
+	if capacity > 128 {
+		capacity = 128
+	}
+	events := make([]RuntimeEvent, 0, capacity)
 	for rows.Next() {
 		var event RuntimeEvent
 		var payload []byte
@@ -64,7 +68,7 @@ func (s *Store) RuntimeEventsAfter(ctx context.Context, sessionID string, cursor
 		if err := rows.Scan(&event.Cursor, &event.SessionID, &payload, &createdAt); err != nil {
 			return nil, fmt.Errorf("read runtime event: %w", err)
 		}
-		event.Payload = append(json.RawMessage(nil), payload...)
+		event.Payload = json.RawMessage(payload)
 		event.CreatedAt = time.Unix(0, createdAt)
 		events = append(events, event)
 	}

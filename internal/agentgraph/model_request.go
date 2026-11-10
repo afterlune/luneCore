@@ -127,10 +127,8 @@ func (a *Agent) requestModel(ctx context.Context, call graph.CallInfo, state Sta
 	if err != nil {
 		return a.failTask(state, err)
 	}
-	requestInput := model.NewResponseInputItems(state.History.Items...)
 	request := model.ModelRequest{
 		Model: state.Model,
-		Input: requestInput,
 		Tools: visibleTools,
 	}
 	if state.ModelOverride != "" {

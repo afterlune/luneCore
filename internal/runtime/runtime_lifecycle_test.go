@@ -228,6 +228,7 @@ func TestClosedRuntimeKeepsLockUntilActiveWorkFinishes(t *testing.T) {
 	}
 	first.mu.Lock()
 	first.activeTasks[saved.ID] = TaskState{SessionID: saved.ID, Status: TaskRunning}
+	first.publishTaskSnapshotLocked()
 	first.mu.Unlock()
 	if err := runtime.Close(context.Background()); err != nil {
 		t.Fatalf("close runtime while task is active: %v", err)
@@ -237,6 +238,7 @@ func TestClosedRuntimeKeepsLockUntilActiveWorkFinishes(t *testing.T) {
 	}
 	first.mu.Lock()
 	delete(first.activeTasks, saved.ID)
+	first.publishTaskSnapshotLocked()
 	first.mu.Unlock()
 	first.queueDrainWG.Wait()
 	if err := first.releasePendingSessionLock(saved.ID); err != nil {
@@ -494,6 +496,7 @@ func TestCancelTaskPropagatesToHostTool(t *testing.T) {
 	taskCtx = publictool.WithCallIdentity(taskCtx, publictool.CallIdentity{SessionID: saved.ID, TaskID: "tool-task", ExecutionID: executionID})
 	client.mu.Lock()
 	client.activeTasks[saved.ID] = TaskState{Status: TaskRunning, SessionID: saved.ID, TaskID: "tool-task", ExecutionID: executionID}
+	client.publishTaskSnapshotLocked()
 	client.taskCancels[saved.ID] = cancel
 	client.mu.Unlock()
 	defer func() {
@@ -502,6 +505,7 @@ func TestCancelTaskPropagatesToHostTool(t *testing.T) {
 		state := client.activeTasks[saved.ID]
 		state.Status = TaskIdle
 		client.activeTasks[saved.ID] = state
+		client.publishTaskSnapshotLocked()
 		delete(client.taskCancels, saved.ID)
 		client.mu.Unlock()
 	}()
@@ -542,6 +546,7 @@ func TestCancelTaskCancelsPendingApproval(t *testing.T) {
 	taskCtx = publictool.WithCallIdentity(taskCtx, identity)
 	client.mu.Lock()
 	client.activeTasks[saved.ID] = TaskState{Status: TaskRunning, SessionID: saved.ID, TaskID: identity.TaskID, ExecutionID: executionID}
+	client.publishTaskSnapshotLocked()
 	client.taskCancels[saved.ID] = cancel
 	client.mu.Unlock()
 	defer func() {
@@ -549,6 +554,7 @@ func TestCancelTaskCancelsPendingApproval(t *testing.T) {
 		state := client.activeTasks[saved.ID]
 		state.Status = TaskIdle
 		client.activeTasks[saved.ID] = state
+		client.publishTaskSnapshotLocked()
 		delete(client.taskCancels, saved.ID)
 		client.mu.Unlock()
 	}()

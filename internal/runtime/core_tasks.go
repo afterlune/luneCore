@@ -15,11 +15,33 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
+type taskStateSnapshot struct {
+	active      TaskState
+	activeTasks map[string]TaskState
+}
+
+func (c *Core) publishTaskSnapshotLocked() {
+	if c == nil {
+		return
+	}
+	tasks := make(map[string]TaskState, len(c.activeTasks))
+	for k, v := range c.activeTasks {
+		tasks[k] = v
+	}
+	c.stateSnapshot.Store(&taskStateSnapshot{
+		active:      c.active,
+		activeTasks: tasks,
+	})
+}
+
 // State returns the state last changed by any session. Use StateForSession or
 // ActiveTasks when a Core is running multiple sessions concurrently.
 func (c *Core) State() TaskState {
 	if c == nil {
 		return TaskState{Status: TaskFailed}
+	}
+	if snap := c.stateSnapshot.Load(); snap != nil {
+		return snap.active
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -30,6 +52,10 @@ func (c *Core) State() TaskState {
 func (c *Core) StateForSession(sessionID string) (TaskState, bool) {
 	if c == nil || sessionID == "" {
 		return TaskState{}, false
+	}
+	if snap := c.stateSnapshot.Load(); snap != nil {
+		state, ok := snap.activeTasks[sessionID]
+		return state, ok
 	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -42,10 +68,16 @@ func (c *Core) ActiveTasks() []TaskState {
 	if c == nil {
 		return nil
 	}
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	ids := make([]string, 0, len(c.activeTasks))
-	for id, state := range c.activeTasks {
+	var activeTasks map[string]TaskState
+	if snap := c.stateSnapshot.Load(); snap != nil {
+		activeTasks = snap.activeTasks
+	} else {
+		c.mu.RLock()
+		activeTasks = c.activeTasks
+		c.mu.RUnlock()
+	}
+	ids := make([]string, 0, len(activeTasks))
+	for id, state := range activeTasks {
 		if state.Status == TaskRunning {
 			ids = append(ids, id)
 		}
@@ -53,7 +85,7 @@ func (c *Core) ActiveTasks() []TaskState {
 	sort.Strings(ids)
 	states := make([]TaskState, 0, len(ids))
 	for _, id := range ids {
-		states = append(states, c.activeTasks[id])
+		states = append(states, activeTasks[id])
 	}
 	return states
 }
@@ -185,6 +217,7 @@ func (c *Core) beginTask(ctx context.Context, sessionID, queueID string, setting
 		delete(c.taskCancels, sessionID)
 	}
 	c.active = state
+	c.publishTaskSnapshotLocked()
 	c.mu.Unlock()
 	c.emit(Event{Kind: EventTaskStarted, TaskID: id, ExecutionID: taskOptions.ExecutionID, QueueID: queueID, SessionID: sessionID, Status: TaskRunning, ContextWindow: taskOptions.ContextWindow,
 		GoalID: taskOptions.GoalID, GoalRevision: taskOptions.GoalRevision, AutomaticGoal: taskOptions.AutomaticGoal,
@@ -207,6 +240,7 @@ func (c *Core) endTask(sessionID, taskID string, cancel context.CancelFunc) {
 			state.Status = TaskIdle
 			c.activeTasks[sessionID] = state
 			c.active = state
+			c.publishTaskSnapshotLocked()
 		}
 	}
 	c.mu.Unlock()
@@ -221,6 +255,7 @@ func (c *Core) finishTaskState(sessionID string, status TaskStatus, err error) {
 	state.Status = status
 	c.activeTasks[sessionID] = state
 	c.active = state
+	c.publishTaskSnapshotLocked()
 	c.mu.Unlock()
 	event := Event{Kind: EventTaskFinished, TaskID: state.TaskID, ExecutionID: state.ExecutionID, QueueID: state.QueueID, SessionID: sessionID, Status: status,
 		BudgetReason:  budgetReasonFromError(err),

@@ -368,9 +368,9 @@ func (r *Registry) Definitions() []model.ResponseTool {
 		return nil
 	}
 	r.mu.RLock()
-	definitions := make([]model.ResponseTool, 0, len(r.definitionOrder))
-	for _, name := range r.definitionOrder {
-		definitions = append(definitions, cloneFunctionTool(r.definitions[name]))
+	definitions := make([]model.ResponseTool, len(r.definitionOrder))
+	for i, name := range r.definitionOrder {
+		definitions[i] = cloneFunctionTool(r.definitions[name])
 	}
 	r.mu.RUnlock()
 	return definitions
@@ -383,9 +383,9 @@ func (r *Registry) Categories() []model.ToolCategory {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	categories := make([]model.ToolCategory, 0, len(r.categoryOrder))
-	for _, name := range r.categoryOrder {
-		categories = append(categories, r.categories[name])
+	categories := make([]model.ToolCategory, len(r.categoryOrder))
+	for i, name := range r.categoryOrder {
+		categories[i] = r.categories[name]
 	}
 	return categories
 }
@@ -397,16 +397,20 @@ func (r *Registry) DefinitionsForCategory(category string) []model.ResponseTool 
 	}
 	r.mu.RLock()
 	names := r.categoryTools[category]
-	definitions := make([]model.ResponseTool, 0, len(names))
-	for _, name := range names {
-		definitions = append(definitions, cloneFunctionTool(r.definitions[name]))
+	definitions := make([]model.ResponseTool, len(names))
+	for i, name := range names {
+		definitions[i] = cloneFunctionTool(r.definitions[name])
 	}
 	r.mu.RUnlock()
 	return definitions
 }
 
 func cloneFunctionTool(definition model.FunctionTool) model.FunctionTool {
-	definition.Parameters = append(json.RawMessage(nil), definition.Parameters...)
+	if len(definition.Parameters) > 0 {
+		params := make(json.RawMessage, len(definition.Parameters))
+		copy(params, definition.Parameters)
+		definition.Parameters = params
+	}
 	if definition.Strict != nil {
 		strict := *definition.Strict
 		definition.Strict = &strict

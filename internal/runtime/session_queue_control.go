@@ -204,6 +204,7 @@ func (c *Core) discardPaused(ctx context.Context, sessionID string) (bool, error
 		if c.active.SessionID == sessionID {
 			c.active = state
 		}
+		c.publishTaskSnapshotLocked()
 	}
 	return deletedCheckpoint || deletedQueue, nil
 }

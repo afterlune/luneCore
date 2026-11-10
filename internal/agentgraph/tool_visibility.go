@@ -28,7 +28,7 @@ func (a *Agent) visibleTools(state State, permissionMode string) ([]model.Respon
 		definitions = addRuntimeTools(definitions)
 		return definitions, toolNames(definitions), nil
 	}
-	categories := a.visibleCategories(state, permissionMode, state.PlanMode)
+	categories, categoryDefs := a.visibleCategoriesWithDefs(state, permissionMode, state.PlanMode)
 	definitions := a.visibleDefinitions(model.AlwaysVisibleDefinitions(a.tools), permissionMode, state.PlanMode)
 	if len(categories) > 0 {
 		selector, err := model.CategorySelectorDefinition(categories)
@@ -40,8 +40,9 @@ func (a *Agent) visibleTools(state State, permissionMode string) ([]model.Respon
 	selectedCategories := state.SelectedCategories
 	for _, cat := range categories {
 		if contains(selectedCategories, cat.Name) {
-			deferred := model.DeferredDefinitions(a.tools, a.categorized.DefinitionsForCategory(cat.Name))
-			definitions = append(definitions, a.visibleDefinitions(deferred, permissionMode, state.PlanMode)...)
+			if defs, ok := categoryDefs[cat.Name]; ok {
+				definitions = append(definitions, defs...)
+			}
 		}
 	}
 	definitions = addRuntimeTools(definitions)
@@ -49,7 +50,13 @@ func (a *Agent) visibleTools(state State, permissionMode string) ([]model.Respon
 }
 
 func (a *Agent) visibleCategories(state State, permissionMode string, planMode bool) []model.ToolCategory {
+	categories, _ := a.visibleCategoriesWithDefs(state, permissionMode, planMode)
+	return categories
+}
+
+func (a *Agent) visibleCategoriesWithDefs(state State, permissionMode string, planMode bool) ([]model.ToolCategory, map[string][]model.ResponseTool) {
 	var categories []model.ToolCategory
+	categoryDefs := make(map[string][]model.ResponseTool, len(a.categories))
 	for _, category := range a.categories {
 		deferred := model.DeferredDefinitions(a.tools, a.categorized.DefinitionsForCategory(category.Name))
 		defs := a.visibleDefinitions(deferred, permissionMode, planMode)
@@ -69,8 +76,9 @@ func (a *Agent) visibleCategories(state State, permissionMode string, planMode b
 			}
 		}
 		categories = append(categories, category)
+		categoryDefs[category.Name] = defs
 	}
-	return categories
+	return categories, categoryDefs
 }
 
 func (a *Agent) visibleDefinitions(definitions []model.ResponseTool, permissionMode string, planMode bool) []model.ResponseTool {
@@ -100,6 +108,11 @@ func (a *Agent) categoryForTool(name string) string {
 	if a.categorized == nil {
 		return ""
 	}
+	if a.tools != nil {
+		if meta, ok := a.tools.ToolMetadata(name); ok && meta.Category.Name != "" {
+			return meta.Category.Name
+		}
+	}
 	for _, category := range a.categories {
 		for _, definition := range a.categorized.DefinitionsForCategory(category.Name) {
 			if function, ok := definition.(model.FunctionTool); ok && function.Name == name {
@@ -124,11 +137,9 @@ func unavailableToolMessage(name, category string, categorized bool) string {
 
 func toolNames(definitions []model.ResponseTool) []string {
 	names := make([]string, 0, len(definitions))
-	seen := make(map[string]struct{}, len(definitions))
 	for _, definition := range definitions {
 		if function, ok := definition.(model.FunctionTool); ok {
-			if _, exists := seen[function.Name]; !exists {
-				seen[function.Name] = struct{}{}
+			if !contains(names, function.Name) {
 				names = append(names, function.Name)
 			}
 		}

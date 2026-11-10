@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 
 	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/agentruntime"
@@ -110,6 +111,7 @@ type Core struct {
 	goalRuns            map[string]goalExecution
 	eventHubMu          sync.Mutex
 	runtimeConfigMu     sync.RWMutex
+	stateSnapshot       atomic.Pointer[taskStateSnapshot]
 	active              TaskState
 	activeTasks         map[string]TaskState
 	taskCancels         map[string]context.CancelFunc
@@ -289,6 +291,7 @@ func New(config Config) (_ *Core, err error) {
 		sessionLocks:          make(map[string]*sessionLockEntry),
 		commandToolchainPaths: config.CommandToolchainPaths,
 	}
+	c.publishTaskSnapshotLocked()
 	if err := c.configureCommands(config); err != nil {
 		return nil, err
 	}

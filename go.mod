@@ -3,7 +3,7 @@ module github.com/afterlune/luneCore
 go 1.26.10
 
 require (
-	github.com/afterlune/luneGraph v0.0.0-20261013014749-96cda2267151
+	github.com/afterlune/luneGraph v0.0.0-20261110064643-f949370056cc
 	github.com/go-keyring/keyring v0.3.1
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
