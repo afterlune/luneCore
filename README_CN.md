@@ -420,3 +420,7 @@ report, err := core.UpgradeState(ctx, stateDir)
 升级器获取独占排他锁，通过 SQLite `VACUUM INTO` 备份 `sessions.db` 至 `upgrade-backup-*` 目录，并将检查点升级至 execution format 2 / Graph format 10。旧的历史、设置与 Token 记录完整保留；旧的进行中目标置为暂停。
 
 在任务执行期间，若遭遇排队消费或数据库持久化故障，排队消费工作协程将安全挂起，杜绝立即重试引发的风暴。修复存储后重新打开 `SessionRuntime` 或重试 `WaitTurn` 即可安全对齐恢复。
+
+## 开源协议
+
+本项目采用 [Apache 2.0 许可证](LICENSE)。

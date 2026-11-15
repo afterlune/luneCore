@@ -453,3 +453,7 @@ Or via CLI: `lune migrate --state-dir <directory>`.
 The upgrader takes an exclusive lock, backs up `sessions.db` via SQLite `VACUUM INTO` into an `upgrade-backup-*` folder, and upgrades checkpoints to execution format 2 / Graph format 10. History, settings, metadata, and recorded usage are retained. Old active goals are paused and require explicit resume.
 
 If queue drain or SQLite persistence encounters a storage error during execution, the drain worker stops safely instead of triggering an infinite retry loop. Re-opening the session runtime or retrying `WaitTurn` triggers safe reconciliation.
+
+## License
+
+This project is licensed under the [Apache License 2.0](LICENSE).
