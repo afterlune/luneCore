@@ -1,6 +1,6 @@
 # Lune Core
 
-Lune Core 是供 Lune 前端（TUI 终端、行式 CLI、Windows 桌面端及 A2A 服务端）使用的 Go 运行时核心库。宿主应用在自身进程内构建 `*core.Core`，通过公开 API 管理会话、队列轮次、跨轮次持久化目标（Goal）、权限审批、流式事件订阅、Token 预算追踪、MCP 扩展与工具调用。Lune Core 不运行外部后台守护进程，也不暴露任何 IPC 或网络监听服务。
+Lune Core 是供 Lune 前端（TUI 终端、行式 CLI 及 A2A 服务端）使用的 Go 运行时核心库。宿主应用在自身进程内构建 `*core.Core`，通过公开 API 管理会话、队列轮次、跨轮次持久化目标（Goal）、权限审批、流式事件订阅、Token 预算追踪、MCP 扩展与工具调用。Lune Core 不运行外部后台守护进程，也不暴露任何 IPC 或网络监听服务。
 
 ## 安装
 
