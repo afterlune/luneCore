@@ -179,7 +179,7 @@ func New(config Config) (_ *Core, err error) {
 	}
 	stateDir := config.StateDir
 	if stateDir == "" {
-		stateDir = filepath.Join(workspace, ".luneagent")
+		stateDir = filepath.Join(workspace, ".lune")
 	}
 	stateDir, err = filepath.Abs(stateDir)
 	if err != nil {

@@ -67,7 +67,7 @@ func walkWorkspaceFrom(ctx context.Context, filesystem fs.FS, start string, visi
 
 func isIgnoredDir(name string) bool {
 	switch strings.ToLower(name) {
-	case ".git", "node_modules", ".luneagent", ".cache", "dist", "build", ".vite", ".next", ".turbo", ".nuxt", ".output", "coverage":
+	case ".git", "node_modules", ".lune", ".cache", "dist", "build", ".vite", ".next", ".turbo", ".nuxt", ".output", "coverage":
 		return true
 	default:
 		return false

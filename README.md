@@ -1,6 +1,6 @@
 # Lune Core
 
-Lune Core is the Go runtime library used by the Lune front ends (TUI, CLI, desktop, and A2A service). Applications construct `*core.Core` in their own process and use the public API for sessions, queued turns, persistent goals, approvals, streaming events, usage tracking, MCP integrations, and tools. It does not run an external background daemon or expose an IPC/network service.
+Lune Core is the Go runtime library used by the Lune front ends (TUI, CLI, and A2A service). Applications construct `*core.Core` in their own process and use the public API for sessions, queued turns, persistent goals, approvals, streaming events, usage tracking, MCP integrations, and tools. It does not run an external background daemon or expose an IPC/network service.
 
 ## Install
 
@@ -125,7 +125,7 @@ This grouped shape is required. Core rejects the previous flat config format and
 
 ## Storage and Session Runtime
 
-Core stores sessions, queued turns, the durable safe runtime event log, Graph checkpoints, and tool invocation records under `StateDir` (default `.luneagent`). Team branches share the agent run's Graph checkpoint. Execution format 2 uses `executions-v2.db` for Graph format 10 checkpoints. Legacy checkpoint files are left untouched. An old state directory is rejected until explicitly upgraded offline (see [Offline execution storage upgrade](#offline-execution-storage-upgrade)). Enabled MCP-server state uses the same directory.
+Core stores sessions, queued turns, the durable safe runtime event log, Graph checkpoints, and tool invocation records under `StateDir` (default `.lune`). Team branches share the agent run's Graph checkpoint. Execution format 2 uses `executions-v2.db` for Graph format 10 checkpoints. Legacy checkpoint files are left untouched. An old state directory is rejected until explicitly upgraded offline (see [Offline execution storage upgrade](#offline-execution-storage-upgrade)). Enabled MCP-server state uses the same directory.
 
 Open a session-bound runtime for asynchronous control:
 

@@ -130,7 +130,7 @@ func TestProgrammaticModelConfigOverridesFileAndStateDirOwnsMCPState(t *testing.
 	if _, err := os.Stat(filepath.Join(stateDir, "mcp-enabled.json")); err != nil {
 		t.Fatalf("MCP state in custom StateDir: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(workspace, ".luneagent", "mcp-enabled.json")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(workspace, ".lune", "mcp-enabled.json")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("unexpected MCP state in workspace default directory, stat err=%v", err)
 	}
 }

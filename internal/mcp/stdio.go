@@ -333,7 +333,7 @@ func resolveStdioCommand(command string) string {
 	}
 	if command == "engram" {
 		candidates := []string{
-			filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "luneAgent", "bin", "engram.exe"),
+			filepath.Join(os.Getenv("LOCALAPPDATA"), "Programs", "lune", "bin", "engram.exe"),
 			filepath.Join(os.Getenv("GOBIN"), "engram.exe"),
 			filepath.Join(os.Getenv("GOPATH"), "bin", "engram.exe"),
 			filepath.Join(os.Getenv("USERPROFILE"), "go", "bin", "engram.exe"),

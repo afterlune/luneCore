@@ -16,7 +16,7 @@ const (
 	webRequestTimeout = 15 * time.Second
 	maxWebResponse    = 2 << 20
 	maxWebTextRunes   = 20_000
-	webUserAgent      = "lune-agent"
+	webUserAgent      = "lune"
 )
 
 var defaultWebHTTPClient = &http.Client{Timeout: webRequestTimeout}
