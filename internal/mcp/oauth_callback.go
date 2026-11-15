@@ -42,7 +42,7 @@ func serveOAuthCallback(listener net.Listener, redirectURI, expectedState string
 		}
 		select {
 		case result <- oauthCallback{Code: query.Get("code"), State: state, Issuer: query.Get("iss"), Error: query.Get("error")}:
-			_, _ = writer.Write([]byte("Authorization received. Return to Lune Agent."))
+			_, _ = writer.Write([]byte("Authorization received. Return to Lune."))
 		default:
 			_, _ = writer.Write([]byte("Authorization was already received."))
 		}

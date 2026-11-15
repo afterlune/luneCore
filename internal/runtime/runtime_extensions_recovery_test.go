@@ -86,7 +86,7 @@ func TestUnknownToolOutcomeCanBeSkippedAndReplayedWithoutExecution(t *testing.T)
 		t.Fatalf("StartToolInvocation for child: %v", err)
 	}
 	if err := client.checkpoints.Create(context.Background(), graph.Checkpoint[agentgraph.State]{
-		FormatVersion: graph.CheckpointFormatVersion, RunID: runID, MachineID: "lune-agent-v2", Revision: 1, NextID: 2,
+		FormatVersion: graph.CheckpointFormatVersion, RunID: runID, MachineID: "lune-v2", Revision: 1, NextID: 2,
 		Invocations: []graph.Invocation[agentgraph.State]{{
 			ID: "active-tool", Node: "execute_tool", Status: graph.InvocationReady,
 			State: agentgraph.State{RunID: runID, ExecutionID: executionID, PendingIndex: 0,

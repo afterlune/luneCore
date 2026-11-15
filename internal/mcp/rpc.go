@@ -58,7 +58,7 @@ func requestParams(params map[string]any) map[string]any {
 	}
 	params["_meta"] = map[string]any{
 		"io.modelcontextprotocol/protocolVersion": protocolVersion,
-		"io.modelcontextprotocol/clientInfo":      clientInfo{Name: "Lune Agent", Version: "0.1.0"},
+		"io.modelcontextprotocol/clientInfo":      clientInfo{Name: "Lune", Version: "0.1.0"},
 		"io.modelcontextprotocol/clientCapabilities": map[string]any{
 			"elicitation": map[string]any{"form": map[string]any{}, "url": map[string]any{}},
 		},

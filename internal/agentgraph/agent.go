@@ -21,7 +21,7 @@ const (
 	teamToolNode       = "team_execute_tool"
 	teamJoinNode       = "team_join"
 	teamBranchJoinNode = "team_branch_join"
-	machineID          = "lune-agent-v4"
+	machineID          = "lune-v4"
 )
 
 // Agent runs one model request or one tool call per graph step.

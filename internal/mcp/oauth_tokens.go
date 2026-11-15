@@ -16,7 +16,7 @@ import (
 	"github.com/go-keyring/keyring"
 )
 
-const oauthKeyringService = "Lune Agent MCP OAuth"
+const oauthKeyringService = "Lune MCP OAuth"
 
 type oauthRecord struct {
 	Issuer        string `json:"issuer"`

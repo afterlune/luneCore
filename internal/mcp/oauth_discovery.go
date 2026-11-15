@@ -175,7 +175,7 @@ func (client *httpTransport) registerOAuthClient(ctx context.Context, metadata a
 		return "", errors.New("authorization server supports neither the configured client metadata URL nor dynamic client registration")
 	}
 	registration := map[string]any{
-		"client_name": "Lune Agent", "application_type": "native",
+		"client_name": "Lune", "application_type": "native",
 		"redirect_uris": []string{redirectURI}, "grant_types": []string{"authorization_code", "refresh_token"},
 		"response_types": []string{"code"}, "token_endpoint_auth_method": "none",
 	}
