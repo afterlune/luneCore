@@ -1,6 +1,6 @@
 # Lune Core
 
-Lune Core 是供 Lune 前端（TUI 终端、行式 CLI 及 A2A 服务端）使用的 Go 运行时核心库。宿主应用在自身进程内构建 `*core.Core`，通过公开 API 管理会话、队列轮次、跨轮次持久化目标（Goal）、权限审批、流式事件订阅、Token 预算追踪、MCP 扩展与工具调用。Lune Core 不运行外部后台守护进程，也不暴露任何 IPC 或网络监听服务。
+Lune Core 是供 Lune 前端（TUI 终端、行式 CLI 及 A2A 服务端）使用的 Go 运行时核心库。宿主应用在自身进程内构建 `*core.Core`，通过公开 API 管理会话、队列轮次、跨轮次持久化目标（Goal）、权限审批、流式事件订阅、Token 预算追踪、MCP 扩展与工具调用。Lune Core 不运行外部后台守护进程，也不暴露任何 IPC 或网络监听服务。架构与设计准则见 [DESIGN_PRINCIPLES.md](DESIGN_PRINCIPLES.md)。
 
 ## 安装
 
@@ -309,10 +309,17 @@ impl, err := runtime.ImplementPlan(ctx, result.ExecutionID, core.PlanImplementat
 - `tool.ApprovalAllowSession`：在当前会话生命周期内永久批准该操作。基于工具名称、规范化参数与调用指纹持久化为 `SessionApproval`。
 - `tool.ApprovalDeny`：明确拒绝本次调用，向模型反馈拒绝信息。
 
-### 外部路径授权与工具链路径
+### 外部路径授权
 
-- **会话外部路径授权**：`tool.PathRead`（外部目录只读）、`tool.PathReadWrite`（外部目录读写）。
-- **沙箱工具链环境授权**：通过 `core.Config.CommandToolchainPaths` 或运行时 API `client.CommandToolchainPaths()` / `client.SetCommandToolchainPaths(paths)` 为命令沙箱动态授予编译器或语言环境路径的只读+可执行权限。
+通过 `core.SessionRuntime` 可按会话授予工作区外文件系统访问权限：
+- `tool.PathRead`：授予外部目录及其子目录的只读权限。
+- `tool.PathReadWrite`：授予外部目录树的读写权限。
+
+### 命令工具链路径
+
+为命令沙箱授予外部工具链（如 Go、Node.js、Rust 二进制目录）的读取与执行权限：
+- 启动时配置 `core.Config.CommandToolchainPaths`；
+- 或通过运行时 API `client.CommandToolchainPaths()` 与 `client.SetCommandToolchainPaths(paths)` 动态查询与更新路径。
 
 ## 内置工具完整参考
 

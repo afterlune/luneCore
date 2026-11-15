@@ -1,6 +1,6 @@
 # Lune Core
 
-Lune Core is the Go runtime library used by the Lune front ends (TUI, CLI, and A2A service). Applications construct `*core.Core` in their own process and use the public API for sessions, queued turns, persistent goals, approvals, streaming events, usage tracking, MCP integrations, and tools. It does not run an external background daemon or expose an IPC/network service.
+Lune Core is the Go runtime library used by the Lune front ends (TUI, CLI, and A2A service). Applications construct `*core.Core` in their own process and use the public API for sessions, queued turns, persistent goals, approvals, streaming events, usage tracking, MCP integrations, and tools. It does not run an external background daemon or expose an IPC/network service. See [DESIGN_PRINCIPLES.md](DESIGN_PRINCIPLES.md) for architectural design principles.
 
 ## Install
 
