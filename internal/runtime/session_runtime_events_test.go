@@ -111,7 +111,8 @@ func TestRuntimeEventsSurviveRewindButForksStartWithoutRuntimeState(t *testing.T
 	if err != nil || len(oldEvents) != 1 {
 		t.Fatalf("events after rewind = %#v, error=%v", oldEvents, err)
 	}
-	if _, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "queued original work")}, QueueInput); err != nil {
+	sub, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "queued original work")}, QueueInput)
+	if err != nil {
 		t.Fatal(err)
 	}
 	fork, err := client.ForkSession(context.Background(), saved.ID)
@@ -126,4 +127,5 @@ func TestRuntimeEventsSurviveRewindButForksStartWithoutRuntimeState(t *testing.T
 	if err != nil || cursor != 0 {
 		t.Fatalf("fork event cursor = %d, error=%v", cursor, err)
 	}
+	_, _ = runtime.WaitTurn(context.Background(), sub.ExecutionID)
 }
