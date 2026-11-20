@@ -1,10 +1,11 @@
 module github.com/afterlune/luneCore
 
-go 1.26.10
+go 1.27.4
 
 require (
-	github.com/afterlune/luneGraph v0.0.0-20261110064643-f949370056cc
+	github.com/afterlune/luneGraph v0.0.0-20261119062528-952b489a13a2
 	github.com/go-keyring/keyring v0.3.1
+	github.com/pmezard/go-difflib v1.0.0
 	golang.org/x/net v0.62.0
 	golang.org/x/sys v0.49.0
 	modernc.org/sqlite v1.59.0
@@ -21,7 +22,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect
 	github.com/ncruces/go-strftime v1.0.0 // indirect
-	github.com/pmezard/go-difflib v1.0.0
 	github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec // indirect
 	modernc.org/libc v1.75.7 // indirect
 	modernc.org/mathutil v1.7.1 // indirect

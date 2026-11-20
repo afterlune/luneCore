@@ -94,10 +94,10 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 	if err := workflow.AddNode(graph.NodeSpec[State]{Name: teamToolNode, Run: agent.executeTeamTool, OnError: graph.FailInvocation, Timeout: options.Execution.ToolTimeout}); err != nil {
 		return nil, fmt.Errorf("add team tool node: %w", err)
 	}
-	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamJoinNode, From: toolNode, Merge: agent.mergeTeam, OnError: graph.FailExecution, Timeout: options.Execution.JoinTimeout, CanMerge: agent.teamQuorumReached}); err != nil {
+	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamJoinNode, FanOutSource: toolNode, Merge: agent.mergeTeam, OnError: graph.FailExecution, Timeout: options.Execution.JoinTimeout, CanMerge: agent.teamQuorumReached}); err != nil {
 		return nil, fmt.Errorf("add team join: %w", err)
 	}
-	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamBranchJoinNode, From: teamToolNode, Merge: agent.mergeTeam, OnError: graph.FailInvocation, Timeout: options.Execution.JoinTimeout, CanMerge: agent.teamQuorumReached}); err != nil {
+	if err := workflow.AddJoin(graph.JoinSpec[State]{Name: teamBranchJoinNode, FanOutSource: teamToolNode, Merge: agent.mergeTeam, OnError: graph.FailInvocation, Timeout: options.Execution.JoinTimeout, CanMerge: agent.teamQuorumReached}); err != nil {
 		return nil, fmt.Errorf("add team branch join: %w", err)
 	}
 	if err := graph.RegisterJSONContinuation[State, []model.UserQuestionResponse](workflow, UserQuestionContinuation, func(_ context.Context, _ graph.CallInfo, state State, answer []model.UserQuestionResponse) (State, error) {
@@ -153,7 +153,7 @@ func NewWithOptions(requester Requester, tools model.ToolExecutor, options Agent
 			return nil, fmt.Errorf("add %s-to-%s edge: %w", edge[0], edge[1], err)
 		}
 	}
-	runner, err := workflow.Compile(graph.Config[State]{MachineID: machineID, Clone: cloneState})
+	runner, err := workflow.Compile(graph.Config[State]{DefinitionID: machineID, Clone: cloneState})
 	if err != nil {
 		return nil, fmt.Errorf("compile agent graph: %w", err)
 	}

@@ -19,7 +19,7 @@ func TestOpenSessionRuntimeKeepsFutureCheckpoint(t *testing.T) {
 	}
 	runID := client.runtime.CheckpointID(saved.ID)
 	if err := client.checkpoints.Create(ctx, graph.Checkpoint[agentgraph.State]{
-		FormatVersion: graph.CheckpointFormatVersion, RunID: runID, MachineID: "lune-v5", Revision: 1, NextID: 2,
+		FormatVersion: graph.CheckpointFormatVersion, RunID: runID, DefinitionID: "lune-v5", Revision: 1, NextID: 2,
 		Invocations: []graph.Invocation[agentgraph.State]{{
 			ID: "i1", Node: "model_request", Status: graph.InvocationReady,
 			State: agentgraph.State{RunID: runID, ExecutionID: "future-execution", TaskSettingsVersion: agentgraph.CurrentTaskSettingsVersion + 1},
@@ -31,7 +31,7 @@ func TestOpenSessionRuntimeKeepsFutureCheckpoint(t *testing.T) {
 		t.Fatalf("OpenSessionRuntime: %v", err)
 	}
 	checkpoint, err := client.runtime.CheckpointForSession(ctx, saved.ID)
-	if err != nil || checkpoint.MachineID != "lune-v5" {
+	if err != nil || checkpoint.DefinitionID != "lune-v5" {
 		t.Fatalf("future checkpoint = %#v, error=%v; want preserved", checkpoint, err)
 	}
 }

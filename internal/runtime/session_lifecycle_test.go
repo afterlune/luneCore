@@ -188,7 +188,7 @@ func TestResumeRejectsCheckpointWithoutTaskSettingsSnapshot(t *testing.T) {
 	if err := client.checkpoints.Create(context.Background(), graph.Checkpoint[agentgraph.State]{
 		FormatVersion: graph.CheckpointFormatVersion,
 		RunID:         runID,
-		MachineID:     "lune-v2",
+		DefinitionID:  "lune-v2",
 		Revision:      1,
 		NextID:        2,
 		Invocations: []graph.Invocation[agentgraph.State]{
@@ -340,7 +340,7 @@ func createBareTestCheckpoint(t *testing.T, client *Core, runID string) {
 	if err := client.checkpoints.Create(context.Background(), graph.Checkpoint[agentgraph.State]{
 		FormatVersion: graph.CheckpointFormatVersion,
 		RunID:         runID,
-		MachineID:     "lune-v2",
+		DefinitionID:  "lune-v2",
 		Revision:      1,
 	}); err != nil {
 		t.Fatalf("create checkpoint %q: %v", runID, err)
