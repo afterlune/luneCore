@@ -31,7 +31,6 @@ type UsagePurpose = model.UsagePurpose
 const (
 	UsagePurposeMain       = model.UsagePurposeMain
 	UsagePurposeCompaction = model.UsagePurposeCompaction
-	UsagePurposeMemory     = model.UsagePurposeMemory
 	UsagePurposeTeam       = model.UsagePurposeTeam
 )
 

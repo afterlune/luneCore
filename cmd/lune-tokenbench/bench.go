@@ -206,17 +206,7 @@ func runCase(configData []byte, profileConfig publicmodel.ModelProfile, profile,
 }
 
 func requestPurpose(request core.UsageRecord) string {
-	data, err := json.Marshal(request)
-	if err != nil {
-		return ""
-	}
-	var metadata struct {
-		Purpose string `json:"purpose"`
-	}
-	if json.Unmarshal(data, &metadata) != nil {
-		return ""
-	}
-	return metadata.Purpose
+	return string(request.Purpose)
 }
 
 func safeRelativePath(value string) (string, error) {

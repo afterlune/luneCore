@@ -143,9 +143,6 @@ func (s *Store) Delete(ctx context.Context, id, workspace string) (bool, error) 
 	if _, err := tx.ExecContext(ctx, `DELETE FROM execution_token_budgets WHERE session_id = ?`, id); err != nil {
 		return false, fmt.Errorf("delete token budgets for session %q: %w", id, err)
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM memories WHERE workspace = ? AND source_session_id = ?`, workspace, id); err != nil {
-		return false, fmt.Errorf("delete memories for session %q: %w", id, err)
-	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM queued_turn_inputs WHERE session_id = ?`, id); err != nil {
 		return false, fmt.Errorf("delete queued turns for session %q: %w", id, err)
 	}

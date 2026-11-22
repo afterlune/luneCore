@@ -23,22 +23,9 @@ func TestRunBenchmarkUsesMeasuredCoreUsageWithoutExternalProvider(t *testing.T) 
 			http.Error(w, "bad request", http.StatusBadRequest)
 			return
 		}
-		var names []string
-		for _, definition := range request.Tools {
-			if function, ok := definition.(publicmodel.FunctionTool); ok {
-				names = append(names, function.Name)
-			}
-		}
-		var response *publicmodel.ModelResponse
-		switch {
-		case containsName(names, "propose_workspace_memories"):
-			response = tokenbenchToolResponse("propose_workspace_memories", `{"items":[]}`)
-		default:
-			response = &publicmodel.ModelResponse{Status: "completed", Output: []publicmodel.ResponseOutputItem{publicmodel.OutputMessage{
-				Role: publicmodel.RoleAssistant, Content: []publicmodel.OutputContentPart{publicmodel.OutputText{Text: "4"}},
-			}}}
-		}
-		response.Status = "completed"
+		response := &publicmodel.ModelResponse{Status: "completed", Output: []publicmodel.ResponseOutputItem{publicmodel.OutputMessage{
+			Role: publicmodel.RoleAssistant, Content: []publicmodel.OutputContentPart{publicmodel.OutputText{Text: "4"}},
+		}}}
 		response.Usage = publicmodel.ResponseUsage{InputTokens: 100, OutputTokens: 2, TotalTokens: 102}
 		if !request.Stream {
 			w.Header().Set("Content-Type", "application/json")
@@ -91,19 +78,4 @@ func TestRunBenchmarkUsesMeasuredCoreUsageWithoutExternalProvider(t *testing.T) 
 	if !strings.Contains(report.Cases[0].FinalText, "4") {
 		t.Fatalf("final response = %q", report.Cases[0].FinalText)
 	}
-}
-
-func containsName(names []string, expected string) bool {
-	for _, name := range names {
-		if name == expected {
-			return true
-		}
-	}
-	return false
-}
-
-func tokenbenchToolResponse(name, arguments string) *publicmodel.ModelResponse {
-	return &publicmodel.ModelResponse{Output: []publicmodel.ResponseOutputItem{publicmodel.OutputFunctionCall{
-		CallID: "tokenbench-" + name, Name: name, Arguments: arguments,
-	}}}
 }
