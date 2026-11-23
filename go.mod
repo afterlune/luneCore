@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	github.com/afterlune/luneGraph v0.0.0-20261119062528-952b489a13a2
+	github.com/coder/websocket v1.8.14
 	github.com/go-keyring/keyring v0.3.1
 	github.com/pmezard/go-difflib v1.0.0
 	golang.org/x/net v0.62.0

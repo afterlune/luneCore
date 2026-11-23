@@ -10,7 +10,7 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const currentSchemaVersion = 15
+const currentSchemaVersion = 16
 
 func Open(path string) (*Store, error) {
 	absolute, err := filepath.Abs(path)
@@ -171,6 +171,18 @@ END;`); err != nil {
 		_ = tx.Rollback()
 		_ = db.Close()
 		return nil, fmt.Errorf("initialize turn result store: %w", err)
+	}
+	if _, err := tx.Exec(`CREATE TABLE IF NOT EXISTS turn_submission_dedup (
+		session_id TEXT NOT NULL,
+		submission_id TEXT NOT NULL,
+		request_digest BLOB NOT NULL,
+		result BLOB NOT NULL,
+		created_at INTEGER NOT NULL,
+		PRIMARY KEY (session_id, submission_id)
+	)`); err != nil {
+		_ = tx.Rollback()
+		_ = db.Close()
+		return nil, fmt.Errorf("initialize turn submission deduplication: %w", err)
 	}
 	if version < 7 {
 		if _, err := tx.Exec(`ALTER TABLE turn_results ADD COLUMN budget_reason TEXT NOT NULL DEFAULT ''`); err != nil {

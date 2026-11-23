@@ -63,37 +63,37 @@ type TurnRequest struct {
 }
 
 type TurnSubmission struct {
-	Status            SubmissionStatus
-	QueueID           string
-	ExecutionID       string
-	ParentExecutionID string
-	Position          int64
+	Status            SubmissionStatus `json:"status"`
+	QueueID           string           `json:"queueId"`
+	ExecutionID       string           `json:"executionId"`
+	ParentExecutionID string           `json:"parentExecutionId,omitempty"`
+	Position          int64            `json:"position"`
 }
 
 type QueuedTurnState struct {
-	QueueID     string
-	Position    int64
-	ExecutionID string
-	Status      string
-	CreatedAt   time.Time
+	QueueID     string    `json:"queueId"`
+	Position    int64     `json:"position"`
+	ExecutionID string    `json:"executionId"`
+	Status      string    `json:"status"`
+	CreatedAt   time.Time `json:"createdAt"`
 }
 
 type RuntimeState struct {
-	Goal  *Goal
-	Task  TaskState
-	Queue []QueuedTurnState
+	Goal  *Goal             `json:"goal,omitempty"`
+	Task  TaskState         `json:"task"`
+	Queue []QueuedTurnState `json:"queue"`
 }
 
 // TaskResult is the shared synchronous and asynchronous outcome shape.
 type TaskResult struct {
-	ModelFailure *ModelFailure
-	ExecutionID  string
-	Status       TaskStatus
-	Response     json.RawMessage
+	ModelFailure *ModelFailure   `json:"modelFailure,omitempty"`
+	ExecutionID  string          `json:"executionId"`
+	Status       TaskStatus      `json:"status"`
+	Response     json.RawMessage `json:"response,omitempty"`
 	// ProposedPlan is set only for a completed response containing one complete
 	// proposed-plan block. Hosts can offer handoff choices when it is non-nil.
-	ProposedPlan *ProposedPlan
-	BudgetReason BudgetReason
+	ProposedPlan *ProposedPlan `json:"proposedPlan,omitempty"`
+	BudgetReason BudgetReason  `json:"budgetReason,omitempty"`
 }
 
 type TurnResult = TaskResult
@@ -111,13 +111,13 @@ const (
 )
 
 type PendingRequest struct {
-	Kind          PendingRequestKind
-	ModelRecovery *PendingModelRecovery
-	Approval      *ApprovalRequest
-	UserQuestion  *UserQuestionRequest
-	Interaction   *UserInteractionRequest
-	ToolRecovery  *ToolRecoveryRequest
-	Blocker       *ExecutionBlocker
+	Kind          PendingRequestKind      `json:"kind"`
+	ModelRecovery *PendingModelRecovery   `json:"modelRecovery,omitempty"`
+	Approval      *ApprovalRequest        `json:"approval,omitempty"`
+	UserQuestion  *UserQuestionRequest    `json:"userQuestion,omitempty"`
+	Interaction   *UserInteractionRequest `json:"interaction,omitempty"`
+	ToolRecovery  *ToolRecoveryRequest    `json:"toolRecovery,omitempty"`
+	Blocker       *ExecutionBlocker       `json:"blocker,omitempty"`
 }
 
 // SessionRuntime is a handle to one session's turns, event log and pending
@@ -256,6 +256,16 @@ func (r *SessionRuntime) SubmitTurn(ctx context.Context, request TurnRequest, mo
 		return TurnSubmission{}, errors.New("session runtime is nil")
 	}
 	submission, _, err := r.core.submitTurn(ctx, r.sessionID, request, mode, false)
+	return submission, err
+}
+
+// SubmitTurnWithID provides durable idempotency for requests crossing a
+// transport where the response may be lost after the turn was accepted.
+func (r *SessionRuntime) SubmitTurnWithID(ctx context.Context, request TurnRequest, mode SubmissionMode, submissionID string, digest []byte) (TurnSubmission, error) {
+	if r == nil || r.core == nil || ctx == nil || submissionID == "" || len(digest) == 0 {
+		return TurnSubmission{}, errors.New("session runtime, context, submission id, and digest are required")
+	}
+	submission, _, err := r.core.submitTurnWithID(ctx, r.sessionID, request, mode, false, submissionID, digest)
 	return submission, err
 }
 

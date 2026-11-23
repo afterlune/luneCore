@@ -18,11 +18,11 @@ type ModelFailure = publicmodel.Failure
 
 // PendingModelRecovery identifies the saved request awaiting explicit recovery.
 type PendingModelRecovery struct {
-	RunID        string
-	InvocationID string
-	CallID       string
-	ExecutionID  string
-	Failure      ModelFailure
+	RunID        string       `json:"runId"`
+	InvocationID string       `json:"invocationId"`
+	CallID       string       `json:"callId"`
+	ExecutionID  string       `json:"executionId"`
+	Failure      ModelFailure `json:"failure"`
 }
 
 func (r *SessionRuntime) PendingModelRecovery(ctx context.Context) (PendingModelRecovery, bool, error) {

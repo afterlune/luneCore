@@ -35,6 +35,8 @@ import (
 type Config struct {
 	Workspace string
 	StateDir  string
+	// ExclusiveState reserves StateDir for an independently managed Core process.
+	ExclusiveState bool
 	// Logger receives structured logs from this Core and its internal components.
 	// When nil, New captures slog.Default() for the Core's lifetime.
 	Logger            *slog.Logger
@@ -188,9 +190,17 @@ func New(config Config) (_ *Core, err error) {
 	if err := os.MkdirAll(stateDir, 0700); err != nil {
 		return nil, fmt.Errorf("create state directory: %w", err)
 	}
-	stateLock, err := stateformat.Open(stateDir)
-	if err != nil {
-		return nil, err
+	var stateLock *session.FileLock
+	if config.ExclusiveState {
+		stateLock, err = stateformat.OpenExclusive(stateDir)
+		if err != nil {
+			return nil, fmt.Errorf("reserve state directory exclusively: %w", err)
+		}
+	} else {
+		stateLock, err = stateformat.Open(stateDir)
+		if err != nil {
+			return nil, err
+		}
 	}
 	keepStateLock := false
 	defer func() {

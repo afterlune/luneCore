@@ -28,45 +28,101 @@ type QueuedTurn struct {
 }
 
 func (s *Store) EnqueueTurn(ctx context.Context, queued QueuedTurn, event json.RawMessage) (QueuedTurn, int64, error) {
+	queued, cursor, _, _, err := s.EnqueueTurnIdempotent(ctx, queued, event, "", nil, nil)
+	return queued, cursor, err
+}
+
+var ErrSubmissionConflict = errors.New("submission id was reused with different content")
+
+func (s *Store) TurnSubmission(ctx context.Context, sessionID, submissionID string, digest []byte) ([]byte, bool, error) {
+	if s == nil || s.db == nil || sessionID == "" || submissionID == "" || len(digest) == 0 {
+		return nil, false, errors.New("store, session id, submission id, and digest are required")
+	}
+	var savedDigest, result []byte
+	err := s.db.QueryRowContext(ctx, `SELECT request_digest, result FROM turn_submission_dedup WHERE session_id = ? AND submission_id = ?`, sessionID, submissionID).Scan(&savedDigest, &result)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("load turn submission: %w", err)
+	}
+	if !bytes.Equal(savedDigest, digest) {
+		return nil, false, ErrSubmissionConflict
+	}
+	return append([]byte(nil), result...), true, nil
+}
+
+// EnqueueTurnIdempotent stores a turn and its replayable submission result in
+// one transaction. Repeating a submission id returns the original result.
+func (s *Store) EnqueueTurnIdempotent(ctx context.Context, queued QueuedTurn, event json.RawMessage, submissionID string, digest []byte, encodeResult func(QueuedTurn) ([]byte, error)) (QueuedTurn, int64, []byte, bool, error) {
 	if s == nil || s.db == nil {
-		return QueuedTurn{}, 0, errors.New("session store is not open")
+		return QueuedTurn{}, 0, nil, false, errors.New("session store is not open")
 	}
 	if queued.SessionID == "" || queued.QueueID == "" || queued.ExecutionID == "" || !json.Valid(queued.Request) || !json.Valid(event) {
-		return QueuedTurn{}, 0, errors.New("session id, queue id, execution id, and valid input/event JSON are required")
+		return QueuedTurn{}, 0, nil, false, errors.New("session id, queue id, execution id, and valid input/event JSON are required")
+	}
+	if submissionID != "" && (len(digest) == 0 || encodeResult == nil) {
+		return QueuedTurn{}, 0, nil, false, errors.New("submission digest and result encoder are required")
 	}
 	if queued.Status == "" {
 		queued.Status = QueuedTurnQueued
 	}
 	if queued.Status != QueuedTurnQueued {
-		return QueuedTurn{}, 0, fmt.Errorf("new queued turn status must be %q", QueuedTurnQueued)
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("new queued turn status must be %q", QueuedTurnQueued)
 	}
 	now := time.Now()
 	queued.CreatedAt = now
 	queued.UpdatedAt = now
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return QueuedTurn{}, 0, fmt.Errorf("begin queued turn transaction: %w", err)
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("begin queued turn transaction: %w", err)
 	}
 	defer tx.Rollback()
+	if submissionID != "" {
+		var savedDigest, savedResult []byte
+		err := tx.QueryRowContext(ctx, `SELECT request_digest, result FROM turn_submission_dedup WHERE session_id = ? AND submission_id = ?`, queued.SessionID, submissionID).Scan(&savedDigest, &savedResult)
+		if err == nil {
+			if !bytes.Equal(savedDigest, digest) {
+				return QueuedTurn{}, 0, nil, false, ErrSubmissionConflict
+			}
+			return QueuedTurn{}, 0, append([]byte(nil), savedResult...), true, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return QueuedTurn{}, 0, nil, false, fmt.Errorf("check turn submission: %w", err)
+		}
+	}
 	if queued.Position < 0 {
 		if err := tx.QueryRowContext(ctx, `SELECT coalesce(MIN(position), 0) - 1 FROM queued_turn_inputs WHERE session_id = ?`, queued.SessionID).Scan(&queued.Position); err != nil {
-			return QueuedTurn{}, 0, fmt.Errorf("allocate queue position: %w", err)
+			return QueuedTurn{}, 0, nil, false, fmt.Errorf("allocate queue position: %w", err)
 		}
 	} else if err := tx.QueryRowContext(ctx, `SELECT coalesce(MAX(position), 0) + 1 FROM queued_turn_inputs WHERE session_id = ?`, queued.SessionID).Scan(&queued.Position); err != nil {
-		return QueuedTurn{}, 0, fmt.Errorf("allocate queue position: %w", err)
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("allocate queue position: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO queued_turn_inputs(session_id, queue_id, position, execution_id, request, status, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, queued.SessionID, queued.QueueID, queued.Position, queued.ExecutionID, []byte(queued.Request), queued.Status, now.UnixNano(), now.UnixNano()); err != nil {
-		return QueuedTurn{}, 0, fmt.Errorf("enqueue turn: %w", err)
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("enqueue turn: %w", err)
 	}
 	cursor, err := appendRuntimeEventTx(ctx, tx, queued.SessionID, event, now)
 	if err != nil {
-		return QueuedTurn{}, 0, err
+		return QueuedTurn{}, 0, nil, false, err
+	}
+	var savedResult []byte
+	if submissionID != "" {
+		savedResult, err = encodeResult(queued)
+		if err != nil {
+			return QueuedTurn{}, 0, nil, false, err
+		}
+		if !json.Valid(savedResult) {
+			return QueuedTurn{}, 0, nil, false, errors.New("submission result encoder returned invalid JSON")
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO turn_submission_dedup(session_id, submission_id, request_digest, result, created_at) VALUES(?, ?, ?, ?, ?)`, queued.SessionID, submissionID, digest, savedResult, now.UnixNano()); err != nil {
+			return QueuedTurn{}, 0, nil, false, fmt.Errorf("store turn submission result: %w", err)
+		}
 	}
 	if err := tx.Commit(); err != nil {
-		return QueuedTurn{}, 0, fmt.Errorf("commit queued turn: %w", err)
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("commit queued turn: %w", err)
 	}
-	return queued, cursor, nil
+	return queued, cursor, savedResult, false, nil
 }
 
 func (s *Store) ClaimNextQueuedTurn(ctx context.Context, sessionID string) (QueuedTurn, bool, error) {

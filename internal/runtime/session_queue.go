@@ -11,6 +11,14 @@ import (
 )
 
 func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool) (TurnSubmission, <-chan turnResult, error) {
+	return c.submitTurnWithID(ctx, sessionID, request, mode, wait, "", nil)
+}
+
+func (c *Core) submitTurnAdmitted(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool) (TurnSubmission, <-chan turnResult, error) {
+	return c.submitTurnAdmittedWithID(ctx, sessionID, request, mode, wait, "", nil)
+}
+
+func (c *Core) submitTurnWithID(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, submissionID string, digest []byte) (TurnSubmission, <-chan turnResult, error) {
 	if c == nil || ctx == nil {
 		return TurnSubmission{}, nil, errors.New("core and context are required")
 	}
@@ -18,13 +26,26 @@ func (c *Core) submitTurn(ctx context.Context, sessionID string, request TurnReq
 		return TurnSubmission{}, nil, err
 	}
 	defer c.queueMutationMu.Unlock()
-	return c.submitTurnAdmitted(ctx, sessionID, request, mode, wait)
+	return c.submitTurnAdmittedWithID(ctx, sessionID, request, mode, wait, submissionID, digest)
 }
 
-func (c *Core) submitTurnAdmitted(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool) (TurnSubmission, <-chan turnResult, error) {
+func (c *Core) submitTurnAdmittedWithID(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, submissionID string, digest []byte) (TurnSubmission, <-chan turnResult, error) {
 
 	if c == nil || ctx == nil || sessionID == "" {
 		return TurnSubmission{}, nil, errors.New("core, context, and session id are required")
+	}
+	if submissionID != "" {
+		saved, found, err := c.sessions.TurnSubmission(ctx, sessionID, submissionID, digest)
+		if err != nil {
+			return TurnSubmission{}, nil, err
+		}
+		if found {
+			var submission TurnSubmission
+			if err := json.Unmarshal(saved, &submission); err != nil {
+				return TurnSubmission{}, nil, fmt.Errorf("decode saved turn submission: %w", err)
+			}
+			return submission, nil, nil
+		}
 	}
 	if mode != StartIfIdle && mode != QueueInput && mode != SteerInput {
 		return TurnSubmission{}, nil, fmt.Errorf("unsupported submission mode %q", mode)
@@ -145,12 +166,32 @@ func (c *Core) submitTurnAdmitted(ctx context.Context, sessionID string, request
 			return TurnSubmission{}, nil, ErrSessionBusy
 		}
 	}
-	queued, _, err := c.sessions.EnqueueTurn(ctx, session.QueuedTurn{
+	queuedTurn := session.QueuedTurn{
 		SessionID: sessionID, QueueID: queueID, ExecutionID: executionID, Request: storedRequest, Status: session.QueuedTurnQueued,
-	}, mustMarshalEvent(Event{Kind: EventTaskQueued, SessionID: sessionID, ExecutionID: executionID, QueueID: queueID, ParentExecutionID: steeringParentID, Status: TaskQueued, GoalID: goalID, GoalRevision: goalRevision, AutomaticGoal: request.automaticGoal}))
+	}
+	event := mustMarshalEvent(Event{Kind: EventTaskQueued, SessionID: sessionID, ExecutionID: executionID, QueueID: queueID, ParentExecutionID: steeringParentID, Status: TaskQueued, GoalID: goalID, GoalRevision: goalRevision, AutomaticGoal: request.automaticGoal})
+	var queued session.QueuedTurn
+	var duplicateResult []byte
+	var duplicate bool
+	if submissionID == "" {
+		queued, _, err = c.sessions.EnqueueTurn(ctx, queuedTurn, event)
+	} else {
+		queued, _, duplicateResult, duplicate, err = c.sessions.EnqueueTurnIdempotent(ctx, queuedTurn, event, submissionID, digest, func(saved session.QueuedTurn) ([]byte, error) {
+			return json.Marshal(TurnSubmission{Status: status, QueueID: saved.QueueID, ExecutionID: executionID, ParentExecutionID: steeringParentID, Position: saved.Position})
+		})
+	}
 	if err != nil {
 		unlock()
 		return TurnSubmission{}, nil, err
+	}
+	if duplicate {
+		var submission TurnSubmission
+		if err := json.Unmarshal(duplicateResult, &submission); err != nil {
+			unlock()
+			return TurnSubmission{}, nil, fmt.Errorf("decode saved turn submission: %w", err)
+		}
+		unlock()
+		return submission, nil, nil
 	}
 	if waiter != nil {
 		c.turnWaiters[executionID] = waiter

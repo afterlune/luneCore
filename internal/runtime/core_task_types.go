@@ -73,27 +73,27 @@ type TaskRequest struct {
 }
 
 type TaskState struct {
-	GoalID string
-	GoalRevision int64
-	AutomaticGoal bool
-	Status    TaskStatus
-	SessionID string
-	TaskID    string
+	GoalID        string     `json:"goalId,omitempty"`
+	GoalRevision  int64      `json:"goalRevision,omitempty"`
+	AutomaticGoal bool       `json:"automaticGoal,omitempty"`
+	Status        TaskStatus `json:"status"`
+	SessionID     string     `json:"sessionId"`
+	TaskID        string     `json:"taskId,omitempty"`
 	// ExecutionID identifies the logical run across pause and resume attempts.
-	ExecutionID          string
-	QueueID              string
-	ContextWindow        int64
-	ReserveOutputTokens  int64
-	AutoCompact          bool
-	AutoCompactThreshold float64
-	Goal                 string
-	MaxToolRounds        int
-	ModelOverride        string
-	ModelProfile         string
-	Provider             string
-	Model                string
-	ReasoningEffort      string
-	Execution            ExecutionOptions
+	ExecutionID          string           `json:"executionId,omitempty"`
+	QueueID              string           `json:"queueId,omitempty"`
+	ContextWindow        int64            `json:"contextWindow,omitempty"`
+	ReserveOutputTokens  int64            `json:"reserveOutputTokens,omitempty"`
+	AutoCompact          bool             `json:"autoCompact,omitempty"`
+	AutoCompactThreshold float64          `json:"autoCompactThreshold,omitempty"`
+	Goal                 string           `json:"goal,omitempty"`
+	MaxToolRounds        int              `json:"maxToolRounds,omitempty"`
+	ModelOverride        string           `json:"modelOverride,omitempty"`
+	ModelProfile         string           `json:"modelProfile,omitempty"`
+	Provider             string           `json:"provider,omitempty"`
+	Model                string           `json:"model,omitempty"`
+	ReasoningEffort      string           `json:"reasoningEffort,omitempty"`
+	Execution            ExecutionOptions `json:"execution,omitempty"`
 }
 
 // ExecutionOptions configures limits and timeouts for one Agent run. Config

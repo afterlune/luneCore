@@ -164,6 +164,10 @@ if result.Status == core.TaskCompleted {
 - `runtime.SubscribeEvents(ctx, afterCursor)`：从游标 `afterCursor` 之后重放持久化事件，随后持续监听实时生命周期与模型增量事件。
 - `runtime.SubscribeEventsWithReplayComplete(ctx, afterCursor)`：重放历史事件并在历史回放追平、实时流即将开始的交界处发送一个瞬态标记事件 `core.EventRuntimeReplayComplete`。该标记不会持久化到数据库中。
 
+### 独立 Core 与跨进程接入
+
+Go 前端可以直接集成 Core 包。异语言前端可启动随应用打包的 `lune-core stdio` 子进程，通过标准输入输出上的 JSON-RPC 2.0 接入。需要多端共享同一个 Core 时，启动配置 TLS 和 Bearer 令牌的 `lune-core serve`，客户端使用 WSS 连接。每个请求明确指定会话 ID，同一 Core 可服务多个独立会话。协议方法、字段和 Python stdio 示例见[运行时协议 v1](docs/runtime-protocol-v1.md)。
+
 ## 轮次提交模式与队列精细控制
 
 `SessionRuntime` 提供三种轮次提交模式：

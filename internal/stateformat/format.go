@@ -40,6 +40,20 @@ func Open(dir string) (*session.FileLock, error) {
 	return lock, nil
 }
 
+// OpenExclusive prevents an independently managed Core process from sharing
+// state with an embedded Core instance. Offline upgrades use the same lock.
+func OpenExclusive(dir string) (*session.FileLock, error) {
+	lock, err := session.AcquireFileLock(filepath.Join(dir, lockFile))
+	if err != nil {
+		return nil, err
+	}
+	if err := check(dir); err != nil {
+		_ = lock.Close()
+		return nil, err
+	}
+	return lock, nil
+}
+
 func check(dir string) error {
 	data, err := os.ReadFile(filepath.Join(dir, markerFile))
 	if err == nil {
