@@ -16,42 +16,42 @@ var ErrMCPServerLifecycleChanged = mcp.ErrServerLifecycleChanged
 
 // MCPPromptArgument describes one argument accepted by an MCP prompt.
 type MCPPromptArgument struct {
-	Name        string
-	Description string
-	Required    bool
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Required    bool   `json:"required,omitempty"`
 }
 
 // MCPPrompt is metadata for a prompt exposed by an MCP server.
 type MCPPrompt struct {
-	Name        string
-	Title       string
-	Description string
-	Arguments   []MCPPromptArgument
+	Name        string              `json:"name"`
+	Title       string              `json:"title,omitempty"`
+	Description string              `json:"description,omitempty"`
+	Arguments   []MCPPromptArgument `json:"arguments,omitempty"`
 }
 
 // MCPPromptResult contains the provider-neutral messages returned by a prompt.
 type MCPPromptResult struct {
-	Description string
-	Input       *publicmodel.ResponseInput
+	Description string                     `json:"description,omitempty"`
+	Input       *publicmodel.ResponseInput `json:"input,omitempty"`
 }
 
 // MCPResource is metadata for a readable MCP resource.
 type MCPResource struct {
-	URI         string
-	Name        string
-	Title       string
-	Description string
-	MIMEType    string
-	Size        int64
+	URI         string `json:"uri"`
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	MIMEType    string `json:"mimeType,omitempty"`
+	Size        int64  `json:"size,omitempty"`
 }
 
 // MCPResourceTemplate describes a URI pattern exposed by an MCP server.
 type MCPResourceTemplate struct {
-	URITemplate string
-	Name        string
-	Title       string
-	Description string
-	MIMEType    string
+	URITemplate string `json:"uriTemplate"`
+	Name        string `json:"name"`
+	Title       string `json:"title,omitempty"`
+	Description string `json:"description,omitempty"`
+	MIMEType    string `json:"mimeType,omitempty"`
 }
 
 // ListMCPPrompts fetches all prompts from an enabled MCP server. The host

@@ -512,11 +512,14 @@ func TestStdioEOFPreservesActiveTurnBeforeJoiningRequests(t *testing.T) {
 
 func runPythonStdioExample(t *testing.T, binary string) {
 	t.Helper()
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		python, err = exec.LookPath("python")
+	var python string
+	for _, name := range []string{"python3", "python"} {
+		if path, err := exec.LookPath(name); err == nil && exec.Command(path, "--version").Run() == nil {
+			python = path
+			break
+		}
 	}
-	if err != nil {
+	if python == "" {
 		t.Skip("Python is not installed")
 	}
 	var requests atomic.Int32

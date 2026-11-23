@@ -68,8 +68,16 @@ func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcErro
 		return c.historyPage(raw)
 	case "session.search":
 		return c.searchSessions(raw)
-	case "session.fork", "session.rewindPreview", "session.rewind", "session.compact", "turn.cancelQueued":
+	case "session.fork", "session.rewindPreview", "session.rewind", "session.compact", "turn.cancelQueued", "turn.cancelPending", "turn.replaceQueued", "turn.implementPlan":
 		return c.manageSession(method, raw)
+	case "goal.get", "goal.create", "goal.pause", "goal.resume", "goal.edit", "goal.setBudget", "goal.clear":
+		return c.manageGoal(method, raw)
+	case "question.saveDraft":
+		return c.saveQuestionDraft(raw)
+	case "command.list", "command.read", "command.stop":
+		return c.manageCommand(method, raw)
+	case "mcp.servers", "mcp.enable", "mcp.disable", "mcp.listPrompts", "mcp.getPrompt", "mcp.listResources", "mcp.listResourceTemplates", "mcp.readResource":
+		return c.manageMCP(method, raw)
 
 	case "runtime.hello":
 		var params helloParams
@@ -81,7 +89,12 @@ func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcErro
 			"client":          map[string]string{"name": params.ClientName, "version": params.ClientVersion},
 			"transports":      []string{"stdio", "wss"},
 			"maxMessageBytes": MaxMessageBytes,
-			"capabilities":    []string{"session.search", "session.fork", "session.rewind", "session.compact", "turn.cancelQueued", "turn.plan", "turn.attachments", "session.historyPage"},
+			"capabilities": []string{
+				"session.search", "session.fork", "session.rewind", "session.compact",
+				"turn.cancelQueued", "turn.cancelPending", "turn.replaceQueued",
+				"turn.plan", "turn.implementPlan", "turn.attachments", "session.historyPage",
+				"goal.manage", "question.draft", "command.control", "mcp.inspect",
+			},
 		}, nil
 	case "session.create":
 		var params struct {
@@ -410,14 +423,18 @@ func (c *connection) subscribe(raw json.RawMessage) (any, *rpcError) {
 	}
 	c.subscriptions[params.SubscriptionID] = sub
 	c.mu.Unlock()
+	c.server.retainInteractiveSession(params.SessionID, runtime)
 	c.eventWG.Add(1)
 	go func() {
 		defer c.eventWG.Done()
 		defer close(sub.done)
+		defer func() {
+			c.server.releaseInteractiveSession(params.SessionID, runtime)
+			_ = runtime.Close(context.Background())
+		}()
 		select {
 		case <-sub.ready:
 		case <-ctx.Done():
-			_ = runtime.Close(context.Background())
 			return
 		}
 		for event := range events {
@@ -431,7 +448,6 @@ func (c *connection) subscribe(raw json.RawMessage) (any, *rpcError) {
 			delete(c.subscriptions, params.SubscriptionID)
 		}
 		c.mu.Unlock()
-		_ = runtime.Close(context.Background())
 	}()
 	return subscriptionReady{
 		result: map[string]string{"subscriptionId": params.SubscriptionID},

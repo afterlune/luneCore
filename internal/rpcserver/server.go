@@ -41,11 +41,12 @@ type Server struct {
 	// default below.
 	writeTimeout time.Duration
 
-	mu       sync.Mutex
-	closed   bool
-	clients  map[*websocket.Conn]context.CancelFunc
-	requests chan struct{}
-	wg       sync.WaitGroup
+	mu                  sync.Mutex
+	closed              bool
+	clients             map[*websocket.Conn]context.CancelFunc
+	interactiveSessions map[string]int
+	requests            chan struct{}
+	wg                  sync.WaitGroup
 }
 
 func New(client *core.Core, token string) (*Server, error) {
@@ -58,9 +59,44 @@ func NewWithOptions(client *core.Core, token string, options ServerOptions) (*Se
 	}
 	return &Server{
 		core: client, token: strings.TrimSpace(token), origins: append([]string(nil), options.AllowedOrigins...),
-		clients:  make(map[*websocket.Conn]context.CancelFunc),
-		requests: make(chan struct{}, maxServerRequests),
+		clients:             make(map[*websocket.Conn]context.CancelFunc),
+		interactiveSessions: make(map[string]int),
+		requests:            make(chan struct{}, maxServerRequests),
 	}, nil
+}
+
+func (s *Server) retainInteractiveSession(sessionID string, runtime *core.SessionRuntime) {
+	if s == nil || sessionID == "" || runtime == nil {
+		return
+	}
+	s.mu.Lock()
+	if s.interactiveSessions == nil {
+		s.interactiveSessions = make(map[string]int)
+	}
+	s.interactiveSessions[sessionID]++
+	first := s.interactiveSessions[sessionID] == 1
+	s.mu.Unlock()
+	if first {
+		runtime.SetUserInteractionAvailable(true)
+	}
+}
+
+func (s *Server) releaseInteractiveSession(sessionID string, runtime *core.SessionRuntime) {
+	if s == nil || sessionID == "" || runtime == nil {
+		return
+	}
+	s.mu.Lock()
+	count := s.interactiveSessions[sessionID]
+	last := count <= 1
+	if last {
+		delete(s.interactiveSessions, sessionID)
+	} else {
+		s.interactiveSessions[sessionID] = count - 1
+	}
+	s.mu.Unlock()
+	if last {
+		runtime.SetUserInteractionAvailable(false)
+	}
 }
 
 // ServeStdio owns the pipe endpoints until the connection is closed.
@@ -578,6 +614,22 @@ func applicationError(err error) *rpcError {
 		code = "session_in_use"
 	case errors.Is(err, core.ErrQueuedTurnStarted):
 		code = "queued_turn_started"
+	case errors.Is(err, core.ErrPlanUnavailable):
+		code = "plan_unavailable"
+	case errors.Is(err, core.ErrPlanOutdated):
+		code = "plan_outdated"
+	case errors.Is(err, core.ErrMCPServerLifecycleChanged):
+		code = "mcp_lifecycle_changed"
+	case errors.Is(err, core.ErrModelRetryNotReady):
+		code = "model_retry_not_ready"
+	case errors.Is(err, core.ErrToolInvocationPersistence):
+		code = "tool_invocation_persistence"
+	case errors.Is(err, core.ErrUserInteractionUnsupported):
+		code = "user_interaction_unsupported"
+	case errors.Is(err, core.ErrAuthorizationRequired):
+		code = "authorization_required"
+	case errors.Is(err, core.ErrCredentialNotFound):
+		code = "credential_not_found"
 	}
 	return &rpcError{Code: -32000, Message: err.Error(), Data: map[string]string{"code": code}}
 }

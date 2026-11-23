@@ -109,9 +109,16 @@ clients can ignore it and newer clients can keep using the base methods.
 | `session.rewind` | `session.rewindPreview` takes `sessionId` and `turns`, returning `removed`, `excerpts`, and `digest`. Pass the same fields and returned digest to `session.rewind`. Changed history invalidates the preview. |
 | `session.compact` | `session.compact` takes `sessionId` and returns the compaction result. An active task, queued turn or paused checkpoint prevents compaction. |
 | `turn.cancelQueued` | `turn.cancelQueued` takes `sessionId` and `executionId`. It can only cancel a waiting turn. |
+| `turn.cancelPending` | `turn.cancelPending` takes `sessionId`, atomically cancels waiting queued turns, interrupts the active turn, and returns `cancelledExecutionIds`. |
+| `turn.replaceQueued` | `turn.replaceQueued` takes `sessionId`, `executionId`, `input`, and optional `attachments`, replacing an unstarted queued turn in place and returning `submission` and `cancelledExecutionIds`. |
 | `turn.plan` | `turn.submit` accepts `planMode: true`. Core applies its read-only tool policy, including when a queued turn later starts. Plan submissions run as separate turns. |
+| `turn.implementPlan` | `turn.implementPlan` takes `sessionId`, `sourceExecutionId`, and optional `mode` (`same_context` or `new_context`), starting an approved plan under the server's active permission mode and returning `sessionId` and `submission`. |
 | `turn.attachments` | `turn.submit` accepts `attachments` with `name`, `mediaType`, and standard base64 `data`. For these requests `input` is a string. |
 | `session.historyPage` | `session.historyPage` takes `sessionId` and optional `offset` and `digest`. Returns `items`, `nextOffset`, `done`, and `digest`. Copy the digest into subsequent requests and restart if the history changes. |
+| `goal.manage` | `goal.get`, `goal.create` (`objective`, optional `tokenBudget`, `noInteractiveDecisions`), `goal.pause`, `goal.resume` (optional `noInteractiveDecisions`), `goal.edit` (`objective`), `goal.setBudget` (`tokenBudget`), and `goal.clear` manage persistent cross-turn session goals. |
+| `question.draft` | `question.saveDraft` takes `sessionId`, `wait`, and either structured `draft` or arbitrary JSON `payload` to persist uncommitted clarification form state without resuming execution. |
+| `command.control` | `command.list`, `command.read` (`commandId`, optional `cursor`, `waitMs` 0–5000), and `command.stop` (`commandId`) inspect and stop session commands. |
+| `mcp.inspect` | `mcp.servers`, `mcp.enable` (`serverName`), `mcp.disable` (`serverName`), `mcp.listPrompts`, `mcp.getPrompt` (`serverName`, `promptName`, optional `arguments`), `mcp.listResources`, `mcp.listResourceTemplates`, and `mcp.readResource` (`serverName`, `uri`) manage configured MCP servers and read host-controlled prompts and resources. |
 
 Attachment names are basenames. Supported media types are `text/plain`,
 `text/markdown`, `text/csv`, `image/png`, and `image/jpeg`. Attach up to five

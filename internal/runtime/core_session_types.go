@@ -46,14 +46,14 @@ type AttachmentLimits struct {
 // MCPServerStatus describes one configured MCP server without exposing its
 // credentials or child-process environment.
 type MCPServerStatus struct {
-	Name      string
-	Transport string
-	Endpoint  string
-	Command   string
-	Enabled   bool
-	Connected bool
-	ToolCount int
-	LastError string
+	Name      string `json:"name"`
+	Transport string `json:"transport"`
+	Endpoint  string `json:"endpoint,omitempty"`
+	Command   string `json:"command,omitempty"`
+	Enabled   bool   `json:"enabled"`
+	Connected bool   `json:"connected"`
+	ToolCount int    `json:"toolCount"`
+	LastError string `json:"lastError,omitempty"`
 }
 
 // ModelOption is a model profile exposed to clients without leaking the

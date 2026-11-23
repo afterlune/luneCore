@@ -60,8 +60,8 @@ type PlanImplementationOptions struct {
 // an approved plan. A host can render “stay read-only” by dismissing the plan
 // without calling ImplementPlan.
 type PlanImplementation struct {
-	SessionID  string
-	Submission TurnSubmission
+	SessionID  string         `json:"sessionId"`
+	Submission TurnSubmission `json:"submission"`
 }
 
 // extractProposedPlan recognizes one complete plan block in a model response.
