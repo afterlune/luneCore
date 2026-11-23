@@ -134,6 +134,8 @@ type Core struct {
 	sessionOps            sync.WaitGroup
 	closed                bool
 	closing               bool
+	preserveOnClose       bool
+	shutdownDrainErr      error
 	closeDone             chan struct{}
 	closeErr              error
 }

@@ -28,6 +28,9 @@ func (c *Core) drainQueue(sessionID string) (drainErr error) {
 	defer func() {
 		c.mu.Lock()
 		c.eventHub(sessionID).setDrainError(drainErr)
+		if c.preserveOnClose && drainErr != nil {
+			c.shutdownDrainErr = errors.Join(c.shutdownDrainErr, drainErr)
+		}
 		delete(c.queueDraining, sessionID)
 		closed := c.closed || c.closing
 		c.mu.Unlock()
@@ -99,7 +102,14 @@ func (c *Core) drainQueue(sessionID string) (drainErr error) {
 			}
 		}
 		c.queueMutationMu.Lock()
+		c.mu.RLock()
+		if c.closed || c.closing {
+			c.mu.RUnlock()
+			c.queueMutationMu.Unlock()
+			return nil
+		}
 		queued, claimed, err := c.sessions.ClaimNextQueuedTurn(ctx, sessionID)
+		c.mu.RUnlock()
 		c.queueMutationMu.Unlock()
 		if err != nil {
 			c.logger.Warn("claim queued turn", "error", err)
@@ -108,6 +118,12 @@ func (c *Core) drainQueue(sessionID string) (drainErr error) {
 		if !claimed {
 			enqueued, err := c.enqueueGoalContinuation(ctx, sessionID)
 			if err != nil {
+				c.mu.RLock()
+				closing := c.closed || c.closing
+				c.mu.RUnlock()
+				if closing {
+					return nil
+				}
 				return err
 			}
 			if enqueued {
@@ -119,11 +135,8 @@ func (c *Core) drainQueue(sessionID string) (drainErr error) {
 		closing := c.closed || c.closing
 		c.mu.RUnlock()
 		if closing {
-			if err := c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnQueued); err != nil {
-				c.logger.Warn("return claimed turn to queue during close", "error", err)
-			}
 			c.resolveTurnWaiter(queued.ExecutionID, turnResult{err: errors.New("core is closing")})
-			return
+			return c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnQueued)
 		}
 		var request storedTurnRequest
 		if err := json.Unmarshal(queued.Request, &request); err != nil {
@@ -167,9 +180,12 @@ func (c *Core) drainQueue(sessionID string) (drainErr error) {
 		}
 		c.mu.RLock()
 		closing = c.closed || c.closing
+		preserve := c.preserveOnClose
 		c.mu.RUnlock()
 		var persistErr error
-		if closing && len(outcome.History) == 0 {
+		if preserve && !interrupted && (len(outcome.History) == 0 || outcome.Status == TaskPaused) {
+			persistErr = c.preserveStoppedTurn(ctx, queued, outcome)
+		} else if closing && !preserve && len(outcome.History) == 0 {
 			persistErr = c.sessions.SetQueuedTurnStatus(ctx, sessionID, queued.QueueID, session.QueuedTurnQueued)
 		} else {
 			persistCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -217,6 +233,27 @@ func (c *Core) drainQueue(sessionID string) (drainErr error) {
 			return
 		}
 	}
+}
+
+func (c *Core) preserveStoppedTurn(ctx context.Context, queued session.QueuedTurn, outcome runOutcome) error {
+	completed, _, err := c.completeQueuedTurnFromCheckpoint(ctx, queued)
+	if err != nil {
+		return err
+	}
+	if completed {
+		return nil
+	}
+	pending, found, err := c.pendingState(ctx, queued.SessionID)
+	if err != nil {
+		return err
+	}
+	if found && pending.ExecutionID == queued.ExecutionID {
+		outcome.Status = TaskPaused
+		return c.commitRunOutcome(ctx, queued, outcome)
+	}
+	// No matching checkpoint was created. A newly started graph persists its
+	// initial checkpoint before executing callbacks.
+	return c.sessions.SetQueuedTurnStatus(ctx, queued.SessionID, queued.QueueID, session.QueuedTurnQueued)
 }
 
 func (c *Core) failQueuedTurn(ctx context.Context, queued session.QueuedTurn, err error) error {

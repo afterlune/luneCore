@@ -23,7 +23,9 @@ jobs:
       - run: go test -trimpath ./... -count=1 -p 1
       - name: Race-check runtime and tool lifecycle
         if: runner.os == 'Linux'
-        run: go test -race -trimpath -p 1 ./internal/runtime ./internal/tool ./internal/command ./internal/mcp
+        run: go test -race -trimpath -p 1 ./cmd/lune-core ./internal/rpcserver ./internal/runtime ./internal/tool ./internal/command ./internal/mcp
+      - name: Build standalone Core
+        run: go build -trimpath -o "${{ runner.temp }}/lune-core${{ matrix.os == 'windows-latest' && '.exe' || '' }}" ./cmd/lune-core
       - name: Build sandbox helper
         run: go build -trimpath -o "${{ runner.temp }}/lune-sandbox${{ matrix.os == 'windows-latest' && '.exe' || '' }}" ./cmd/lune-sandbox
       - name: Scan Go vulnerabilities

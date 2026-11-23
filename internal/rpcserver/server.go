@@ -45,56 +45,48 @@ func New(client *core.Core, token string) (*Server, error) {
 	}, nil
 }
 
-func (s *Server) ServeStdio(ctx context.Context, input io.Reader, output io.Writer) error {
+// ServeStdio owns the pipe endpoints until the connection is closed.
+func (s *Server) ServeStdio(ctx context.Context, input io.ReadCloser, output io.WriteCloser) error {
 	if ctx == nil || input == nil || output == nil {
 		return errors.New("context, input, and output are required")
 	}
-	writeMu := sync.Mutex{}
-	write := func(data []byte) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
+	client := newConnection(s, ctx)
+	pipesClosed := make(chan struct{})
+	context.AfterFunc(client.ctx, func() {
+		defer close(pipesClosed)
+		_ = input.Close()
+		_ = output.Close()
+	})
+	writerDone := client.startWriter(func(ctx context.Context, data []byte) error {
+		// Closing the owned endpoints also interrupts a pipe without native
+		// deadline support.
+		stopTimeout := context.AfterFunc(ctx, client.cancel)
+		defer stopTimeout()
 		if _, err := output.Write(data); err != nil {
 			return err
 		}
 		_, err := io.WriteString(output, "\n")
 		return err
-	}
-	readDone := make(chan struct{})
-	defer close(readDone)
-	if closer, ok := input.(io.Closer); ok {
-		go func() {
-			select {
-			case <-ctx.Done():
-				_ = closer.Close()
-			case <-readDone:
-			}
-		}()
-	}
+	})
+	defer func() {
+		client.cancel()
+		client.join()
+		<-writerDone
+		<-pipesClosed
+	}()
 	reader := bufio.NewReaderSize(input, 64*1024)
-	conn := newConnection(s, ctx, write)
-	var requests sync.WaitGroup
 	for {
 		line, err := readLineLimited(reader, MaxMessageBytes)
 		if err != nil {
-			if ctx.Err() != nil {
-				break
+			if client.ctx.Err() != nil || errors.Is(err, io.EOF) {
+				return nil
 			}
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			conn.cancel()
-			requests.Wait()
-			conn.closeSubscriptions()
 			return err
 		}
-		if !conn.handleAsync(&requests, line) {
-			break
+		if !client.handleAsync(line) {
+			return nil
 		}
 	}
-	conn.cancel()
-	requests.Wait()
-	conn.closeSubscriptions()
-	return nil
 }
 
 func readLineLimited(reader *bufio.Reader, limit int) ([]byte, error) {
@@ -159,15 +151,14 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow()
 	conn.SetReadLimit(MaxMessageBytes)
-	ctx, cancel := context.WithCancel(r.Context())
-	defer cancel()
+	client := newConnection(s, r.Context())
+	defer client.cancel()
 	s.mu.Lock()
-	if s.closed {
+	if s.closed || len(s.clients) >= maxConnections {
 		s.mu.Unlock()
-		_ = conn.Close(websocket.StatusGoingAway, "server is shutting down")
 		return
 	}
-	s.clients[conn] = cancel
+	s.clients[conn] = client.cancel
 	s.wg.Add(1)
 	s.mu.Unlock()
 	defer func() {
@@ -176,12 +167,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 		s.wg.Done()
 	}()
-	writeMu := sync.Mutex{}
-	write := func(data []byte) error {
-		writeMu.Lock()
-		defer writeMu.Unlock()
+	writerDone := client.startWriter(func(ctx context.Context, data []byte) error {
 		return conn.Write(ctx, websocket.MessageText, data)
-	}
+	})
 	pingDone := make(chan struct{})
 	go func() {
 		defer close(pingDone)
@@ -189,58 +177,57 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-client.ctx.Done():
 				return
 			case <-ticker.C:
-				pingCtx, cancelPing := context.WithTimeout(ctx, 5*time.Second)
-				writeMu.Lock()
+				pingCtx, cancelPing := context.WithTimeout(client.ctx, writeTimeout)
 				err := conn.Ping(pingCtx)
-				writeMu.Unlock()
 				cancelPing()
 				if err != nil {
-					cancel()
-					_ = conn.CloseNow()
+					client.cancel()
 					return
 				}
 			}
 		}
 	}()
-	client := newConnection(s, ctx, write)
-	var requests sync.WaitGroup
 	for {
-		messageType, message, err := conn.Read(ctx)
+		messageType, message, err := conn.Read(client.ctx)
 		if err != nil {
 			break
 		}
-		if messageType != websocket.MessageText {
-			continue
-		}
-		if !client.handleAsync(&requests, message) {
+		if messageType == websocket.MessageText && !client.handleAsync(message) {
 			break
 		}
 	}
 	client.cancel()
-	cancel()
-	requests.Wait()
-	client.closeSubscriptions()
+	_ = conn.CloseNow()
+	client.join()
+	<-writerDone
 	<-pingDone
 }
 
-// Shutdown rejects new WSS connections and closes connected clients so their
-// event subscriptions release session handles before Core closes its stores.
-func (s *Server) Shutdown() {
+// Shutdown stops admission and joins the handlers for upgraded connections.
+func (s *Server) Shutdown(ctx context.Context) error {
+	if ctx == nil {
+		return errors.New("context is required")
+	}
 	s.mu.Lock()
 	s.closed = true
-	connections := make([]*websocket.Conn, 0, len(s.clients))
-	for conn, cancel := range s.clients {
+	for _, cancel := range s.clients {
 		cancel()
-		connections = append(connections, conn)
 	}
 	s.mu.Unlock()
-	for _, conn := range connections {
-		_ = conn.CloseNow()
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
-	s.wg.Wait()
 }
 
 type subscription struct {
@@ -259,39 +246,115 @@ type connection struct {
 	server *Server
 	ctx    context.Context
 	cancel context.CancelFunc
-	write  func([]byte) error
 
 	mu            sync.Mutex
 	subscriptions map[string]*subscription
 	requests      chan struct{}
+	requestWG     sync.WaitGroup
 	eventWG       sync.WaitGroup
+
+	sendMu      sync.Mutex
+	sendQueue   chan []byte
+	sending     int
+	outstanding int
 }
 
-func newConnection(server *Server, parent context.Context, write func([]byte) error) *connection {
+const maxSendMessages = 64
+const writeTimeout = 5 * time.Second
+
+func newConnection(server *Server, parent context.Context) *connection {
 	ctx, cancel := context.WithCancel(parent)
-	return &connection{server: server, ctx: ctx, cancel: cancel, write: write, subscriptions: make(map[string]*subscription), requests: make(chan struct{}, maxConcurrentRequests)}
+	return &connection{
+		server: server, ctx: ctx, cancel: cancel,
+		subscriptions: make(map[string]*subscription),
+		requests:      make(chan struct{}, maxConcurrentRequests),
+		sendQueue:     make(chan []byte, maxSendMessages),
+	}
 }
 
-func (c *connection) handleAsync(requests *sync.WaitGroup, message []byte) bool {
+func (c *connection) startWriter(write func(context.Context, []byte) error) <-chan struct{} {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case <-c.ctx.Done():
+				return
+			case data := <-c.sendQueue:
+				if c.ctx.Err() != nil {
+					return
+				}
+				ctx, cancel := context.WithTimeout(c.ctx, writeTimeout)
+				err := write(ctx, data)
+				cancel()
+				c.sendMu.Lock()
+				c.sending--
+				c.outstanding -= len(data)
+				c.sendMu.Unlock()
+				if err != nil {
+					c.cancel()
+					return
+				}
+			}
+		}
+	}()
+	return done
+}
+
+// send includes the in-flight message in both limits. Producers never block
+// the reader or Core waiting for a client to consume its output.
+func (c *connection) send(data []byte) error {
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	if err := c.ctx.Err(); err != nil {
+		return err
+	}
+	if c.sending == maxSendMessages || len(data) > MaxMessageBytes-c.outstanding {
+		c.cancel()
+		return errors.New("runtime connection send queue is full")
+	}
+	c.sending++
+	c.outstanding += len(data)
+	c.sendQueue <- data
+	return nil
+}
+
+func (c *connection) handleAsync(message []byte) bool {
+	if c.ctx.Err() != nil {
+		return false
+	}
 	select {
 	case c.requests <- struct{}{}:
-	case <-c.ctx.Done():
-		return false
+	default:
+		return c.rejectOverload(message)
 	}
 	select {
 	case c.server.requests <- struct{}{}:
-	case <-c.ctx.Done():
+	default:
 		<-c.requests
-		return false
+		return c.rejectOverload(message)
 	}
-	requests.Add(1)
+	c.requestWG.Add(1)
 	go func() {
-		defer requests.Done()
+		defer c.requestWG.Done()
 		defer func() { <-c.requests }()
 		defer func() { <-c.server.requests }()
 		c.handle(message)
 	}()
 	return true
+}
+
+func (c *connection) rejectOverload(message []byte) bool {
+	var req request
+	if json.Unmarshal(message, &req) == nil && len(req.ID) != 0 && validRequestID(req.ID) {
+		c.respond(req.ID, nil, &rpcError{Code: -32003, Message: "runtime request limit reached"})
+	}
+	return c.ctx.Err() == nil
+}
+
+func (c *connection) join() {
+	c.requestWG.Wait()
+	c.closeSubscriptions()
 }
 
 func (c *connection) closeSubscriptions() {
@@ -380,7 +443,7 @@ func (c *connection) respond(id json.RawMessage, result any, rpcErr *rpcError) {
 		data, err = json.Marshal(reply)
 	}
 	if err == nil {
-		_ = c.write(data)
+		_ = c.send(data)
 	}
 }
 
@@ -389,10 +452,7 @@ func (c *connection) notify(method string, params any) error {
 	if err != nil {
 		return err
 	}
-	if len(data) > MaxMessageBytes {
-		return errors.New("notification exceeds maximum message size")
-	}
-	return c.write(data)
+	return c.send(data)
 }
 
 type request struct {

@@ -157,16 +157,16 @@ func (c *Core) emit(event Event) {
 func safeEventProjection(event Event) Event {
 	safeErr := ""
 	event.Cursor, event.OccurredAt, event.Err = 0, time.Time{}, safeErr
-	event.Tool.Arguments = nil
+	event.Tool.Arguments = json.RawMessage("null")
 	event.Tool.Details = nil
 	if event.Approval != nil {
 		copy := cloneApproval(*event.Approval)
-		copy.Arguments = nil
+		copy.Arguments = json.RawMessage("null")
 		event.Approval = &copy
 	}
 	if event.Interaction != nil {
 		copy := cloneInteraction(*event.Interaction)
-		copy.Request = nil
+		copy.Request = json.RawMessage("null")
 		event.Interaction = &copy
 	}
 	if event.UserQuestion != nil {
@@ -181,7 +181,7 @@ func safeEventProjection(event Event) Event {
 	}
 	if event.ToolRecovery != nil {
 		copy := *event.ToolRecovery
-		copy.Arguments = nil
+		copy.Arguments = json.RawMessage("null")
 		event.ToolRecovery = &copy
 	}
 	event.Stream = nil

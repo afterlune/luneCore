@@ -82,15 +82,13 @@ func run(args []string) error {
 	}
 	var serveErr error
 	if mode == "stdio" {
-		serveErr = service.ServeStdio(ctx, os.Stdin, os.Stdout)
+		serveErr = serveStdio(ctx, service)
 	} else {
 		serveErr = serveHTTPS(ctx, service, *listen, *tlsCert, *tlsKey)
-		service.Shutdown()
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	interruptSessions(shutdownCtx, client)
-	closeErr := client.Close(shutdownCtx)
+	closeErr := client.Shutdown(shutdownCtx)
 	return errors.Join(serveErr, closeErr)
 }
 
@@ -110,34 +108,28 @@ func serveHTTPS(ctx context.Context, service *rpcserver.Server, address, certifi
 	}()
 	select {
 	case err := <-result:
-		return err
-	case <-ctx.Done():
-		service.Shutdown()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		return errors.Join(err, service.Shutdown(shutdownCtx))
+	case <-ctx.Done():
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		connectionErr := service.Shutdown(shutdownCtx)
 		shutdownErr := server.Shutdown(shutdownCtx)
 		serveErr := <-result
-		return errors.Join(shutdownErr, serveErr)
+		return errors.Join(connectionErr, shutdownErr, serveErr)
 	}
 }
 
-func interruptSessions(ctx context.Context, client *core.Core) {
-	const pageSize = 500
-	for offset := 0; ; offset += pageSize {
-		sessions, err := client.ListSessionPage(ctx, offset, pageSize, true)
-		if err != nil || len(sessions) == 0 {
-			return
-		}
-		for _, saved := range sessions {
-			runtime, err := client.OpenSessionRuntime(ctx, saved.ID)
-			if err != nil {
-				continue
-			}
-			_, _ = runtime.CancelPendingTurns(ctx)
-			_ = runtime.Close(ctx)
-		}
-		if len(sessions) < pageSize {
-			return
-		}
+func serveStdio(ctx context.Context, service *rpcserver.Server) error {
+	input, err := runtimePipe(os.Stdin)
+	if err != nil {
+		return fmt.Errorf("open IPC input: %w", err)
 	}
+	output, err := runtimePipe(os.Stdout)
+	if err != nil {
+		_ = input.Close()
+		return fmt.Errorf("open IPC output: %w", err)
+	}
+	return service.ServeStdio(ctx, input, output)
 }

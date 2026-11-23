@@ -94,50 +94,34 @@ start if an embedded or standalone Core already has that directory open.
 
 ## Python stdio example
 
-```python
-import itertools
-import json
-import subprocess
+Run the [Python example](../examples/runtime_stdio.py) with a configured
+workspace and the built binary.
 
-process = subprocess.Popen(
-    ["./lune-core", "stdio", "--workspace", "/path/to/workspace"],
-    stdin=subprocess.PIPE,
-    stdout=subprocess.PIPE,
-    text=True,
-    encoding="utf-8",
-)
-request_ids = itertools.count(1)
-
-def call(method, params):
-    request_id = next(request_ids)
-    request = {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}
-    process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
-    process.stdin.flush()
-    while True:
-        message = json.loads(process.stdout.readline())
-        if "method" in message:
-            continue
-        if message.get("id") != request_id:
-            continue
-        if "error" in message:
-            raise RuntimeError(message["error"])
-        return message["result"]
-
-hello = call("runtime.hello", {"clientName": "sample-python", "clientVersion": "1"})
-if hello["protocolVersion"] != "1":
-    raise RuntimeError("unsupported Lune Core protocol")
-session = call("session.create", {})
-submission = call("turn.submit", {
-    "sessionId": session["id"],
-    "submissionId": "sample-python-turn-1",
-    "input": "Summarize the workspace.",
-    "mode": "start_if_idle",
-})
-result = call("turn.wait", {
-    "sessionId": session["id"],
-    "executionId": submission["executionId"],
-})
-print(result["response"])
-process.stdin.close()
-process.wait()
+```sh
+python3 examples/runtime_stdio.py ./lune-core /path/to/workspace \
+  "Ask me which environment to summarize before writing the summary." --answer local
 ```
+
+The example subscribes before submitting, answers a clarification, denies
+tool approvals, and reads the final result. The parent closes stdin and waits
+for the child to exit.
+
+## Disconnect and restart
+
+The subscription acknowledgement arrives before the first event for that
+subscription. Store the latest durable cursor separately for each session.
+On WSS reconnect, call `runtime.hello`, subscribe from that cursor, and refresh
+state and pending requests after the replay marker. If a submit response was
+lost, retry the same request with its original `submissionId`.
+
+Each connection buffers up to 64 outgoing messages and 32 MiB, including
+the message being written. The service closes the connection if either limit
+is exceeded or a write takes longer than five seconds. Error `-32003` means
+the server could not admit a request because the concurrent request limit
+was reached.
+
+A WSS client disconnect leaves admitted work running. Closing stdio input or
+stopping the service stops new execution, preserves queued turns and pauses
+active turns that have a resumable checkpoint. After starting Core again,
+opening the session lets the queue drain. Use `turn.recover` to resume a paused
+turn, or answer its pending clarification if one remains.
