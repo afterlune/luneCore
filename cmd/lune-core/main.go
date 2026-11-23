@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -28,11 +29,19 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: lune-core <stdio|serve> [options]")
+		return errors.New("usage: lune-core <stdio|serve|validate-config> [options]")
 	}
 	mode := args[0]
+	if mode == "validate-config" {
+		if len(args) != 1 {
+			return errors.New("usage: lune-core validate-config < configuration.json")
+		}
+		_, _, err := readStartupConfig(os.Stdin)
+		return err
+	}
 	flags := flag.NewFlagSet("lune-core "+mode, flag.ContinueOnError)
 	flags.SetOutput(os.Stderr)
+	configStdin := flags.Bool("config-stdin", false, "read the initial project configuration from the stdio pipe")
 	workspace := flags.String("workspace", "", "workspace opened by Core")
 	stateDir := flags.String("state-dir", "", "Core state directory")
 	helperPath := flags.String("sandbox-helper", "", "path to lune-sandbox helper")
@@ -52,6 +61,9 @@ func run(args []string) error {
 	}
 	if mode == "stdio" && (flags.Lookup("listen").Value.String() != "127.0.0.1:18092" || *tlsCert != "" || *tlsKey != "" || *tokenFile != "" || *webOrigins != "") {
 		return errors.New("serve options cannot be used with stdio")
+	}
+	if mode != "stdio" && *configStdin {
+		return errors.New("--config-stdin requires stdio mode")
 	}
 	allowedOrigins, err := parseWebOrigins(*webOrigins)
 	if err != nil {
@@ -73,15 +85,31 @@ func run(args []string) error {
 		}
 	}
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	var projectConfig *core.ProjectConfig
+	var input io.ReadCloser
+	if *configStdin {
+		pipe, err := runtimePipe(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("open configuration pipe: %w", err)
+		}
+		defer pipe.Close()
+		cancelRead := context.AfterFunc(ctx, func() { _ = pipe.Close() })
+		projectConfig, input, err = readStartupConfig(pipe)
+		cancelRead()
+		if err != nil {
+			return err
+		}
+	}
 	client, err := core.New(core.Config{
 		Workspace: *workspace, StateDir: *stateDir, SandboxHelperPath: *helperPath,
-		ExclusiveState: true,
+		ExclusiveState: true, ProjectConfig: projectConfig,
 	})
 	if err != nil {
 		return err
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	service, err := rpcserver.NewWithOptions(client, token, rpcserver.ServerOptions{AllowedOrigins: allowedOrigins})
 	if err != nil {
 		_ = client.Close(context.Background())
@@ -89,7 +117,7 @@ func run(args []string) error {
 	}
 	var serveErr error
 	if mode == "stdio" {
-		serveErr = serveStdio(ctx, service)
+		serveErr = serveStdio(ctx, service, input)
 	} else {
 		serveErr = serveHTTPS(ctx, service, *listen, *tlsCert, *tlsKey)
 	}
@@ -156,10 +184,13 @@ func serveHTTPSListener(ctx context.Context, service *rpcserver.Server, listener
 	}
 }
 
-func serveStdio(ctx context.Context, service *rpcserver.Server) error {
-	input, err := runtimePipe(os.Stdin)
-	if err != nil {
-		return fmt.Errorf("open IPC input: %w", err)
+func serveStdio(ctx context.Context, service *rpcserver.Server, input io.ReadCloser) error {
+	if input == nil {
+		var err error
+		input, err = runtimePipe(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("open IPC input: %w", err)
+		}
 	}
 	output, err := runtimePipe(os.Stdout)
 	if err != nil {
