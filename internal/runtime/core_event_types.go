@@ -42,10 +42,6 @@ const (
 	EventContextCompaction        EventKind = "context_compaction"
 	EventToolRecoveryRequired     EventKind = "tool_recovery_required"
 	EventExecutionBlocked         EventKind = "execution_blocked"
-	EventMemoryStarted            EventKind = "memory_started"
-	EventMemorySaved              EventKind = "memory_saved"
-	EventMemorySkipped            EventKind = "memory_skipped"
-	EventMemoryFailed             EventKind = "memory_failed"
 )
 
 // Event is a structured runtime notification. Arguments and response payloads

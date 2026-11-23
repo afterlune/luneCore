@@ -28,38 +28,28 @@ type executionBudgetProvider struct {
 func (p *executionBudgetProvider) Name() string { return "host" }
 
 func (p *executionBudgetProvider) CreateResponse(_ context.Context, request publicmodel.ModelRequest, profile publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
-	stage := executionBudgetStage(request)
 	p.mu.Lock()
 	if p.calls == nil {
 		p.calls = make(map[string]int)
 	}
-	p.calls[stage]++
+	p.calls["model"]++
 	p.seen = append(p.seen, request)
-	callNumber := p.calls[stage]
+	callNumber := p.calls["model"]
 	p.mu.Unlock()
 
 	var response *publicmodel.ModelResponse
-	switch stage {
-	case "model":
-		if p.incompleteFirstModelResponse && callNumber == 1 && request.MaxOutputTokens != nil && *request.MaxOutputTokens < profile.MaxOutputTokens {
-			input := model.EstimateInputTokens(request)
-			return &publicmodel.ModelResponse{
-				Status: "incomplete", IncompleteDetails: &publicmodel.IncompleteDetails{Reason: "max_output_tokens"},
-				Usage: publicmodel.ResponseUsage{InputTokens: input, OutputTokens: 1, TotalTokens: input + 1},
-			}, nil
-		}
-		if callNumber == 1 {
-			response = hostToolCallResponse("budget-select", "select_tool_category", `{"category":"files"}`)
-			input := model.EstimateInputTokens(request)
-			response.Usage = publicmodel.ResponseUsage{InputTokens: input, OutputTokens: 100_000 - input, TotalTokens: 100_000}
-		} else {
-			response = hostTextResponse("The requested task is complete.")
-		}
-	case "memory":
-		response = &publicmodel.ModelResponse{Status: "completed", Output: []publicmodel.ResponseOutputItem{
-			publicmodel.OutputFunctionCall{CallID: "memory-empty", Name: "propose_workspace_memories", Arguments: `{"items":[]}`},
-		}}
-	default:
+	if p.incompleteFirstModelResponse && callNumber == 1 && request.MaxOutputTokens != nil && *request.MaxOutputTokens < profile.MaxOutputTokens {
+		input := model.EstimateInputTokens(request)
+		return &publicmodel.ModelResponse{
+			Status: "incomplete", IncompleteDetails: &publicmodel.IncompleteDetails{Reason: "max_output_tokens"},
+			Usage: publicmodel.ResponseUsage{InputTokens: input, OutputTokens: 1, TotalTokens: input + 1},
+		}, nil
+	}
+	if callNumber == 1 {
+		response = hostToolCallResponse("budget-select", "select_tool_category", `{"category":"files"}`)
+		input := model.EstimateInputTokens(request)
+		response.Usage = publicmodel.ResponseUsage{InputTokens: input, OutputTokens: 100_000 - input, TotalTokens: 100_000}
+	} else {
 		response = hostTextResponse("The requested task is complete.")
 	}
 	if response.Usage.TotalTokens == 0 {
@@ -73,25 +63,10 @@ func (p *executionBudgetProvider) StreamResponse(ctx context.Context, request pu
 	return p.CreateResponse(ctx, request, profile)
 }
 
-func executionBudgetStage(request publicmodel.ModelRequest) string {
-	for _, definition := range request.Tools {
-		function, ok := definition.(publicmodel.FunctionTool)
-		if !ok {
-			continue
-		}
-		switch function.Name {
-		case "propose_workspace_memories":
-			return "memory"
-		}
-	}
-	return "model"
-}
-
 func TestExecutionTokenBudgetPersistsAcrossPauseAndRecovery(t *testing.T) {
 	provider := &executionBudgetProvider{}
 	stateDir := t.TempDir()
 	config := runtimeTestConfig(t.TempDir(), stateDir, provider)
-	config.Memory = MemoryConfig{}
 	config.ModelConfig.Profiles["host"] = publicmodel.ModelProfile{Provider: "host", Model: "test-model", MaxOutputTokens: 2048}
 	client, err := New(config)
 	if err != nil {

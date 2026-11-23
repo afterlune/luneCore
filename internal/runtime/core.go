@@ -20,7 +20,6 @@ import (
 	"github.com/afterlune/luneCore/internal/session"
 	"github.com/afterlune/luneCore/internal/stateformat"
 	"github.com/afterlune/luneCore/internal/tool"
-	publicmemory "github.com/afterlune/luneCore/memory"
 	publicmodel "github.com/afterlune/luneCore/model"
 	publictool "github.com/afterlune/luneCore/tool"
 	graph "github.com/afterlune/luneGraph"
@@ -75,12 +74,11 @@ type Config struct {
 	CredentialStorage mcp.CredentialStorage
 }
 
-// MemoryConfig controls automatic workspace memory. Memory is enabled by
-// default; set Disabled to turn off extraction, context injection, and search.
-// Embedder is optional and enables vector-assisted retrieval.
+// MemoryConfig controls workspace memory integration via the default engram MCP
+// server. Memory is enabled by default; set Disabled to exclude the default
+// engram MCP server.
 type MemoryConfig struct {
 	Disabled bool
-	Embedder publicmemory.Embedder
 }
 
 type Core struct {
@@ -100,7 +98,6 @@ type Core struct {
 	executionDefaults    ExecutionOptions
 	callbackLimiter      *graph.Limiter
 	personalInstructions string
-	memoryConfig         MemoryConfig
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
@@ -287,7 +284,6 @@ func New(config Config) (_ *Core, err error) {
 		executionDefaults:     executionDefaults,
 		callbackLimiter:       callbackLimiter,
 		personalInstructions:  config.PersonalInstructions,
-		memoryConfig:          config.Memory,
 		liveExecutions:        make(map[string]*graph.Execution[agentgraph.State]),
 		active:                TaskState{Status: TaskIdle},
 		activeTasks:           make(map[string]TaskState),
@@ -309,8 +305,20 @@ func New(config Config) (_ *Core, err error) {
 		return nil, err
 	}
 	attachmentLimits := c.ProjectAttachmentLimits()
+	mcpServers := projectConfig.MCPServers
+	if config.Memory.Disabled && len(mcpServers) > 0 {
+		if _, exists := mcpServers["engram"]; exists {
+			cloned := make(map[string]projectconfig.MCPServerConfig, len(mcpServers)-1)
+			for name, server := range mcpServers {
+				if name != "engram" {
+					cloned[name] = server
+				}
+			}
+			mcpServers = cloned
+		}
+	}
 	mcpManager, err := mcp.NewManager(mcp.Options{
-		Workspace: workspace, StateDir: stateDir, Servers: projectConfig.MCPServers, Registry: registry,
+		Workspace: workspace, StateDir: stateDir, Servers: mcpServers, Registry: registry,
 		Limits:             mcp.Limits{MaxBinaryBlocks: attachmentLimits.MaxFiles, MaxFileBytes: attachmentLimits.MaxFileBytes, MaxTotalBytes: attachmentLimits.MaxTotalBytes},
 		Logger:             logger,
 		RequestInteraction: c.requestUserInteraction,

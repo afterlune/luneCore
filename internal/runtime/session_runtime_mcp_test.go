@@ -531,3 +531,28 @@ func mustHostJSON(value any) []byte {
 	data, _ := json.Marshal(value)
 	return data
 }
+
+func TestMemoryConfigDisabledExcludesDefaultEngramMCPServer(t *testing.T) {
+	provider := &scriptedHostProvider{}
+	enabledConfig := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
+	enabledConfig.Memory = MemoryConfig{Disabled: false}
+	enabledClient, err := New(enabledConfig)
+	if err != nil {
+		t.Fatalf("New(Memory.Disabled=false): %v", err)
+	}
+	defer func() { _ = enabledClient.Close(context.Background()) }()
+	if servers := enabledClient.MCPServers(); len(servers) != 1 || servers[0].Name != "engram" {
+		t.Fatalf("MCPServers with memory enabled = %#v, want default engram server", servers)
+	}
+
+	disabledConfig := runtimeTestConfig(t.TempDir(), t.TempDir(), provider)
+	disabledConfig.Memory = MemoryConfig{Disabled: true}
+	disabledClient, err := New(disabledConfig)
+	if err != nil {
+		t.Fatalf("New(Memory.Disabled=true): %v", err)
+	}
+	defer func() { _ = disabledClient.Close(context.Background()) }()
+	if servers := disabledClient.MCPServers(); len(servers) != 0 {
+		t.Fatalf("MCPServers with memory disabled = %#v, want empty", servers)
+	}
+}

@@ -27,7 +27,6 @@ const (
 const (
 	UsagePurposeMain       = coreruntime.UsagePurposeMain
 	UsagePurposeCompaction = coreruntime.UsagePurposeCompaction
-	UsagePurposeMemory     = coreruntime.UsagePurposeMemory
 	UsagePurposeTeam       = coreruntime.UsagePurposeTeam
 )
 
@@ -66,10 +65,6 @@ const (
 	EventContextCompaction        = coreruntime.EventContextCompaction
 	EventToolRecoveryRequired     = coreruntime.EventToolRecoveryRequired
 	EventExecutionBlocked         = coreruntime.EventExecutionBlocked
-	EventMemoryStarted            = coreruntime.EventMemoryStarted
-	EventMemorySaved              = coreruntime.EventMemorySaved
-	EventMemorySkipped            = coreruntime.EventMemorySkipped
-	EventMemoryFailed             = coreruntime.EventMemoryFailed
 )
 
 const (
