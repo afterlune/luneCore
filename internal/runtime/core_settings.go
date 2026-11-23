@@ -55,11 +55,12 @@ func (c *Core) ListModelProfiles() []ModelOption {
 			m = profile.Model
 		}
 		options = append(options, ModelOption{
-			Profile:       id,
-			Provider:      profile.Provider,
-			Model:         m,
-			DisplayName:   profile.DisplayName,
-			ContextWindow: profile.ContextWindow,
+			Profile:             id,
+			Provider:            profile.Provider,
+			Model:               m,
+			DisplayName:         profile.DisplayName,
+			ContextWindow:       profile.ContextWindow,
+			SupportsInputImages: profile.SupportsInputImages,
 		})
 	}
 	sort.Slice(options, func(i, j int) bool { return options[i].Profile < options[j].Profile })

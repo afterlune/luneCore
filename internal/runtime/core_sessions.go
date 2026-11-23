@@ -3,6 +3,7 @@ package runtime
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -202,6 +203,11 @@ func (c *Core) deleteSessionOwned(ctx context.Context, sessionID string) error {
 }
 
 func (c *Core) RewindSession(ctx context.Context, sessionID string, userTurns int) (int, error) {
+	return c.RewindSessionIfCurrent(ctx, sessionID, userTurns, "")
+}
+
+// RewindSessionIfCurrent checks the preview's history digest before changing it.
+func (c *Core) RewindSessionIfCurrent(ctx context.Context, sessionID string, userTurns int, digest string) (int, error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return 0, errors.New("core, context, and session id are required")
 	}
@@ -211,13 +217,13 @@ func (c *Core) RewindSession(ctx context.Context, sessionID string, userTurns in
 	var removed int
 	err := c.withSessionLock(sessionID, func() error {
 		var err error
-		removed, err = c.rewindSessionOwned(ctx, sessionID, userTurns)
+		removed, err = c.rewindSessionOwned(ctx, sessionID, userTurns, digest)
 		return err
 	})
 	return removed, err
 }
 
-func (c *Core) rewindSessionOwned(ctx context.Context, sessionID string, userTurns int) (int, error) {
+func (c *Core) rewindSessionOwned(ctx context.Context, sessionID string, userTurns int, digest string) (int, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.closed || c.closing {
@@ -243,6 +249,9 @@ func (c *Core) rewindSessionOwned(ctx context.Context, sessionID string, userTur
 	saved, err := c.GetSession(ctx, sessionID)
 	if err != nil {
 		return 0, err
+	}
+	if digest != "" && digest != fmt.Sprintf("%x", sha256.Sum256(saved.History)) {
+		return 0, errors.New("session history changed; preview the rewind again")
 	}
 	var history model.ResponseInput
 	if len(saved.History) > 0 && string(saved.History) != "null" {

@@ -20,6 +20,7 @@ import (
 )
 
 type rpcBarrierProvider struct {
+	tools     chan []publicmodel.ResponseTool
 	entered   chan struct{}
 	release   chan struct{}
 	cancelled chan struct{}
@@ -55,7 +56,10 @@ func (p *rpcQuestionProvider) StreamResponse(ctx context.Context, request public
 
 func (*rpcBarrierProvider) Name() string { return "fixture" }
 
-func (p *rpcBarrierProvider) CreateResponse(ctx context.Context, _ publicmodel.ModelRequest, _ publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
+func (p *rpcBarrierProvider) CreateResponse(ctx context.Context, request publicmodel.ModelRequest, _ publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
+	if p.tools != nil {
+		p.tools <- request.Tools
+	}
 	p.entered <- struct{}{}
 	select {
 	case <-p.release:

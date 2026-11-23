@@ -40,6 +40,9 @@ func (c *Core) drainQueue(sessionID string) (drainErr error) {
 		if err := c.releasePendingSessionLock(sessionID); err != nil {
 			c.logger.Warn("release idle session lock", "session_id", sessionID, "error", err)
 		}
+		if state, ok := c.StateForSession(sessionID); ok && state.Status == TaskRunning {
+			return
+		}
 		queued, err := c.sessions.QueuedTurns(context.Background(), sessionID)
 		if err != nil {
 			return
@@ -103,7 +106,7 @@ func (c *Core) drainQueue(sessionID string) (drainErr error) {
 		}
 		c.queueMutationMu.Lock()
 		c.mu.RLock()
-		if c.closed || c.closing {
+		if c.closed || c.closing || c.sessionIsRunningLocked(sessionID) {
 			c.mu.RUnlock()
 			c.queueMutationMu.Unlock()
 			return nil

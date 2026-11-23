@@ -59,11 +59,12 @@ type MCPServerStatus struct {
 // ModelOption is a model profile exposed to clients without leaking the
 // internal model package through Core's public API.
 type ModelOption struct {
-	Profile       string `json:"profile"`
-	Provider      string `json:"provider"`
-	Model         string `json:"model"`
-	DisplayName   string `json:"displayName,omitempty"`
-	ContextWindow int64  `json:"contextWindow,omitempty"`
+	Profile             string `json:"profile"`
+	Provider            string `json:"provider"`
+	Model               string `json:"model"`
+	DisplayName         string `json:"displayName,omitempty"`
+	ContextWindow       int64  `json:"contextWindow,omitempty"`
+	SupportsInputImages bool   `json:"supportsInputImages,omitempty"`
 }
 
 type SessionApproval = publictool.SessionApproval

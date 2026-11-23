@@ -27,12 +27,13 @@ type ProviderConfig struct {
 
 // ModelProfile binds a stable profile name to a provider and model ID.
 type ModelProfile struct {
-	Provider           string `json:"provider"`
-	Model              string `json:"model"`
-	DisplayName        string `json:"displayName,omitempty"`
-	ContextWindow      int64  `json:"contextWindow,omitempty"`
-	MaxOutputTokens    int64  `json:"maxOutputTokens,omitempty"`
-	SupportsInputAudio bool   `json:"supportsInputAudio,omitempty"`
+	Provider            string `json:"provider"`
+	Model               string `json:"model"`
+	DisplayName         string `json:"displayName,omitempty"`
+	ContextWindow       int64  `json:"contextWindow,omitempty"`
+	MaxOutputTokens     int64  `json:"maxOutputTokens,omitempty"`
+	SupportsInputImages bool   `json:"supportsInputImages,omitempty"`
+	SupportsInputAudio  bool   `json:"supportsInputAudio,omitempty"`
 }
 
 // EffectiveDisplayName returns the friendly display name, falling back to Model.

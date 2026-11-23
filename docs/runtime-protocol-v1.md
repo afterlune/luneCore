@@ -97,6 +97,30 @@ same ID with the same request returns the original queue and execution IDs.
 Reusing it with different request content returns error data code
 `submission_conflict`. IDs are scoped to their session.
 
+### Optional frontend extensions
+
+`runtime.hello` returns a `capabilities` array on builds with extensions. Older
+clients can ignore it and newer clients can keep using the base methods.
+
+| Capability | Method and fields |
+|---|---|
+| `session.search` | `session.search` filters titles and user/assistant message text case insensitively. Accepts `query`, `offset`, `limit`, and `includeArchived`. |
+| `session.fork` | `session.fork` takes `sessionId` and returns the copied session with a new ID and no queued work. |
+| `session.rewind` | `session.rewindPreview` takes `sessionId` and `turns`, returning `removed`, `excerpts`, and `digest`. Pass the same fields and returned digest to `session.rewind`. Changed history invalidates the preview. |
+| `session.compact` | `session.compact` takes `sessionId` and returns the compaction result. An active task, queued turn or paused checkpoint prevents compaction. |
+| `turn.cancelQueued` | `turn.cancelQueued` takes `sessionId` and `executionId`. It can only cancel a waiting turn. |
+| `turn.plan` | `turn.submit` accepts `planMode: true`. Core applies its read-only tool policy, including when a queued turn later starts. Plan submissions run as separate turns. |
+| `turn.attachments` | `turn.submit` accepts `attachments` with `name`, `mediaType`, and standard base64 `data`. For these requests `input` is a string. |
+| `session.historyPage` | `session.historyPage` takes `sessionId` and optional `offset` and `digest`. Returns `items`, `nextOffset`, `done`, and `digest`. Copy the digest into subsequent requests and restart if the history changes. |
+
+Attachment names are basenames. Supported media types are `text/plain`,
+`text/markdown`, `text/csv`, `image/png`, and `image/jpeg`. Attach up to five
+files with a combined decoded size of at most 4 MiB. Each image can be at most
+2 MiB and each UTF-8 text file at most 128 KiB. Core applies workspace image
+limits as well. Set `supportsInputImages` on the configured model profile to
+admit image attachments. A successful submission persists the attachment as part
+of its user message and uses the same idempotency receipt as a text turn.
+
 For each subscription, the server sends a JSON-RPC notification with method
 `runtime.event` and params `{ "subscriptionId": "...", "event": { ... } }`.
 Events with a non-zero cursor are durable. Model stream increments are live

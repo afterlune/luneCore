@@ -64,6 +64,13 @@ func summarizeSession(session core.Session) sessionSummary {
 
 func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcError) {
 	switch method {
+	case "session.historyPage":
+		return c.historyPage(raw)
+	case "session.search":
+		return c.searchSessions(raw)
+	case "session.fork", "session.rewindPreview", "session.rewind", "session.compact", "turn.cancelQueued":
+		return c.manageSession(method, raw)
+
 	case "runtime.hello":
 		var params helloParams
 		if err := c.readParams(raw, &params); err != nil {
@@ -74,6 +81,7 @@ func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcErro
 			"client":          map[string]string{"name": params.ClientName, "version": params.ClientVersion},
 			"transports":      []string{"stdio", "wss"},
 			"maxMessageBytes": MaxMessageBytes,
+			"capabilities":    []string{"session.search", "session.fork", "session.rewind", "session.compact", "turn.cancelQueued", "turn.plan", "turn.attachments", "session.historyPage"},
 		}, nil
 	case "session.create":
 		var params struct {
@@ -318,6 +326,8 @@ type submitParams struct {
 	SubmissionID  string                `json:"submissionId"`
 	Input         json.RawMessage       `json:"input"`
 	Mode          core.SubmissionMode   `json:"mode"`
+	PlanMode      bool                  `json:"planMode,omitempty"`
+	Attachments   []attachment          `json:"attachments,omitempty"`
 	Model         string                `json:"model,omitempty"`
 	MaxToolRounds int                   `json:"maxToolRounds,omitempty"`
 	Execution     core.ExecutionOptions `json:"execution,omitempty"`
@@ -334,6 +344,9 @@ func (c *connection) submitTurn(raw json.RawMessage) (any, *rpcError) {
 	if len(params.Input) == 0 || !json.Valid(params.Input) {
 		return nil, &rpcError{Code: -32602, Message: "input must be valid JSON"}
 	}
+	if params.PlanMode && params.Mode == core.SteerInput {
+		return nil, &rpcError{Code: -32602, Message: "a Plan turn must run separately from the current task"}
+	}
 	if params.Mode == "" {
 		params.Mode = core.StartIfIdle
 	}
@@ -342,8 +355,15 @@ func (c *connection) submitTurn(raw json.RawMessage) (any, *rpcError) {
 		return nil, applicationError(err)
 	}
 	digest := sha256.Sum256(digestInput)
+	input := params.Input
+	if len(params.Attachments) > 0 {
+		input, err = attachmentInput(params)
+		if err != nil {
+			return nil, &rpcError{Code: -32602, Message: err.Error()}
+		}
+	}
 	request := core.TurnRequest{
-		Input: core.TaskInput{Raw: params.Input}, Model: params.Model,
+		Input: core.TaskInput{Raw: input}, Model: params.Model, PlanMode: params.PlanMode, RequireImageProfile: len(params.Attachments) > 0,
 		MaxToolRounds: params.MaxToolRounds, Execution: params.Execution,
 	}
 	return c.withRuntime(c.ctx, params.SessionID, func(runtime *core.SessionRuntime) (any, error) {

@@ -70,8 +70,15 @@ func (c *Core) submitTurnAdmittedWithID(ctx context.Context, sessionID string, r
 	if err := validatePermissionOverride(permissionOverride); err != nil {
 		return TurnSubmission{}, nil, err
 	}
-	if _, err := c.GetSession(ctx, sessionID); err != nil {
+	saved, err := c.GetSession(ctx, sessionID)
+	if err != nil {
 		return TurnSubmission{}, nil, err
+	}
+	if request.RequireImageProfile && len(model.TaskInputImages(input)) != 0 {
+		profile, ok := c.models.Profile(saved.Settings.ModelProfile)
+		if !ok || !profile.SupportsInputImages || (request.Model != "" && request.Model != profile.Model) {
+			return TurnSubmission{}, nil, fmt.Errorf("model profile %q is not configured for this image input", saved.Settings.ModelProfile)
+		}
 	}
 	executionID, err := newID()
 	if err != nil {

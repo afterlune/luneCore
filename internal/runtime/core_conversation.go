@@ -86,11 +86,16 @@ func (c *Core) compactOwned(ctx context.Context, sessionID string) (agentgraph.C
 		AutoCompact: effective.AutoCompact, AutoCompactThreshold: effective.AutoCompactThreshold,
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 	}
-	taskID, err := c.beginTask(ctx, sessionID, "", settings, profile, profile.Model, compactOptions, saved.UpdatedAt, nil)
+	taskID, err := c.beginManualCompaction(ctx, sessionID, settings, profile, compactOptions, saved)
 	if err != nil {
 		return agentgraph.CompactionResult{}, err
 	}
-	defer c.endTask(sessionID, taskID, nil)
+	defer func() {
+		c.endTask(sessionID, taskID, nil)
+		if queued, err := c.sessions.QueuedTurns(context.Background(), sessionID); err == nil && len(queued) > 0 {
+			c.scheduleQueueDrain(sessionID)
+		}
+	}()
 	taskState, _ := c.StateForSession(sessionID)
 	ctx = publictool.WithCallIdentity(ctx, publictool.CallIdentity{
 		SessionID: sessionID, TaskID: taskState.TaskID, RunID: c.runtime.CheckpointID(sessionID), AgentID: "lead",
@@ -158,4 +163,15 @@ func (c *Core) resetTaskUsage(ctx context.Context, sessionID string) error {
 
 func (c *Core) saveHistoryUsage(ctx context.Context, sessionID string, runtime *agentruntime.Responder) error {
 	return c.setSessionConversation(ctx, sessionID, runtime.SessionHistory(), runtime.ModelContextHistory(), runtime.ContextKey(), runtime.ConversationState())
+}
+
+func (c *Core) beginManualCompaction(ctx context.Context, sessionID string, settings SessionSettings, profile model.ModelProfile, options agentgraph.TaskOptions, saved Session) (string, error) {
+	pending, err := c.hasPending(ctx, sessionID)
+	if err != nil {
+		return "", err
+	}
+	if pending {
+		return "", errors.New("cannot compact a session while a task is paused")
+	}
+	return c.beginTask(ctx, sessionID, "", settings, profile, profile.Model, options, saved.UpdatedAt, nil)
 }

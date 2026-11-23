@@ -52,8 +52,10 @@ const (
 type TurnRequest struct {
 	automaticGoal bool
 	// PermissionMode pins this turn to a host-selected mode. Empty uses Core defaults.
-	PermissionMode         PermissionMode
-	Input                  TaskInput
+	PermissionMode PermissionMode
+	Input          TaskInput
+	// RequireImageProfile applies the model capability check to frontend attachments.
+	RequireImageProfile    bool
 	Model                  string
 	MaxToolRounds          int
 	Execution              ExecutionOptions
