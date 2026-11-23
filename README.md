@@ -168,7 +168,7 @@ To distinguish between historical replay and subsequent real-time execution, use
 
 ### Standalone Core and cross-process clients
 
-Go frontends can embed the Core package. Foreign-language frontends can launch a bundled `lune-core stdio` child and use JSON-RPC 2.0 over standard input and output. To share one Core across devices, run `lune-core serve` with TLS and a Bearer token, then connect clients over WSS. Each request names its session, allowing one Core to serve multiple independent sessions. See the [runtime protocol v1](docs/runtime-protocol-v1.md) for methods, fields, and a Python stdio example.
+Go frontends can embed the Core package. Foreign-language frontends can launch a bundled `lune-core stdio` child and use JSON-RPC 2.0 over standard input and output. To share one Core across devices, run `lune-core serve` with TLS and a Bearer token, then connect clients over WSS. Browser clients use the native WebSocket API with the documented auth subprotocol and an explicit Origin allowlist. Each request names its session, allowing one Core to serve multiple independent sessions. See the [runtime protocol v1](docs/runtime-protocol-v1.md) for methods, fields, and a Python stdio example.
 
 ## Submission modes and queue control
 

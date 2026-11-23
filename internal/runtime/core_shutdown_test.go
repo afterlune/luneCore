@@ -67,12 +67,25 @@ func TestShutdownPreservesActiveCheckpointAndQueuedTurns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if err := client.BeginShutdown(); err != nil {
+		t.Fatalf("BeginShutdown: %v", err)
+	}
+	if _, err := runtime.SubmitTurn(context.Background(), TurnRequest{Input: mustSettingsTaskInput(t, "rejected during shutdown")}, QueueInput); err == nil {
+		t.Fatal("Core admitted a turn after BeginShutdown")
+	}
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	err = client.Shutdown(shutdownCtx)
-	cancel()
-	if err != nil {
-		t.Fatalf("Shutdown: %v", err)
+	shutdownResults := make(chan error, 2)
+	for range 2 {
+		go func() {
+			shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			shutdownResults <- client.Shutdown(shutdownCtx)
+		}()
+	}
+	for range 2 {
+		if err := <-shutdownResults; err != nil {
+			t.Fatalf("concurrent Shutdown: %v", err)
+		}
 	}
 
 	reopened, err := New(config)

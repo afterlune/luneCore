@@ -35,6 +35,10 @@ func TestOpenPreservesVersionFifteenState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if _, err := db.Exec(`DROP TABLE turn_submission_dedup`); err != nil {
+		_ = db.Close()
+		t.Fatal(err)
+	}
 	if _, err := db.Exec(`PRAGMA user_version = 15`); err != nil {
 		_ = db.Close()
 		t.Fatal(err)

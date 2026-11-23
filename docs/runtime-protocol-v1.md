@@ -17,14 +17,42 @@ Remote frontends connect to `wss://host:port/v1/runtime`. The server requires
 TLS certificate and key files and a non-empty token file. Send the token in the
 HTTP upgrade request as `Authorization: Bearer <token>`. The server defaults to
 `127.0.0.1:18092`. Set `--listen 0.0.0.0:18092` only when the service should
-accept connections from other machines. Browser clients are not supported by
-this version.
+accept connections from other machines. The browser's native WebSocket API
+cannot set an `Authorization` header, so browser clients send the token as a
+WebSocket auth subprotocol instead. Cross-origin browser apps must be listed
+with `--web-origins`; the server always permits its own origin.
 
 Both connections carry JSON-RPC 2.0 objects. Stdio uses newline-delimited JSON.
 WebSocket uses one text message per JSON object. The maximum message size is
 32 MiB. Requests may be processed concurrently, so clients match responses by
 their JSON-RPC `id`. Notifications have no `id`. After connecting, call
 `runtime.hello` and require `protocolVersion` to equal `1`.
+
+For browser clients, offer the protocol `lune-core.jsonrpc.v1` and a second
+subprotocol `lune-core-auth.<token>` where `<token>` is the token encoded as
+unpadded Base64 URL-safe text. The server negotiates only
+`lune-core.jsonrpc.v1`; the auth subprotocol is never selected. For example:
+
+```js
+function base64url(text) {
+  const bytes = new TextEncoder().encode(text);
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
+}
+
+const socket = new WebSocket("wss://core.example.com:18092/v1/runtime", [
+  "lune-core.jsonrpc.v1",
+  "lune-core-auth." + base64url(token),
+]);
+```
+
+The browser must trust the server's TLS certificate. Configure cross-origin
+access with exact origins, for example
+`--web-origins https://app.example.com,http://localhost:3000`. Keep the token
+in frontend memory where possible and do not put it in the WebSocket URL or a
+public static JavaScript bundle. Obtain it from the user or a protected
+application bootstrap.
 
 ## Methods
 
@@ -86,7 +114,8 @@ application code in `error.data.code`.
 lune-core stdio --workspace /path/to/workspace --sandbox-helper /path/to/lune-sandbox
 lune-core serve --workspace /path/to/workspace --listen 0.0.0.0:18092 \
   --tls-cert /path/to/server.crt --tls-key /path/to/server.key \
-  --token-file /path/to/runtime.token
+  --token-file /path/to/runtime.token \
+  --web-origins https://app.example.com
 ```
 
 The standalone process exclusively owns its state directory. It refuses to
@@ -121,7 +150,16 @@ the server could not admit a request because the concurrent request limit
 was reached.
 
 A WSS client disconnect leaves admitted work running. Closing stdio input or
-stopping the service stops new execution, preserves queued turns and pauses
-active turns that have a resumable checkpoint. After starting Core again,
-opening the session lets the queue drain. Use `turn.recover` to resume a paused
-turn, or answer its pending clarification if one remains.
+stopping the service first closes Core admission and cancels active turns, then
+joins RPC handlers. The Core shutdown path preserves queued turns and pauses
+active turns that have a resumable checkpoint. An RPC `turn.submit` response
+that was lost during disconnect or shutdown can be retried with the same
+`submissionId`; it returns the original execution ID rather than enqueuing a
+second turn. After starting Core again, opening the session lets the queue
+drain. Use `turn.recover` to resume a paused turn, or answer its pending
+clarification if one remains.
+
+Each frontend can own a separate session while sharing one Core. Frontends that
+intentionally use the same `sessionId` also share its history and event stream;
+clients should keep their session IDs distinct when they need independent
+conversations.

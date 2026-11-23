@@ -136,6 +136,7 @@ type Core struct {
 	closing               bool
 	preserveOnClose       bool
 	shutdownDrainErr      error
+	closeAttempt          chan struct{}
 	closeDone             chan struct{}
 	closeErr              error
 }

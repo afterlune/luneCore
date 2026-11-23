@@ -6,7 +6,9 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strings"
@@ -38,6 +40,7 @@ func run(args []string) error {
 	tlsCert := flags.String("tls-cert", "", "TLS certificate PEM file")
 	tlsKey := flags.String("tls-key", "", "TLS private key PEM file")
 	tokenFile := flags.String("token-file", "", "file containing the remote Bearer token")
+	webOrigins := flags.String("web-origins", "", "comma-separated exact browser origins allowed to connect")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
 	}
@@ -47,8 +50,12 @@ func run(args []string) error {
 	if mode != "stdio" && mode != "serve" {
 		return fmt.Errorf("unknown mode %q, expected stdio or serve", mode)
 	}
-	if mode == "stdio" && (flags.Lookup("listen").Value.String() != "127.0.0.1:18092" || *tlsCert != "" || *tlsKey != "" || *tokenFile != "") {
+	if mode == "stdio" && (flags.Lookup("listen").Value.String() != "127.0.0.1:18092" || *tlsCert != "" || *tlsKey != "" || *tokenFile != "" || *webOrigins != "") {
 		return errors.New("serve options cannot be used with stdio")
+	}
+	allowedOrigins, err := parseWebOrigins(*webOrigins)
+	if err != nil {
+		return err
 	}
 
 	var token string
@@ -75,7 +82,7 @@ func run(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	service, err := rpcserver.New(client, token)
+	service, err := rpcserver.NewWithOptions(client, token, rpcserver.ServerOptions{AllowedOrigins: allowedOrigins})
 	if err != nil {
 		_ = client.Close(context.Background())
 		return err
@@ -92,15 +99,40 @@ func run(args []string) error {
 	return errors.Join(serveErr, closeErr)
 }
 
+func parseWebOrigins(value string) ([]string, error) {
+	if strings.TrimSpace(value) == "" {
+		return nil, nil
+	}
+	var origins []string
+	for _, item := range strings.Split(value, ",") {
+		origin := strings.TrimSpace(item)
+		parsed, err := url.Parse(origin)
+		if origin == "" || err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" ||
+			parsed.User != nil || parsed.Path != "" || parsed.RawQuery != "" || parsed.Fragment != "" || strings.Contains(origin, "*") {
+			return nil, fmt.Errorf("invalid web origin %q: provide an exact http:// or https:// origin", origin)
+		}
+		origins = append(origins, origin)
+	}
+	return origins, nil
+}
+
 func serveHTTPS(ctx context.Context, service *rpcserver.Server, address, certificate, key string) error {
+	listener, err := net.Listen("tcp", address)
+	if err != nil {
+		return err
+	}
+	return serveHTTPSListener(ctx, service, listener, certificate, key)
+}
+
+func serveHTTPSListener(ctx context.Context, service *rpcserver.Server, listener net.Listener, certificate, key string) error {
 	server := &http.Server{
-		Addr: address, Handler: service,
+		Addr: listener.Addr().String(), Handler: service,
 		ReadHeaderTimeout: 5 * time.Second,
 		IdleTimeout:       90 * time.Second,
 	}
 	result := make(chan error, 1)
 	go func() {
-		err := server.ListenAndServeTLS(certificate, key)
+		err := server.ServeTLS(listener, certificate, key)
 		if errors.Is(err, http.ErrServerClosed) {
 			err = nil
 		}
@@ -116,6 +148,9 @@ func serveHTTPS(ctx context.Context, service *rpcserver.Server, address, certifi
 		defer cancel()
 		connectionErr := service.Shutdown(shutdownCtx)
 		shutdownErr := server.Shutdown(shutdownCtx)
+		if shutdownErr != nil {
+			shutdownErr = errors.Join(shutdownErr, server.Close())
+		}
 		serveErr := <-result
 		return errors.Join(connectionErr, shutdownErr, serveErr)
 	}

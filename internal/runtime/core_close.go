@@ -11,6 +11,28 @@ func (c *Core) Close(ctx context.Context) error {
 	return c.close(ctx, false)
 }
 
+// BeginShutdown closes Core admission and cancels active turns. Hosts should
+// call it as soon as they receive a shutdown signal, before joining RPC calls.
+func (c *Core) BeginShutdown() error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.closed || c.closeDone != nil || c.preserveOnClose {
+		return nil
+	}
+	if c.closing {
+		return errors.New("core is already closing")
+	}
+	c.closing = true
+	c.preserveOnClose = true
+	for _, cancel := range c.taskCancels {
+		cancel()
+	}
+	return nil
+}
+
 // Shutdown stops queue admission and pauses active turns before closing Core.
 // Standalone hosts call it after stopping and joining their RPC handlers.
 func (c *Core) Shutdown(ctx context.Context) error {
@@ -27,6 +49,45 @@ func (c *Core) close(ctx context.Context, preserve bool) error {
 	if c == nil {
 		return nil
 	}
+	if preserve {
+		if err := c.BeginShutdown(); err != nil {
+			return err
+		}
+	}
+	var attempt chan struct{}
+	for {
+		c.mu.Lock()
+		if c.closeDone != nil {
+			done := c.closeDone
+			c.mu.Unlock()
+			return c.waitClosed(ctx, done)
+		}
+		if c.closed {
+			c.mu.Unlock()
+			return nil
+		}
+		if waiting := c.closeAttempt; waiting != nil {
+			c.mu.Unlock()
+			select {
+			case <-waiting:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		attempt = make(chan struct{})
+		c.closeAttempt = attempt
+		c.mu.Unlock()
+		break
+	}
+	defer func() {
+		c.mu.Lock()
+		if c.closeAttempt == attempt {
+			c.closeAttempt = nil
+			close(attempt)
+		}
+		c.mu.Unlock()
+	}()
 	runtimeConfigLocked := c.runtimeConfigMu.TryLock()
 	closingAfterQueueDrain := false
 	c.mu.Lock()
@@ -45,7 +106,7 @@ func (c *Core) close(ctx context.Context, preserve bool) error {
 		}
 		return nil
 	}
-	if c.closing {
+	if c.closing && !(preserve && c.preserveOnClose) {
 		c.mu.Unlock()
 		if runtimeConfigLocked {
 			c.runtimeConfigMu.Unlock()
@@ -60,21 +121,20 @@ func (c *Core) close(ctx context.Context, preserve bool) error {
 		return errors.New("cannot close core while a task is running")
 	}
 	if preserve {
-		c.closing = true
-		c.preserveOnClose = true
-		for _, cancel := range c.taskCancels {
-			cancel()
-		}
 		c.mu.Unlock()
 		if runtimeConfigLocked {
 			c.runtimeConfigMu.Unlock()
 		}
 		if err := waitContext(ctx, &c.queueDrainWG); err != nil {
-			c.abortClose()
+			if !preserve {
+				c.abortClose()
+			}
 			return err
 		}
 		if err := lockContext(ctx, &c.runtimeConfigMu); err != nil {
-			c.abortClose()
+			if !preserve {
+				c.abortClose()
+			}
 			return err
 		}
 		runtimeConfigLocked = true
@@ -160,12 +220,16 @@ func (c *Core) close(ctx context.Context, preserve bool) error {
 		}
 	}
 	if err := waitContext(ctx, &c.sessionOps); err != nil {
-		c.abortClose()
+		if !preserve {
+			c.abortClose()
+		}
 		return err
 	}
 	cleanupErr := c.commands.Close(ctx)
 	if cleanupErr != nil {
-		c.abortClose()
+		if !preserve {
+			c.abortClose()
+		}
 		return cleanupErr
 	}
 	c.mu.Lock()

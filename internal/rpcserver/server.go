@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -23,9 +24,22 @@ const maxServerRequests = 16
 const maxSubscriptionsPerConnection = 16
 const maxConnections = 256
 
+const WebSocketSubprotocol = "lune-core.jsonrpc.v1"
+const browserAuthSubprotocolPrefix = "lune-core-auth."
+
+type ServerOptions struct {
+	// AllowedOrigins adds browser origins allowed to connect cross-origin.
+	// The WebSocket request host is always allowed.
+	AllowedOrigins []string
+}
+
 type Server struct {
-	core  *core.Core
-	token string
+	core    *core.Core
+	token   string
+	origins []string
+	// writeTimeout is set only by package tests; production uses the protocol
+	// default below.
+	writeTimeout time.Duration
 
 	mu       sync.Mutex
 	closed   bool
@@ -35,11 +49,15 @@ type Server struct {
 }
 
 func New(client *core.Core, token string) (*Server, error) {
+	return NewWithOptions(client, token, ServerOptions{})
+}
+
+func NewWithOptions(client *core.Core, token string, options ServerOptions) (*Server, error) {
 	if client == nil {
 		return nil, errors.New("core is required")
 	}
 	return &Server{
-		core: client, token: strings.TrimSpace(token),
+		core: client, token: strings.TrimSpace(token), origins: append([]string(nil), options.AllowedOrigins...),
 		clients:  make(map[*websocket.Conn]context.CancelFunc),
 		requests: make(chan struct{}, maxServerRequests),
 	}, nil
@@ -69,6 +87,7 @@ func (s *Server) ServeStdio(ctx context.Context, input io.ReadCloser, output io.
 		return err
 	})
 	defer func() {
+		_ = s.core.BeginShutdown()
 		client.cancel()
 		client.join()
 		<-writerDone
@@ -125,18 +144,10 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "remote authentication is not configured", http.StatusServiceUnavailable)
 		return
 	}
-	if s.token != "" {
-		const prefix = "Bearer "
-		header := r.Header.Get("Authorization")
-		provided := ""
-		if strings.HasPrefix(header, prefix) {
-			provided = strings.TrimSpace(strings.TrimPrefix(header, prefix))
-		}
-		if len(provided) != len(s.token) || subtle.ConstantTimeCompare([]byte(provided), []byte(s.token)) != 1 {
-			w.Header().Set("WWW-Authenticate", `Bearer realm="lune-core"`)
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	if !s.authorized(r) {
+		w.Header().Set("WWW-Authenticate", `Bearer realm="lune-core"`)
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
 	}
 	s.mu.Lock()
 	connectionLimitReached := len(s.clients) >= maxConnections
@@ -145,7 +156,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "connection limit reached", http.StatusServiceUnavailable)
 		return
 	}
-	conn, err := websocket.Accept(w, r, nil)
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		Subprotocols: []string{WebSocketSubprotocol}, OriginPatterns: s.origins,
+	})
 	if err != nil {
 		return
 	}
@@ -180,7 +193,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			case <-client.ctx.Done():
 				return
 			case <-ticker.C:
-				pingCtx, cancelPing := context.WithTimeout(client.ctx, writeTimeout)
+				pingCtx, cancelPing := context.WithTimeout(client.ctx, s.writeDeadline())
 				err := conn.Ping(pingCtx)
 				cancelPing()
 				if err != nil {
@@ -206,6 +219,37 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	<-pingDone
 }
 
+func (s *Server) authorized(r *http.Request) bool {
+	if s.token == "" {
+		return false
+	}
+	provided := ""
+	const bearerPrefix = "Bearer "
+	if header := r.Header.Get("Authorization"); strings.HasPrefix(header, bearerPrefix) {
+		provided = strings.TrimSpace(strings.TrimPrefix(header, bearerPrefix))
+	}
+	if len(provided) == len(s.token) && subtle.ConstantTimeCompare([]byte(provided), []byte(s.token)) == 1 {
+		return true
+	}
+	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, protocol := range strings.Split(header, ",") {
+			protocol = strings.TrimSpace(protocol)
+			if !strings.HasPrefix(protocol, browserAuthSubprotocolPrefix) {
+				continue
+			}
+			encoded := strings.TrimPrefix(protocol, browserAuthSubprotocolPrefix)
+			decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+			if err != nil || len(decoded) != len(s.token) {
+				continue
+			}
+			if subtle.ConstantTimeCompare(decoded, []byte(s.token)) == 1 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // Shutdown stops admission and joins the handlers for upgraded connections.
 func (s *Server) Shutdown(ctx context.Context) error {
 	if ctx == nil {
@@ -213,6 +257,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	s.closed = true
+	beginErr := s.core.BeginShutdown()
 	for _, cancel := range s.clients {
 		cancel()
 	}
@@ -224,9 +269,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	}()
 	select {
 	case <-done:
-		return nil
+		return beginErr
 	case <-ctx.Done():
-		return ctx.Err()
+		return errors.Join(beginErr, ctx.Err())
 	}
 }
 
@@ -262,6 +307,13 @@ type connection struct {
 const maxSendMessages = 64
 const writeTimeout = 5 * time.Second
 
+func (s *Server) writeDeadline() time.Duration {
+	if s != nil && s.writeTimeout > 0 {
+		return s.writeTimeout
+	}
+	return writeTimeout
+}
+
 func newConnection(server *Server, parent context.Context) *connection {
 	ctx, cancel := context.WithCancel(parent)
 	return &connection{
@@ -284,7 +336,7 @@ func (c *connection) startWriter(write func(context.Context, []byte) error) <-ch
 				if c.ctx.Err() != nil {
 					return
 				}
-				ctx, cancel := context.WithTimeout(c.ctx, writeTimeout)
+				ctx, cancel := context.WithTimeout(c.ctx, c.server.writeDeadline())
 				err := write(ctx, data)
 				cancel()
 				c.sendMu.Lock()

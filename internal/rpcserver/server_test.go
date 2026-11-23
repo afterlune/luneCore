@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -21,6 +23,34 @@ type rpcBarrierProvider struct {
 	entered   chan struct{}
 	release   chan struct{}
 	cancelled chan struct{}
+}
+
+type rpcQuestionProvider struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (*rpcQuestionProvider) Name() string { return "fixture" }
+
+func (p *rpcQuestionProvider) CreateResponse(_ context.Context, _ publicmodel.ModelRequest, _ publicmodel.ModelProfile) (*publicmodel.ModelResponse, error) {
+	p.mu.Lock()
+	p.calls++
+	call := p.calls
+	p.mu.Unlock()
+	if call == 1 {
+		return &publicmodel.ModelResponse{Status: "completed", Output: []publicmodel.ResponseOutputItem{
+			publicmodel.OutputFunctionCall{CallID: "question-call", Name: "ask_user", Arguments: `{"questions":[{"id":"q1","question":"Choose?","options":[{"label":"one"},{"label":"two"}]}]}`},
+		}}, nil
+	}
+	return rpcTextResponse(), nil
+}
+
+func (p *rpcQuestionProvider) StreamResponse(ctx context.Context, request publicmodel.ModelRequest, profile publicmodel.ModelProfile, emit func(publicmodel.ModelStreamEvent) error) (*publicmodel.ModelResponse, error) {
+	response, err := p.CreateResponse(ctx, request, profile)
+	if err == nil && emit != nil {
+		err = emit(publicmodel.ModelStreamEvent{Type: publicmodel.ModelStreamCompleted, Response: response})
+	}
+	return response, err
 }
 
 func (*rpcBarrierProvider) Name() string { return "fixture" }
@@ -143,7 +173,7 @@ func (c *testRPCClient) drainNotifications() []json.RawMessage {
 
 func TestWSSessionsDisconnectReplayAndShutdown(t *testing.T) {
 	provider := &rpcBarrierProvider{entered: make(chan struct{}, 4), release: make(chan struct{}, 4), cancelled: make(chan struct{}, 4)}
-	client, err := core.New(core.Config{
+	config := core.Config{
 		Workspace: t.TempDir(), StateDir: t.TempDir(), Memory: core.MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
 			Providers:      map[string]publicmodel.ProviderConfig{"fixture": {Protocol: "responses"}},
@@ -151,7 +181,8 @@ func TestWSSessionsDisconnectReplayAndShutdown(t *testing.T) {
 			DefaultProfile: "fixture",
 		},
 		ModelProviders: map[string]publicmodel.Provider{"fixture": provider},
-	})
+	}
+	client, err := core.New(config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -200,20 +231,32 @@ func TestWSSessionsDisconnectReplayAndShutdown(t *testing.T) {
 	}
 
 	firstSubmit := map[string]any{"sessionId": firstSession.ID, "submissionId": "first-submit", "input": "first frontend turn"}
+	lostResponseRequest, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 50, "method": "turn.submit", "params": firstSubmit,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.conn.Write(first.ctx, websocket.MessageText, lostResponseRequest); err != nil {
+		t.Fatalf("write turn.submit with intentionally unread response: %v", err)
+	}
+	awaitProviderCalls(t, provider.entered, 1)
+	first.close()
+	reconnected := dialTestRPC(t, httpServer.URL, "test-token", certificate)
+	t.Cleanup(reconnected.close)
 	var firstTurn struct {
 		ExecutionID string `json:"executionId"`
 	}
-	decodeResult(t, first.call(t, "turn.submit", firstSubmit), &firstTurn)
-	awaitProviderCalls(t, provider.entered, 1)
+	decodeResult(t, reconnected.call(t, "turn.submit", firstSubmit), &firstTurn)
 	var retriedTurn struct {
 		ExecutionID string `json:"executionId"`
 	}
-	decodeResult(t, first.call(t, "turn.submit", firstSubmit), &retriedTurn)
+	decodeResult(t, reconnected.call(t, "turn.submit", firstSubmit), &retriedTurn)
 	if retriedTurn.ExecutionID != firstTurn.ExecutionID {
 		t.Fatalf("idempotent retry execution = %q, want %q", retriedTurn.ExecutionID, firstTurn.ExecutionID)
 	}
 	firstSubmit["input"] = "conflicting payload"
-	conflict := first.call(t, "turn.submit", firstSubmit)
+	conflict := reconnected.call(t, "turn.submit", firstSubmit)
 	if conflict.Error == nil || !strings.Contains(string(conflict.Error.Data), "submission_conflict") {
 		t.Fatalf("conflicting retry error = %#v", conflict.Error)
 	}
@@ -234,7 +277,6 @@ func TestWSSessionsDisconnectReplayAndShutdown(t *testing.T) {
 		t.Fatalf("second frontend could not access shared Core session: %#v", sharedSession.Error)
 	}
 
-	first.close()
 	select {
 	case <-provider.cancelled:
 		t.Fatal("disconnect canceled an admitted turn")
@@ -250,8 +292,6 @@ func TestWSSessionsDisconnectReplayAndShutdown(t *testing.T) {
 		t.Fatalf("second session result status = %q", secondResult.Status)
 	}
 
-	reconnected := dialTestRPC(t, httpServer.URL, "test-token", certificate)
-	t.Cleanup(reconnected.close)
 	var firstResult struct {
 		Status string `json:"status"`
 	}
@@ -259,23 +299,132 @@ func TestWSSessionsDisconnectReplayAndShutdown(t *testing.T) {
 	if firstResult.Status != "completed" {
 		t.Fatalf("disconnected session result status = %q", firstResult.Status)
 	}
-	if reply := reconnected.call(t, "runtime.subscribe", map[string]any{"sessionId": firstSession.ID, "subscriptionId": "replay", "afterCursor": 0}); reply.Error != nil {
+	if reply := reconnected.call(t, "runtime.subscribe", map[string]any{"sessionId": firstSession.ID, "subscriptionId": "replay", "afterCursor": 1}); reply.Error != nil {
 		t.Fatalf("replay subscribe: %#v", reply.Error)
 	}
 	if got := reconnected.drainNotifications(); len(got) != 0 {
 		t.Fatalf("replay event arrived before subscription acknowledgement: %s", got[0])
 	}
-	if !readReplayComplete(t, reconnected, firstTurn.ExecutionID) {
+	if !readReplayComplete(t, reconnected, firstTurn.ExecutionID, 1) {
 		t.Fatal("reconnected client did not replay the completed turn before the replay marker")
 	}
+
+	var shutdownActive, shutdownQueued struct {
+		ExecutionID string `json:"executionId"`
+	}
+	decodeResult(t, reconnected.call(t, "turn.submit", map[string]any{
+		"sessionId": firstSession.ID, "submissionId": "shutdown-active", "input": "active during service shutdown",
+	}), &shutdownActive)
+	awaitProviderCalls(t, provider.entered, 1)
+	decodeResult(t, reconnected.call(t, "turn.submit", map[string]any{
+		"sessionId": firstSession.ID, "submissionId": "shutdown-queued", "input": "queued during service shutdown", "mode": "queue_input",
+	}), &shutdownQueued)
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := service.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("RPC service shutdown: %v", err)
 	}
+	select {
+	case <-provider.cancelled:
+	case <-shutdownCtx.Done():
+		t.Fatal("WSS service shutdown did not cancel the active model request")
+	}
 	if err := client.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("Core shutdown: %v", err)
+	}
+
+	reopened, err := core.New(config)
+	if err != nil {
+		t.Fatalf("reopen Core after WSS shutdown: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close(context.Background()) })
+	recoveredRuntime, err := reopened.OpenSessionRuntime(context.Background(), firstSession.ID)
+	if err != nil {
+		t.Fatalf("open session after WSS shutdown: %v", err)
+	}
+	state, err := recoveredRuntime.State(context.Background())
+	if err != nil {
+		t.Fatalf("read session state after WSS shutdown: %v", err)
+	}
+	if len(state.Queue) != 2 || state.Queue[0].ExecutionID != shutdownActive.ExecutionID || state.Queue[0].Status != "paused" ||
+		state.Queue[1].ExecutionID != shutdownQueued.ExecutionID || state.Queue[1].Status != "queued" {
+		t.Fatalf("queue after WSS shutdown and restart = %#v", state.Queue)
+	}
+	recovered, err := recoveredRuntime.Recover(context.Background())
+	if err != nil || recovered.ExecutionID != shutdownActive.ExecutionID {
+		t.Fatalf("recover active WSS turn = %#v, error=%v", recovered, err)
+	}
+	awaitProviderCalls(t, provider.entered, 1)
+	provider.release <- struct{}{}
+	waitCtx, waitCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer waitCancel()
+	activeResult, err := recoveredRuntime.WaitTurn(waitCtx, shutdownActive.ExecutionID)
+	if err != nil || activeResult.Status != "completed" {
+		t.Fatalf("recovered WSS turn = %#v, error=%v", activeResult, err)
+	}
+	awaitProviderCalls(t, provider.entered, 1)
+	provider.release <- struct{}{}
+	queuedResult, err := recoveredRuntime.WaitTurn(waitCtx, shutdownQueued.ExecutionID)
+	if err != nil || queuedResult.Status != "completed" {
+		t.Fatalf("queued WSS turn after restart = %#v, error=%v", queuedResult, err)
+	}
+}
+
+func TestBrowserWSSAuthUsesSubprotocolAndOriginAllowlist(t *testing.T) {
+	client, err := core.New(core.Config{
+		Workspace: t.TempDir(), StateDir: t.TempDir(), Memory: core.MemoryConfig{Disabled: true},
+		ModelConfig: &publicmodel.Config{
+			Providers:      map[string]publicmodel.ProviderConfig{"fixture": {Protocol: "responses", BaseURL: "https://fixture.invalid", APIKey: "fixture-key"}},
+			Profiles:       map[string]publicmodel.ModelProfile{"fixture": {Provider: "fixture", Model: "fixture-model"}},
+			DefaultProfile: "fixture",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+	service, err := NewWithOptions(client, "browser-token", ServerOptions{AllowedOrigins: []string{"https://frontend.example.test"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewTLSServer(service)
+	t.Cleanup(httpServer.Close)
+	certificate := httpServer.Certificate()
+
+	dialBrowser := func(origin, token string) (*websocket.Conn, *http.Response, error) {
+		header := make(http.Header)
+		header.Set("Origin", origin)
+		protocols := []string{WebSocketSubprotocol, browserAuthSubprotocolPrefix + base64.RawURLEncoding.EncodeToString([]byte(token))}
+		return websocket.Dial(context.Background(), "wss"+strings.TrimPrefix(httpServer.URL, "https")+"/v1/runtime", &websocket.DialOptions{
+			HTTPHeader: header, Subprotocols: protocols,
+			HTTPClient: &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{RootCAs: certificatePool(certificate)}}},
+		})
+	}
+	conn, _, err := dialBrowser("https://frontend.example.test", "browser-token")
+	if err != nil {
+		t.Fatalf("browser WSS dial: %v", err)
+	}
+	defer conn.CloseNow()
+	if conn.Subprotocol() != WebSocketSubprotocol {
+		t.Fatalf("negotiated WebSocket subprotocol = %q", conn.Subprotocol())
+	}
+	clientCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	rpc := &testRPCClient{conn: conn, ctx: clientCtx}
+	var hello map[string]any
+	decodeResult(t, rpc.call(t, "runtime.hello", map[string]any{"clientName": "browser-test"}), &hello)
+	if hello["protocolVersion"] != "1" {
+		t.Fatalf("browser hello = %#v", hello)
+	}
+
+	_, response, err := dialBrowser("https://attacker.example.test", "browser-token")
+	if err == nil || response == nil || response.StatusCode != http.StatusForbidden {
+		t.Fatalf("unlisted browser origin response = %v, error=%v", response, err)
+	}
+	_, response, err = dialBrowser("https://frontend.example.test", "invalid-token")
+	if err == nil || response == nil || response.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("invalid browser token response = %v, error=%v", response, err)
 	}
 }
 
@@ -327,7 +476,7 @@ func TestConnectionSendQueueIsBoundedAndWriterJoins(t *testing.T) {
 	}
 }
 
-func TestSlowWSSClientDoesNotBlockHealthyConnection(t *testing.T) {
+func TestSlowWSSWriteTimeoutDoesNotBlockHealthyConnection(t *testing.T) {
 	client, err := core.New(core.Config{
 		Workspace: t.TempDir(), StateDir: t.TempDir(), Memory: core.MemoryConfig{Disabled: true},
 		ModelConfig: &publicmodel.Config{
@@ -352,6 +501,7 @@ func TestSlowWSSClientDoesNotBlockHealthyConnection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	service.writeTimeout = 100 * time.Millisecond
 	httpServer := httptest.NewTLSServer(service)
 	t.Cleanup(httpServer.Close)
 	certificate := httpServer.Certificate()
@@ -359,13 +509,11 @@ func TestSlowWSSClientDoesNotBlockHealthyConnection(t *testing.T) {
 	healthy := dialTestRPC(t, httpServer.URL, "slow-client-token", certificate)
 	t.Cleanup(slow.close)
 	t.Cleanup(healthy.close)
-	for id := 1; id <= 2; id++ {
-		request, _ := json.Marshal(map[string]any{
-			"jsonrpc": "2.0", "id": id, "method": "session.history", "params": map[string]any{"sessionId": saved.ID},
-		})
-		if err := slow.conn.Write(slow.ctx, websocket.MessageText, request); err != nil {
-			t.Fatalf("write slow-client request %d: %v", id, err)
-		}
+	request, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "session.history", "params": map[string]any{"sessionId": saved.ID},
+	})
+	if err := slow.conn.Write(slow.ctx, websocket.MessageText, request); err != nil {
+		t.Fatalf("write slow-client request: %v", err)
 	}
 	var hello map[string]any
 	decodeResult(t, healthy.call(t, "runtime.hello", map[string]any{}), &hello)
@@ -373,7 +521,7 @@ func TestSlowWSSClientDoesNotBlockHealthyConnection(t *testing.T) {
 		t.Fatalf("healthy client hello = %#v", hello)
 	}
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(3 * time.Second)
 	for {
 		service.mu.Lock()
 		connections := len(service.clients)
@@ -382,7 +530,7 @@ func TestSlowWSSClientDoesNotBlockHealthyConnection(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("slow connection remained active after overflowing its send budget (connections=%d)", connections)
+			t.Fatalf("slow connection remained active after its write deadline (connections=%d)", connections)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -393,6 +541,175 @@ func TestSlowWSSClientDoesNotBlockHealthyConnection(t *testing.T) {
 	}
 	if err := client.Shutdown(shutdownCtx); err != nil {
 		t.Fatalf("Core shutdown: %v", err)
+	}
+}
+
+func TestStdioWriteTimeoutClosesBlockedPipe(t *testing.T) {
+	client, err := core.New(core.Config{
+		Workspace: t.TempDir(), StateDir: t.TempDir(), Memory: core.MemoryConfig{Disabled: true},
+		ModelConfig: &publicmodel.Config{
+			Providers:      map[string]publicmodel.ProviderConfig{"fixture": {Protocol: "responses", BaseURL: "https://fixture.invalid", APIKey: "fixture-key"}},
+			Profiles:       map[string]publicmodel.ModelProfile{"fixture": {Provider: "fixture", Model: "fixture-model"}},
+			DefaultProfile: "fixture",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := client.Shutdown(ctx); err != nil {
+			t.Errorf("Core shutdown: %v", err)
+		}
+	}()
+	history, err := json.Marshal(strings.Repeat("x", 20<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved, err := client.CreateSession(context.Background(), history)
+	if err != nil {
+		t.Fatal(err)
+	}
+	service, err := New(client, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	service.writeTimeout = 100 * time.Millisecond
+	inputReader, inputWriter := io.Pipe()
+	outputReader, outputWriter := io.Pipe()
+	serveDone := make(chan error, 1)
+	go func() { serveDone <- service.ServeStdio(context.Background(), inputReader, outputWriter) }()
+	t.Cleanup(func() {
+		_ = inputWriter.Close()
+		_ = outputReader.Close()
+	})
+	request, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0", "id": 1, "method": "session.history", "params": map[string]any{"sessionId": saved.ID},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := inputWriter.Write(append(request, '\n')); err != nil {
+		t.Fatalf("write stdio request: %v", err)
+	}
+	select {
+	case err := <-serveDone:
+		if err != nil {
+			t.Fatalf("ServeStdio after blocked output timeout: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("stdio server did not close the blocked output pipe after its write deadline")
+	}
+}
+
+func TestWSSConcurrentConflictingQuestionAnswersChooseOne(t *testing.T) {
+	provider := &rpcQuestionProvider{}
+	client, err := core.New(core.Config{
+		Workspace: t.TempDir(), StateDir: t.TempDir(), Memory: core.MemoryConfig{Disabled: true},
+		ModelConfig: &publicmodel.Config{
+			Providers:      map[string]publicmodel.ProviderConfig{"fixture": {Protocol: "responses"}},
+			Profiles:       map[string]publicmodel.ModelProfile{"fixture": {Provider: "fixture", Model: "fixture-model"}},
+			DefaultProfile: "fixture",
+		},
+		ModelProviders: map[string]publicmodel.Provider{"fixture": provider},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close(context.Background()) })
+	service, err := New(client, "question-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	httpServer := httptest.NewTLSServer(service)
+	t.Cleanup(httpServer.Close)
+	first := dialTestRPC(t, httpServer.URL, "question-token", httpServer.Certificate())
+	second := dialTestRPC(t, httpServer.URL, "question-token", httpServer.Certificate())
+	t.Cleanup(first.close)
+	t.Cleanup(second.close)
+	var saved struct {
+		ID string `json:"id"`
+	}
+	decodeResult(t, first.call(t, "session.create", map[string]any{}), &saved)
+	var submitted struct {
+		ExecutionID string `json:"executionId"`
+	}
+	decodeResult(t, first.call(t, "turn.submit", map[string]any{
+		"sessionId": saved.ID, "submissionId": "question-submit", "input": "ask a question",
+	}), &submitted)
+
+	var question struct {
+		ExecutionID  string `json:"executionId"`
+		RunID        string `json:"runId"`
+		InvocationID string `json:"invocationId"`
+		CallID       string `json:"callId"`
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var pending []struct {
+			Kind         string `json:"kind"`
+			UserQuestion *struct {
+				ExecutionID  string `json:"executionId"`
+				RunID        string `json:"runId"`
+				InvocationID string `json:"invocationId"`
+				CallID       string `json:"callId"`
+			} `json:"userQuestion"`
+		}
+		decodeResult(t, first.call(t, "runtime.pending", map[string]any{"sessionId": saved.ID}), &pending)
+		for _, item := range pending {
+			if item.Kind == "user_question" && item.UserQuestion != nil {
+				question = *item.UserQuestion
+				break
+			}
+		}
+		if question.CallID != "" {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if question.CallID == "" || question.ExecutionID != submitted.ExecutionID {
+		t.Fatalf("pending question identity = %#v, submitted = %#v", question, submitted)
+	}
+	answerRequest := func(answer string) map[string]any {
+		return map[string]any{
+			"sessionId": saved.ID,
+			"answer": map[string]any{
+				"executionId": question.ExecutionID, "runId": question.RunID,
+				"invocationId": question.InvocationID, "callId": question.CallID,
+				"answers": []any{map[string]any{"question_id": "q1", "answer": answer}},
+			},
+		}
+	}
+	type answerResult struct{ reply testRPCReply }
+	results := make(chan answerResult, 2)
+	go func() { results <- answerResult{reply: first.call(t, "question.resolve", answerRequest("one"))} }()
+	go func() { results <- answerResult{reply: second.call(t, "question.resolve", answerRequest("two"))} }()
+	accepted := 0
+	rejected := 0
+	for range 2 {
+		result := <-results
+		if result.reply.Error == nil {
+			accepted++
+		} else {
+			rejected++
+		}
+	}
+	if accepted != 1 || rejected != 1 {
+		t.Fatalf("concurrent question answers accepted=%d rejected=%d", accepted, rejected)
+	}
+	var completed struct {
+		Status string `json:"status"`
+	}
+	decodeResult(t, first.call(t, "turn.wait", map[string]any{"sessionId": saved.ID, "executionId": submitted.ExecutionID}), &completed)
+	if completed.Status != "completed" {
+		t.Fatalf("turn status after concurrent answers = %q", completed.Status)
+	}
+	provider.mu.Lock()
+	calls := provider.calls
+	provider.mu.Unlock()
+	if calls != 2 {
+		t.Fatalf("model ran %d requests, want one clarification and one resume", calls)
 	}
 }
 
@@ -417,7 +734,7 @@ func decodeResult(t *testing.T, reply testRPCReply, target any) {
 	}
 }
 
-func readReplayComplete(t *testing.T, client *testRPCClient, executionID string) bool {
+func readReplayComplete(t *testing.T, client *testRPCClient, executionID string, afterCursor int64) bool {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(client.ctx, 5*time.Second)
 	defer cancel()
@@ -435,9 +752,13 @@ func readReplayComplete(t *testing.T, client *testRPCClient, executionID string)
 		var event struct {
 			Kind        string `json:"kind"`
 			ExecutionID string `json:"executionId"`
+			Cursor      int64  `json:"cursor"`
 		}
 		if err := json.Unmarshal(envelope.Params.Event, &event); err != nil {
 			t.Fatal(err)
+		}
+		if event.Cursor != 0 && event.Cursor <= afterCursor {
+			t.Fatalf("replayed durable event cursor %d is not after %d", event.Cursor, afterCursor)
 		}
 		if event.Kind == "task_finished" && event.ExecutionID == executionID {
 			finished = true
