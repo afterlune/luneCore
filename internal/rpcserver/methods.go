@@ -64,6 +64,8 @@ func summarizeSession(session core.Session) sessionSummary {
 
 func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcError) {
 	switch method {
+	case "workspace.info", "workspace.listDirectory", "workspace.readFile":
+		return c.workspaceFiles(method, raw)
 	case "session.historyPage":
 		return c.historyPage(raw)
 	case "session.search":
@@ -93,7 +95,7 @@ func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcErro
 				"session.search", "session.fork", "session.rewind", "session.compact",
 				"turn.cancelQueued", "turn.cancelPending", "turn.replaceQueued",
 				"turn.plan", "turn.implementPlan", "turn.attachments", "session.historyPage",
-				"goal.manage", "question.draft", "command.control", "mcp.inspect",
+				"goal.manage", "question.draft", "command.control", "mcp.inspect", "workspace.files",
 			},
 		}, nil
 	case "session.create":

@@ -1,7 +1,7 @@
 # Lune Core Runtime Protocol v1
 
 The protocol connects frontends to one independently running Core process. A
-Core process owns one workspace and state directory. Each session operation
+Each Runtime Protocol connection is bound to one workspace and state directory. Each session operation
 names its `sessionId`, so one process can serve different sessions to different
 frontends. Clients that use the same session ID share its history, queue,
 pending requests, and event stream.
@@ -112,6 +112,7 @@ clients can ignore it and newer clients can keep using the base methods.
 | `turn.cancelPending` | `turn.cancelPending` takes `sessionId`, atomically cancels waiting queued turns, interrupts the active turn, and returns `cancelledExecutionIds`. |
 | `turn.replaceQueued` | `turn.replaceQueued` takes `sessionId`, `executionId`, `input`, and optional `attachments`, replacing an unstarted queued turn in place and returning `submission` and `cancelledExecutionIds`. |
 | `turn.plan` | `turn.submit` accepts `planMode: true`. Core applies its read-only tool policy, including when a queued turn later starts. Plan submissions run as separate turns. |
+| `workspace.files` | `workspace.info` returns `{name, path}` for the bound workspace. `workspace.listDirectory` takes optional `path` and `offset` and returns `{items, nextOffset, more}`. Each item has a name and kind (`directory` or `file`). `workspace.readFile` takes `path` and returns `{text}`. |
 | `turn.implementPlan` | `turn.implementPlan` takes `sessionId`, `sourceExecutionId`, and optional `mode` (`same_context` or `new_context`), starting an approved plan under the server's active permission mode and returning `sessionId` and `submission`. |
 | `turn.attachments` | `turn.submit` accepts `attachments` with `name`, `mediaType`, and standard base64 `data`. For these requests `input` is a string. |
 | `session.historyPage` | `session.historyPage` takes `sessionId` and optional `offset` and `digest`. Returns `items`, `nextOffset`, `done`, and `digest`. Copy the digest into subsequent requests and restart if the history changes. |
@@ -138,6 +139,12 @@ receiving the `runtime_replay_complete` event.
 Errors use standard JSON-RPC codes for malformed requests, invalid parameters,
 and unknown methods. Runtime errors use code `-32000` and include a stable
 application code in `error.data.code`.
+
+Workspace file methods use the same authenticated Runtime Protocol connection.
+File paths are slash-separated and relative to the bound workspace. An omitted
+directory path lists the root. Listings return up to 200 entries, with directories
+first, followed by files in name order. State directories named `.lune`, links,
+and special files are excluded. Text previews accept regular UTF-8 files up to 256 KiB.
 
 ## Starting the service
 

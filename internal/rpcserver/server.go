@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -34,9 +35,10 @@ type ServerOptions struct {
 }
 
 type Server struct {
-	core    *core.Core
-	token   string
-	origins []string
+	core          *core.Core
+	workspaceInfo os.FileInfo
+	token         string
+	origins       []string
 	// writeTimeout is set only by package tests; production uses the protocol
 	// default below.
 	writeTimeout time.Duration
@@ -57,8 +59,12 @@ func NewWithOptions(client *core.Core, token string, options ServerOptions) (*Se
 	if client == nil {
 		return nil, errors.New("core is required")
 	}
+	workspaceInfo, err := os.Stat(client.Workspace())
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
-		core: client, token: strings.TrimSpace(token), origins: append([]string(nil), options.AllowedOrigins...),
+		core: client, workspaceInfo: workspaceInfo, token: strings.TrimSpace(token), origins: append([]string(nil), options.AllowedOrigins...),
 		clients:             make(map[*websocket.Conn]context.CancelFunc),
 		interactiveSessions: make(map[string]int),
 		requests:            make(chan struct{}, maxServerRequests),
