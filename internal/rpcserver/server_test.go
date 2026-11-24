@@ -433,7 +433,7 @@ func TestBrowserWSSAuthUsesSubprotocolAndOriginAllowlist(t *testing.T) {
 }
 
 func TestConnectionSendQueueIsBoundedAndWriterJoins(t *testing.T) {
-	server := &Server{requests: make(chan struct{}, maxServerRequests)}
+	server := &Server{}
 	client := newConnection(server, context.Background())
 	for range maxSendMessages {
 		if err := client.send([]byte("message")); err != nil {

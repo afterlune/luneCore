@@ -20,8 +20,6 @@ import (
 )
 
 const MaxMessageBytes = 32 << 20
-const maxConcurrentRequests = 8
-const maxServerRequests = 16
 const maxSubscriptionsPerConnection = 16
 const maxConnections = 256
 
@@ -31,14 +29,16 @@ const browserAuthSubprotocolPrefix = "lune-core-auth."
 type ServerOptions struct {
 	// AllowedOrigins adds browser origins allowed to connect cross-origin.
 	// The WebSocket request host is always allowed.
-	AllowedOrigins []string
+	AllowedOrigins    []string
+	MaxPermissionMode core.PermissionMode
 }
 
 type Server struct {
-	core          *core.Core
-	workspaceInfo os.FileInfo
-	token         string
-	origins       []string
+	core              *core.Core
+	workspaceInfo     os.FileInfo
+	token             string
+	origins           []string
+	maxPermissionMode core.PermissionMode
 	// writeTimeout is set only by package tests; production uses the protocol
 	// default below.
 	writeTimeout time.Duration
@@ -47,7 +47,6 @@ type Server struct {
 	closed              bool
 	clients             map[*websocket.Conn]context.CancelFunc
 	interactiveSessions map[string]int
-	requests            chan struct{}
 	wg                  sync.WaitGroup
 }
 
@@ -64,10 +63,9 @@ func NewWithOptions(client *core.Core, token string, options ServerOptions) (*Se
 		return nil, err
 	}
 	return &Server{
-		core: client, workspaceInfo: workspaceInfo, token: strings.TrimSpace(token), origins: append([]string(nil), options.AllowedOrigins...),
+		core: client, workspaceInfo: workspaceInfo, token: strings.TrimSpace(token), origins: append([]string(nil), options.AllowedOrigins...), maxPermissionMode: options.MaxPermissionMode,
 		clients:             make(map[*websocket.Conn]context.CancelFunc),
 		interactiveSessions: make(map[string]int),
-		requests:            make(chan struct{}, maxServerRequests),
 	}, nil
 }
 
@@ -336,7 +334,6 @@ type connection struct {
 
 	mu            sync.Mutex
 	subscriptions map[string]*subscription
-	requests      chan struct{}
 	requestWG     sync.WaitGroup
 	eventWG       sync.WaitGroup
 
@@ -361,7 +358,6 @@ func newConnection(server *Server, parent context.Context) *connection {
 	return &connection{
 		server: server, ctx: ctx, cancel: cancel,
 		subscriptions: make(map[string]*subscription),
-		requests:      make(chan struct{}, maxConcurrentRequests),
 		sendQueue:     make(chan []byte, maxSendMessages),
 	}
 }
@@ -417,33 +413,13 @@ func (c *connection) handleAsync(message []byte) bool {
 	if c.ctx.Err() != nil {
 		return false
 	}
-	select {
-	case c.requests <- struct{}{}:
-	default:
-		return c.rejectOverload(message)
-	}
-	select {
-	case c.server.requests <- struct{}{}:
-	default:
-		<-c.requests
-		return c.rejectOverload(message)
-	}
+	payload := append([]byte(nil), message...)
 	c.requestWG.Add(1)
 	go func() {
 		defer c.requestWG.Done()
-		defer func() { <-c.requests }()
-		defer func() { <-c.server.requests }()
-		c.handle(message)
+		c.handle(payload)
 	}()
 	return true
-}
-
-func (c *connection) rejectOverload(message []byte) bool {
-	var req request
-	if json.Unmarshal(message, &req) == nil && len(req.ID) != 0 && validRequestID(req.ID) {
-		c.respond(req.ID, nil, &rpcError{Code: -32003, Message: "runtime request limit reached"})
-	}
-	return c.ctx.Err() == nil
 }
 
 func (c *connection) join() {

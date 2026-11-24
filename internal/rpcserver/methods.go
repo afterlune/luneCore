@@ -80,6 +80,34 @@ func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcErro
 		return c.manageCommand(method, raw)
 	case "mcp.servers", "mcp.enable", "mcp.disable", "mcp.listPrompts", "mcp.getPrompt", "mcp.listResources", "mcp.listResourceTemplates", "mcp.readResource":
 		return c.manageMCP(method, raw)
+	case "permission.get":
+		return map[string]any{
+			"mode":    string(c.server.core.PermissionMode()),
+			"modes":   allowedPermissionModes(c.server.maxPermissionMode),
+			"maxMode": string(c.server.maxPermissionMode),
+		}, nil
+	case "permission.set":
+		var params struct {
+			Mode string `json:"mode"`
+		}
+		if err := c.readParams(raw, &params); err != nil {
+			return nil, err
+		}
+		mode := core.PermissionMode(strings.TrimSpace(strings.ToLower(params.Mode)))
+		rank := permissionRank(mode)
+		if rank < 0 {
+			return nil, &rpcError{Code: -32602, Message: "unknown permission mode"}
+		}
+		if c.server.maxPermissionMode != "" {
+			maxRank := permissionRank(c.server.maxPermissionMode)
+			if maxRank >= 0 && rank > maxRank {
+				return nil, &rpcError{Code: -32001, Message: "permission mode exceeds server maximum"}
+			}
+		}
+		if err := c.server.core.SetPermissionMode(mode); err != nil {
+			return nil, applicationError(err)
+		}
+		return map[string]any{"mode": string(c.server.core.PermissionMode())}, nil
 
 	case "runtime.hello":
 		var params helloParams
@@ -91,11 +119,13 @@ func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcErro
 			"client":          map[string]string{"name": params.ClientName, "version": params.ClientVersion},
 			"transports":      []string{"stdio", "wss"},
 			"maxMessageBytes": MaxMessageBytes,
+			"permissionMode":  string(c.server.core.PermissionMode()),
 			"capabilities": []string{
 				"session.search", "session.fork", "session.rewind", "session.compact",
 				"turn.cancelQueued", "turn.cancelPending", "turn.replaceQueued",
 				"turn.plan", "turn.implementPlan", "turn.attachments", "session.historyPage",
 				"goal.manage", "question.draft", "command.control", "mcp.inspect", "workspace.files",
+				"permission.manage",
 			},
 		}, nil
 	case "session.create":
@@ -470,4 +500,37 @@ func (c *connection) unsubscribe(id string) bool {
 	}
 	<-sub.done
 	return true
+}
+
+func permissionRank(mode core.PermissionMode) int {
+	switch mode {
+	case core.PermissionReadOnly:
+		return 0
+	case core.PermissionWorkspace:
+		return 1
+	case core.PermissionAuto:
+		return 2
+	case core.PermissionFullAccess:
+		return 3
+	default:
+		return -1
+	}
+}
+
+func allowedPermissionModes(maxMode core.PermissionMode) []string {
+	ordered := []core.PermissionMode{
+		core.PermissionReadOnly,
+		core.PermissionWorkspace,
+		core.PermissionAuto,
+		core.PermissionFullAccess,
+	}
+	maxRank := permissionRank(maxMode)
+	modes := make([]string, 0, len(ordered))
+	for _, m := range ordered {
+		if maxMode != "" && maxRank >= 0 && permissionRank(m) > maxRank {
+			break
+		}
+		modes = append(modes, string(m))
+	}
+	return modes
 }

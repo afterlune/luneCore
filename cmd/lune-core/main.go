@@ -50,8 +50,24 @@ func run(args []string) error {
 	tlsKey := flags.String("tls-key", "", "TLS private key PEM file")
 	tokenFile := flags.String("token-file", "", "file containing the remote Bearer token")
 	webOrigins := flags.String("web-origins", "", "comma-separated exact browser origins allowed to connect")
+	permissionModeFlag := flags.String("permission-mode", string(core.PermissionWorkspace), "initial tool permission mode (read-only, workspace, auto, full-access)")
+	maxPermissionModeFlag := flags.String("max-permission-mode", "", "optional maximum permission mode allowed over RPC")
 	if err := flags.Parse(args[1:]); err != nil {
 		return err
+	}
+	initialPerm, err := parsePermissionFlag(*permissionModeFlag)
+	if err != nil {
+		return err
+	}
+	var maxPerm core.PermissionMode
+	if strings.TrimSpace(*maxPermissionModeFlag) != "" {
+		maxPerm, err = parsePermissionFlag(*maxPermissionModeFlag)
+		if err != nil {
+			return err
+		}
+		if permissionModeOrder(initialPerm) > permissionModeOrder(maxPerm) {
+			return fmt.Errorf("initial permission mode %q exceeds --max-permission-mode %q", initialPerm, maxPerm)
+		}
 	}
 	if flags.NArg() != 0 {
 		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
@@ -110,7 +126,14 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	service, err := rpcserver.NewWithOptions(client, token, rpcserver.ServerOptions{AllowedOrigins: allowedOrigins})
+	if err := client.SetPermissionMode(initialPerm); err != nil {
+		_ = client.Close(context.Background())
+		return err
+	}
+	service, err := rpcserver.NewWithOptions(client, token, rpcserver.ServerOptions{
+		AllowedOrigins:    allowedOrigins,
+		MaxPermissionMode: maxPerm,
+	})
 	if err != nil {
 		_ = client.Close(context.Background())
 		return err
@@ -198,4 +221,27 @@ func serveStdio(ctx context.Context, service *rpcserver.Server, input io.ReadClo
 		return fmt.Errorf("open IPC output: %w", err)
 	}
 	return service.ServeStdio(ctx, input, output)
+}
+
+func permissionModeOrder(mode core.PermissionMode) int {
+	switch mode {
+	case core.PermissionReadOnly:
+		return 0
+	case core.PermissionWorkspace:
+		return 1
+	case core.PermissionAuto:
+		return 2
+	case core.PermissionFullAccess:
+		return 3
+	default:
+		return -1
+	}
+}
+
+func parsePermissionFlag(raw string) (core.PermissionMode, error) {
+	mode := core.PermissionMode(strings.TrimSpace(strings.ToLower(raw)))
+	if permissionModeOrder(mode) < 0 {
+		return "", fmt.Errorf("unknown permission mode %q (use read-only, workspace, auto, full-access)", raw)
+	}
+	return mode, nil
 }
