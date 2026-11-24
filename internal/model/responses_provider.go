@@ -114,7 +114,7 @@ func (p *responsesProvider) StreamResponse(ctx context.Context, request ModelReq
 	}
 	request.Stream = true
 	wire := p.wireRequest(request)
-	response, err := postJSON(ctx, p.httpClient, p.endpoint, map[string]string{
+	response, err := postJSON(ctx, streamRequestClient(ctx, p.httpClient), p.endpoint, map[string]string{
 		"Authorization": "Bearer " + p.apiKey,
 		"Accept":        "text/event-stream",
 	}, wire)

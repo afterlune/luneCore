@@ -51,7 +51,7 @@ func (p *anthropicMessagesProvider) StreamResponse(ctx context.Context, request 
 	if err != nil {
 		return nil, err
 	}
-	response, err := postJSON(ctx, p.httpClient, p.endpoint, anthropicHeaders(p.apiKey, "text/event-stream"), wire)
+	response, err := postJSON(ctx, streamRequestClient(ctx, p.httpClient), p.endpoint, anthropicHeaders(p.apiKey, "text/event-stream"), wire)
 	if err != nil {
 		return nil, fmt.Errorf("call %s Messages stream: %w", p.providerID, err)
 	}

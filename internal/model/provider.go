@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 
 	publicmodel "github.com/afterlune/luneCore/model"
@@ -101,7 +100,7 @@ func NewProviderCatalogWithProviders(config Config, overrides map[string]Provide
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
-	httpClient := &http.Client{Timeout: requestTimeout}
+	httpClient := newModelHTTPClient()
 	catalog := &ProviderCatalog{config: config, providers: make(map[string]Provider)}
 	for name, providerConfig := range config.Providers {
 		if provider, ok := overrides[name]; ok {

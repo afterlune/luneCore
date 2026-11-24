@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -31,6 +32,31 @@ func postJSON(ctx context.Context, client *http.Client, endpoint string, headers
 		return nil, transportError(err)
 	}
 	return response, nil
+}
+
+func newModelHTTPClient() *http.Client {
+	transport := &http.Transport{
+		Proxy:                 http.ProxyFromEnvironment,
+		DialContext:           (&net.Dialer{Timeout: 20 * time.Second, KeepAlive: 30 * time.Second}).DialContext,
+		ForceAttemptHTTP2:     true,
+		TLSHandshakeTimeout:   25 * time.Second,
+		ResponseHeaderTimeout: 90 * time.Second,
+		ExpectContinueTimeout: time.Second,
+	}
+	return &http.Client{Timeout: requestTimeout, Transport: transport}
+}
+
+func streamRequestClient(ctx context.Context, client *http.Client) *http.Client {
+	if ctx == nil || client == nil || client.Timeout <= 0 {
+		return client
+	}
+	deadline, ok := ctx.Deadline()
+	if !ok || time.Until(deadline) <= client.Timeout {
+		return client
+	}
+	copy := *client
+	copy.Timeout = 0
+	return &copy
 }
 
 func responseBody(response *http.Response) ([]byte, error) {
