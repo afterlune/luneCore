@@ -73,6 +73,11 @@ application bootstrap.
 | `runtime.subscribe` | `sessionId`, `subscriptionId`, `afterCursor` | subscription ID |
 | `runtime.unsubscribe` | `subscriptionId` | whether it was removed |
 | `turn.submit` | `sessionId`, `submissionId`, `input`, optional `mode`, `model`, `maxToolRounds`, `execution` | accepted or queued turn |
+| `turn.replaceHistory` | `sessionId`, `turns`, `historyDigest`, `submissionId`, `input`, and optional `turn.submit` fields | atomically replaces recent user turns and queues the replacement; stale history leaves the transcript unchanged, and retries return the original acceptance |
+| `review.start` | `sourceSessionId`, optional `sourceExecutionId`, `path` | creates an independent read-only review session and starts its first turn |
+| `review.get` | `sessionId`, `sourceSessionId`, `materialsDigest`, optional `executionId`, `path` | review session, current runtime/history, durable turn result when available, and whether workspace evidence changed |
+| `diagnosis.start` | `sourceSessionId`, optional `sourceExecutionId` | creates a separate read-only diagnosis session from runtime state, pending requests, recent events, command logs, and recent conversation |
+| `diagnosis.get` | `sessionId`, `sourceSessionId`, `evidenceDigest`, optional analysis `executionId` and source `sourceExecutionId` | diagnosis session, durable analysis turn result when available, and whether source runtime evidence has changed |
 | `turn.wait` | `sessionId`, `executionId` | terminal turn result |
 | `turn.interrupt` | `sessionId`, `executionId` | whether interruption was accepted |
 | `turn.recover` | `sessionId`, optional `execution` | resumed turn submission |
@@ -113,6 +118,8 @@ clients can ignore it and newer clients can keep using the base methods.
 | `turn.replaceQueued` | `turn.replaceQueued` takes `sessionId`, `executionId`, `input`, and optional `attachments`, replacing an unstarted queued turn in place and returning `submission` and `cancelledExecutionIds`. |
 | `turn.plan` | `turn.submit` accepts `planMode: true`. Core applies its read-only tool policy, including when a queued turn later starts. Plan submissions run as separate turns. |
 | `workspace.files` | `workspace.info` returns `{name, path}` for the bound workspace. `workspace.listDirectory` takes optional `path` and `offset` and returns `{items, nextOffset, more}`. Each item has a name and kind (`directory` or `file`). `workspace.readFile` takes `path` and returns `{text}`. |
+| `review.workspace` | `review.start` collects staged and unstaged diffs plus non-ignored untracked text files, then runs a new conversation with a per-turn `read-only` permission override. It returns the new session, execution ID, source IDs, and a digest of the evidence. `review.get` returns that session's runtime state, history, durable turn result when available, and recomputes the evidence digest so clients can flag stale results. |
+| `task.diagnose` | `diagnosis.start` snapshots task state, pending requests, recent durable events, bounded command logs, and recent user/assistant messages before starting an independent read-only model session. `diagnosis.get` returns its runtime/history, durable analysis turn result when available, and recomputes the evidence digest. |
 | `turn.implementPlan` | `turn.implementPlan` takes `sessionId`, `sourceExecutionId`, and optional `mode` (`same_context` or `new_context`), starting an approved plan under the server's active permission mode and returning `sessionId` and `submission`. |
 | `turn.attachments` | `turn.submit` accepts `attachments` with `name`, `mediaType`, and standard base64 `data`. For these requests `input` is a string. |
 | `session.historyPage` | `session.historyPage` takes `sessionId` and optional `offset` and `digest`. Returns `items`, `nextOffset`, `done`, and `digest`. Copy the digest into subsequent requests and restart if the history changes. |

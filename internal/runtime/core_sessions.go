@@ -253,27 +253,12 @@ func (c *Core) rewindSessionOwned(ctx context.Context, sessionID string, userTur
 	if digest != "" && digest != fmt.Sprintf("%x", sha256.Sum256(saved.History)) {
 		return 0, errors.New("session history changed; preview the rewind again")
 	}
-	var history model.ResponseInput
-	if len(saved.History) > 0 && string(saved.History) != "null" {
-		if err := json.Unmarshal(saved.History, &history); err != nil {
-			return 0, fmt.Errorf("decode session history: %w", err)
-		}
-	}
-	items := responseHistoryItems(&history)
-	var starts []int
-	for index, item := range items {
-		if message, ok := item.(model.InputMessage); ok && message.Role == model.RoleUser {
-			starts = append(starts, index)
-		}
-	}
-	if len(starts) == 0 {
-		return 0, nil
-	}
-	removed := min(userTurns, len(starts))
-	cut := starts[len(starts)-removed]
-	encoded, err := json.Marshal(model.NewResponseInputItems(items[:cut]...))
+	encoded, removed, err := rewoundHistory(saved.History, userTurns)
 	if err != nil {
-		return 0, fmt.Errorf("encode rewound history: %w", err)
+		return 0, err
+	}
+	if removed == 0 {
+		return 0, nil
 	}
 	if err := c.sessions.UpdateHistory(ctx, sessionID, c.workspace, encoded); err != nil {
 		return 0, err

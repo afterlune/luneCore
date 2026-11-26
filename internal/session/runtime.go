@@ -3,6 +3,7 @@ package session
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -123,6 +124,114 @@ func (s *Store) EnqueueTurnIdempotent(ctx context.Context, queued QueuedTurn, ev
 		return QueuedTurn{}, 0, nil, false, fmt.Errorf("commit queued turn: %w", err)
 	}
 	return queued, cursor, savedResult, false, nil
+}
+
+// ReplaceHistoryAndEnqueueTurn atomically replaces a session transcript and
+// enqueues the turn that follows it. The expected history digest prevents a
+// stale edit from discarding newer conversation content. Both the transcript
+// update and accepted turn are committed together.
+func (s *Store) ReplaceHistoryAndEnqueueTurn(ctx context.Context, queued QueuedTurn, workspace string, event json.RawMessage, submissionID string, submissionDigest []byte, expectedHistoryDigest string, history json.RawMessage, encodeResult func(QueuedTurn) ([]byte, error)) (QueuedTurn, int64, []byte, bool, error) {
+	if s == nil || s.db == nil || ctx == nil {
+		return QueuedTurn{}, 0, nil, false, errors.New("session store and context are required")
+	}
+	if queued.SessionID == "" || workspace == "" || queued.QueueID == "" || queued.ExecutionID == "" || !json.Valid(queued.Request) || !json.Valid(event) || !json.Valid(history) {
+		return QueuedTurn{}, 0, nil, false, errors.New("session identity, valid turn/event JSON, and valid replacement history are required")
+	}
+	if submissionID == "" || len(submissionDigest) == 0 || expectedHistoryDigest == "" || encodeResult == nil {
+		return QueuedTurn{}, 0, nil, false, errors.New("submission identity, digests, and result encoder are required")
+	}
+	if queued.Status == "" {
+		queued.Status = QueuedTurnQueued
+	}
+	if queued.Status != QueuedTurnQueued {
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("new queued turn status must be %q", QueuedTurnQueued)
+	}
+	now := time.Now()
+	queued.CreatedAt, queued.UpdatedAt = now, now
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("begin atomic history replacement: %w", err)
+	}
+	defer tx.Rollback()
+
+	var savedDigest, savedResult []byte
+	err = tx.QueryRowContext(ctx, `SELECT request_digest, result FROM turn_submission_dedup WHERE session_id = ? AND submission_id = ?`, queued.SessionID, submissionID).Scan(&savedDigest, &savedResult)
+	if err == nil {
+		if !bytes.Equal(savedDigest, submissionDigest) {
+			return QueuedTurn{}, 0, nil, false, ErrSubmissionConflict
+		}
+		return QueuedTurn{}, 0, append([]byte(nil), savedResult...), true, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("check replacement submission: %w", err)
+	}
+
+	var originalData []byte
+	if err := tx.QueryRowContext(ctx, `SELECT data FROM sessions WHERE id = ? AND workspace = ?`, queued.SessionID, workspace).Scan(&originalData); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return QueuedTurn{}, 0, nil, false, fmt.Errorf("session %q does not exist in workspace", queued.SessionID)
+		}
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("load session for history replacement: %w", err)
+	}
+	var savedSession struct {
+		History json.RawMessage `json:"history"`
+	}
+	if err := json.Unmarshal(originalData, &savedSession); err != nil {
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("decode session history for replacement: %w", err)
+	}
+	if len(savedSession.History) == 0 {
+		savedSession.History = json.RawMessage("null")
+	}
+	currentHistoryDigest := fmt.Sprintf("%x", sha256.Sum256(savedSession.History))
+	if currentHistoryDigest != expectedHistoryDigest {
+		return QueuedTurn{}, 0, nil, false, errors.New("session history changed; preview the edit again")
+	}
+
+	updated, err := tx.ExecContext(ctx, `UPDATE sessions
+		SET data = CAST(json_set(
+			json_set(
+				json_set(
+					json_set(CAST(data AS TEXT), '$.history', json(?)),
+					'$.model_context', json('null')),
+				'$.model_context_key', ''),
+			'$.agent_context', json('null')) AS BLOB), updated_at = ?
+		WHERE id = ? AND workspace = ? AND data = ?`, string(history), now.UnixNano(), queued.SessionID, workspace, originalData)
+	if err != nil {
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("replace session history: %w", err)
+	}
+	changed, err := updated.RowsAffected()
+	if err != nil {
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("check session history replacement: %w", err)
+	}
+	if changed == 0 {
+		return QueuedTurn{}, 0, nil, false, errors.New("session changed while replacing history; retry the edit")
+	}
+
+	if err := tx.QueryRowContext(ctx, `SELECT coalesce(MAX(position), 0) + 1 FROM queued_turn_inputs WHERE session_id = ?`, queued.SessionID).Scan(&queued.Position); err != nil {
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("allocate replacement turn position: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO queued_turn_inputs(session_id, queue_id, position, execution_id, request, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)`, queued.SessionID, queued.QueueID, queued.Position, queued.ExecutionID, []byte(queued.Request), queued.Status, now.UnixNano(), now.UnixNano()); err != nil {
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("enqueue replacement turn: %w", err)
+	}
+	cursor, err := appendRuntimeEventTx(ctx, tx, queued.SessionID, event, now)
+	if err != nil {
+		return QueuedTurn{}, 0, nil, false, err
+	}
+	result, err := encodeResult(queued)
+	if err != nil {
+		return QueuedTurn{}, 0, nil, false, err
+	}
+	if !json.Valid(result) {
+		return QueuedTurn{}, 0, nil, false, errors.New("submission result encoder returned invalid JSON")
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO turn_submission_dedup(session_id, submission_id, request_digest, result, created_at) VALUES(?, ?, ?, ?, ?)`, queued.SessionID, submissionID, submissionDigest, result, now.UnixNano()); err != nil {
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("store replacement submission result: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return QueuedTurn{}, 0, nil, false, fmt.Errorf("commit history replacement and turn: %w", err)
+	}
+	return queued, cursor, result, false, nil
 }
 
 func (s *Store) ClaimNextQueuedTurn(ctx context.Context, sessionID string) (QueuedTurn, bool, error) {

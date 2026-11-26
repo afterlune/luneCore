@@ -30,6 +30,10 @@ func (c *Core) submitTurnWithID(ctx context.Context, sessionID string, request T
 }
 
 func (c *Core) submitTurnAdmittedWithID(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, submissionID string, digest []byte) (TurnSubmission, <-chan turnResult, error) {
+	return c.submitTurnAdmittedWithIDAndHistory(ctx, sessionID, request, mode, wait, submissionID, digest, nil, "", 0)
+}
+
+func (c *Core) submitTurnAdmittedWithIDAndHistory(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, submissionID string, digest []byte, replacementHistory json.RawMessage, expectedHistoryDigest string, replacedUserTurns int) (TurnSubmission, <-chan turnResult, error) {
 
 	if c == nil || ctx == nil || sessionID == "" {
 		return TurnSubmission{}, nil, errors.New("core, context, and session id are required")
@@ -49,6 +53,9 @@ func (c *Core) submitTurnAdmittedWithID(ctx context.Context, sessionID string, r
 	}
 	if mode != StartIfIdle && mode != QueueInput && mode != SteerInput {
 		return TurnSubmission{}, nil, fmt.Errorf("unsupported submission mode %q", mode)
+	}
+	if len(replacementHistory) > 0 && (mode != StartIfIdle || expectedHistoryDigest == "" || replacedUserTurns <= 0) {
+		return TurnSubmission{}, nil, errors.New("history replacement requires an idle start and a current history preview")
 	}
 	if len(request.Input.Raw) == 0 || !json.Valid(request.Input.Raw) {
 		return TurnSubmission{}, nil, errors.New("task input must be valid JSON")
@@ -180,7 +187,11 @@ func (c *Core) submitTurnAdmittedWithID(ctx context.Context, sessionID string, r
 	var queued session.QueuedTurn
 	var duplicateResult []byte
 	var duplicate bool
-	if submissionID == "" {
+	if len(replacementHistory) > 0 {
+		queued, _, duplicateResult, duplicate, err = c.sessions.ReplaceHistoryAndEnqueueTurn(ctx, queuedTurn, c.workspace, event, submissionID, digest, expectedHistoryDigest, replacementHistory, func(saved session.QueuedTurn) ([]byte, error) {
+			return json.Marshal(TurnSubmission{Status: status, QueueID: saved.QueueID, ExecutionID: executionID, ParentExecutionID: steeringParentID, Position: saved.Position, ReplacedUserTurns: replacedUserTurns})
+		})
+	} else if submissionID == "" {
 		queued, _, err = c.sessions.EnqueueTurn(ctx, queuedTurn, event)
 	} else {
 		queued, _, duplicateResult, duplicate, err = c.sessions.EnqueueTurnIdempotent(ctx, queuedTurn, event, submissionID, digest, func(saved session.QueuedTurn) ([]byte, error) {
@@ -206,5 +217,5 @@ func (c *Core) submitTurnAdmittedWithID(ctx context.Context, sessionID string, r
 	unlock()
 	c.eventHub(sessionID).notifyDurable()
 	c.scheduleQueueDrain(sessionID)
-	return TurnSubmission{Status: status, QueueID: queued.QueueID, ExecutionID: executionID, ParentExecutionID: steeringParentID, Position: queued.Position}, waiter, nil
+	return TurnSubmission{Status: status, QueueID: queued.QueueID, ExecutionID: executionID, ParentExecutionID: steeringParentID, Position: queued.Position, ReplacedUserTurns: replacedUserTurns}, waiter, nil
 }

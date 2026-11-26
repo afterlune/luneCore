@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -70,6 +71,7 @@ type TurnSubmission struct {
 	ExecutionID       string           `json:"executionId"`
 	ParentExecutionID string           `json:"parentExecutionId,omitempty"`
 	Position          int64            `json:"position"`
+	ReplacedUserTurns int              `json:"replacedUserTurns,omitempty"`
 }
 
 type QueuedTurnState struct {
@@ -155,6 +157,16 @@ type turnResult struct {
 }
 
 func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (_ *SessionRuntime, err error) {
+	return c.openSessionRuntime(ctx, sessionID, true)
+}
+
+// OpenSessionRuntimeReadOnly opens a runtime handle for snapshots and
+// inspection without reconciling or starting queued turns.
+func (c *Core) OpenSessionRuntimeReadOnly(ctx context.Context, sessionID string) (_ *SessionRuntime, err error) {
+	return c.openSessionRuntime(ctx, sessionID, false)
+}
+
+func (c *Core) openSessionRuntime(ctx context.Context, sessionID string, initialize bool) (_ *SessionRuntime, err error) {
 	if c == nil || ctx == nil || sessionID == "" {
 		return nil, errors.New("core, context, and session id are required")
 	}
@@ -185,15 +197,17 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (_ *Ses
 		c.removeEventHub(sessionID, hub)
 		return nil, err
 	}
-	reconcile := !c.sessionIsRunningLocked(sessionID) && !c.queueDraining[sessionID]
+	reconcile := initialize && !c.sessionIsRunningLocked(sessionID) && !c.queueDraining[sessionID]
 	c.mu.Unlock()
 	if reconcile {
 		if err := c.reconcileQueuedTurns(ctx, sessionID); err != nil {
 			return nil, err
 		}
 	}
-	if err := c.restoreGoal(ctx, sessionID); err != nil {
-		return nil, err
+	if initialize {
+		if err := c.restoreGoal(ctx, sessionID); err != nil {
+			return nil, err
+		}
 	}
 	c.mu.RLock()
 	closing := c.closed || c.closing
@@ -202,7 +216,9 @@ func (c *Core) OpenSessionRuntime(ctx context.Context, sessionID string) (_ *Ses
 		c.removeEventHub(sessionID, hub)
 		return nil, errors.New("core is closed")
 	}
-	c.scheduleQueueDrain(sessionID)
+	if initialize {
+		c.scheduleQueueDrain(sessionID)
+	}
 	keepSessionLock = true
 	return &SessionRuntime{core: c, sessionID: sessionID}, nil
 }
@@ -268,6 +284,47 @@ func (r *SessionRuntime) SubmitTurnWithID(ctx context.Context, request TurnReque
 		return TurnSubmission{}, errors.New("session runtime, context, submission id, and digest are required")
 	}
 	submission, _, err := r.core.submitTurnWithID(ctx, r.sessionID, request, mode, false, submissionID, digest)
+	return submission, err
+}
+
+// ReplaceHistoryAndSubmitTurnWithID atomically removes the requested number
+// of most recent user turns and accepts their replacement turn. The preview
+// digest protects edits made against stale conversation history.
+func (r *SessionRuntime) ReplaceHistoryAndSubmitTurnWithID(ctx context.Context, userTurns int, historyDigest string, request TurnRequest, submissionID string, digest []byte) (TurnSubmission, error) {
+	if r == nil || r.core == nil || ctx == nil || userTurns <= 0 || len(historyDigest) != 64 || submissionID == "" || len(digest) == 0 {
+		return TurnSubmission{}, errors.New("session runtime, context, positive turn count, history digest, submission id, and submission digest are required")
+	}
+	c := r.core
+	if err := lockContext(ctx, &c.queueMutationMu); err != nil {
+		return TurnSubmission{}, err
+	}
+	defer c.queueMutationMu.Unlock()
+
+	if savedResult, found, err := c.sessions.TurnSubmission(ctx, r.sessionID, submissionID, digest); err != nil {
+		return TurnSubmission{}, err
+	} else if found {
+		var submission TurnSubmission
+		if err := json.Unmarshal(savedResult, &submission); err != nil {
+			return TurnSubmission{}, fmt.Errorf("decode saved history replacement: %w", err)
+		}
+		return submission, nil
+	}
+	saved, err := c.GetSession(ctx, r.sessionID)
+	if err != nil {
+		return TurnSubmission{}, err
+	}
+	currentDigest := fmt.Sprintf("%x", sha256.Sum256(saved.History))
+	if currentDigest != historyDigest {
+		return TurnSubmission{}, errors.New("session history changed; preview the edit again")
+	}
+	replacementHistory, removed, err := rewoundHistory(saved.History, userTurns)
+	if err != nil {
+		return TurnSubmission{}, err
+	}
+	if removed == 0 {
+		return TurnSubmission{}, errors.New("there are no user turns to replace")
+	}
+	submission, _, err := c.submitTurnAdmittedWithIDAndHistory(ctx, r.sessionID, request, StartIfIdle, false, submissionID, digest, replacementHistory, historyDigest, removed)
 	return submission, err
 }
 
@@ -566,4 +623,31 @@ func (r *SessionRuntime) WaitTurn(ctx context.Context, executionID string) (Turn
 			return TurnResult{}, ctx.Err()
 		}
 	}
+}
+
+// GetTurnResult reads a durable turn outcome without waiting or scheduling
+// queued work. It is safe for inspection endpoints and restored clients.
+func (r *SessionRuntime) GetTurnResult(ctx context.Context, executionID string) (TurnResult, bool, error) {
+	if r == nil || r.core == nil || ctx == nil || executionID == "" {
+		return TurnResult{}, false, errors.New("session runtime, context, and execution id are required")
+	}
+	stored, found, err := r.core.sessions.TurnResult(ctx, r.sessionID, executionID)
+	if err != nil || !found {
+		return TurnResult{}, found, err
+	}
+	result := TurnResult{
+		ExecutionID:  stored.ExecutionID,
+		Status:       TaskStatus(stored.Status),
+		Response:     append(json.RawMessage(nil), stored.Response...),
+		BudgetReason: BudgetReason(stored.BudgetReason),
+	}
+	if len(stored.ModelFailure) > 0 {
+		if err := json.Unmarshal(stored.ModelFailure, &result.ModelFailure); err != nil {
+			return TurnResult{}, false, fmt.Errorf("decode model failure: %w", err)
+		}
+	}
+	if result.Status == TaskCompleted {
+		result.ProposedPlan = extractProposedPlan(result.Response)
+	}
+	return result, true, nil
 }

@@ -66,6 +66,14 @@ func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcErro
 	switch method {
 	case "workspace.info", "workspace.listDirectory", "workspace.readFile":
 		return c.workspaceFiles(method, raw)
+	case "review.start":
+		return c.startWorkspaceReview(raw)
+	case "review.get":
+		return c.getWorkspaceReview(raw)
+	case "diagnosis.start":
+		return c.startTaskDiagnosis(raw)
+	case "diagnosis.get":
+		return c.getTaskDiagnosis(raw)
 	case "session.historyPage":
 		return c.historyPage(raw)
 	case "session.search":
@@ -122,10 +130,12 @@ func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcErro
 			"permissionMode":  string(c.server.core.PermissionMode()),
 			"capabilities": []string{
 				"session.search", "session.fork", "session.rewind", "session.compact",
-				"turn.cancelQueued", "turn.cancelPending", "turn.replaceQueued",
+				"turn.cancelQueued", "turn.cancelPending", "turn.replaceQueued", "turn.replaceHistory",
 				"turn.plan", "turn.implementPlan", "turn.attachments", "session.historyPage",
 				"goal.manage", "question.draft", "command.control", "mcp.inspect", "workspace.files",
 				"permission.manage",
+				"review.workspace",
+				"task.diagnose",
 			},
 		}, nil
 	case "session.create":
@@ -259,6 +269,8 @@ func (c *connection) dispatch(method string, raw json.RawMessage) (any, *rpcErro
 		})
 	case "turn.submit":
 		return c.submitTurn(raw)
+	case "turn.replaceHistory":
+		return c.replaceHistoryAndSubmitTurn(raw)
 	case "turn.wait":
 		var params struct {
 			SessionID   string `json:"sessionId"`
@@ -413,6 +425,56 @@ func (c *connection) submitTurn(raw json.RawMessage) (any, *rpcError) {
 	}
 	return c.withRuntime(c.ctx, params.SessionID, func(runtime *core.SessionRuntime) (any, error) {
 		return runtime.SubmitTurnWithID(c.ctx, request, params.Mode, params.SubmissionID, digest[:])
+	})
+}
+
+func (c *connection) replaceHistoryAndSubmitTurn(raw json.RawMessage) (any, *rpcError) {
+	var params struct {
+		SessionID     string                `json:"sessionId"`
+		SubmissionID  string                `json:"submissionId"`
+		Turns         int                   `json:"turns"`
+		HistoryDigest string                `json:"historyDigest"`
+		Input         json.RawMessage       `json:"input"`
+		Mode          core.SubmissionMode   `json:"mode,omitempty"`
+		PlanMode      bool                  `json:"planMode,omitempty"`
+		Attachments   []attachment          `json:"attachments,omitempty"`
+		Model         string                `json:"model,omitempty"`
+		MaxToolRounds int                   `json:"maxToolRounds,omitempty"`
+		Execution     core.ExecutionOptions `json:"execution,omitempty"`
+	}
+	if err := c.readParams(raw, &params); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(params.SubmissionID) == "" || len(params.SubmissionID) > 128 || params.Turns <= 0 || len(params.HistoryDigest) != 64 {
+		return nil, &rpcError{Code: -32602, Message: "submissionId, positive turns, and a history preview digest are required"}
+	}
+	if len(params.Input) == 0 || !json.Valid(params.Input) {
+		return nil, &rpcError{Code: -32602, Message: "input must be valid JSON"}
+	}
+	if params.Mode == "" {
+		params.Mode = core.StartIfIdle
+	}
+	if params.Mode != core.StartIfIdle {
+		return nil, &rpcError{Code: -32602, Message: "history replacement must start only when the session is idle"}
+	}
+	digestInput, err := json.Marshal(params)
+	if err != nil {
+		return nil, applicationError(err)
+	}
+	digest := sha256.Sum256(digestInput)
+	input := params.Input
+	if len(params.Attachments) > 0 {
+		input, err = attachmentInput(submitParams{Input: params.Input, Attachments: params.Attachments})
+		if err != nil {
+			return nil, &rpcError{Code: -32602, Message: err.Error()}
+		}
+	}
+	request := core.TurnRequest{
+		Input: core.TaskInput{Raw: input}, Model: params.Model, PlanMode: params.PlanMode, RequireImageProfile: len(params.Attachments) > 0,
+		MaxToolRounds: params.MaxToolRounds, Execution: params.Execution,
+	}
+	return c.withRuntime(c.ctx, params.SessionID, func(runtime *core.SessionRuntime) (any, error) {
+		return runtime.ReplaceHistoryAndSubmitTurnWithID(c.ctx, params.Turns, params.HistoryDigest, request, params.SubmissionID, digest[:])
 	})
 }
 

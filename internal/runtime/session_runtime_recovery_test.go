@@ -49,6 +49,10 @@ func TestSessionRuntimeWaitTurnResultSurvivesReopen(t *testing.T) {
 	if err != nil || result.Status != TaskCompleted || string(result.Response) != string(firstResponse) {
 		t.Fatalf("repeated WaitTurn result = %#v, error=%v", result, err)
 	}
+	readResult, found, err := runtime.GetTurnResult(context.Background(), submission.ExecutionID)
+	if err != nil || !found || readResult.Status != TaskCompleted || string(readResult.Response) != string(firstResponse) {
+		t.Fatalf("GetTurnResult = %#v, found=%t, error=%v", readResult, found, err)
+	}
 	if err := client.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +73,10 @@ func TestSessionRuntimeWaitTurnResultSurvivesReopen(t *testing.T) {
 	result, err = runtime.WaitTurn(context.Background(), submission.ExecutionID)
 	if err != nil || result.Status != TaskCompleted || string(result.Response) != string(firstResponse) {
 		t.Fatalf("reopened WaitTurn result = %#v, error=%v", result, err)
+	}
+	readResult, found, err = runtime.GetTurnResult(context.Background(), submission.ExecutionID)
+	if err != nil || !found || readResult.Status != TaskCompleted || string(readResult.Response) != string(firstResponse) {
+		t.Fatalf("reopened GetTurnResult = %#v, found=%t, error=%v", readResult, found, err)
 	}
 	fork, err := reopened.ForkSession(context.Background(), saved.ID)
 	if err != nil {

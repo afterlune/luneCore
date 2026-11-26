@@ -271,6 +271,46 @@ func (s *Store) ListPage(ctx context.Context, workspace string, offset, limit in
 	`, workspace, includeArchived, limit, offset)
 }
 
+// ListIDsPage returns session IDs without reading the serialized transcript.
+// It keeps task dashboards efficient for sessions with large histories.
+func (s *Store) ListIDsPage(ctx context.Context, workspace string, offset, limit int, includeArchived bool) ([]string, error) {
+	if s == nil || s.db == nil {
+		return nil, errors.New("session store is not open")
+	}
+	if strings.TrimSpace(workspace) == "" {
+		return nil, errors.New("workspace is required")
+	}
+	if offset < 0 {
+		return nil, errors.New("session page offset cannot be negative")
+	}
+	if limit <= 0 {
+		limit = 30
+	} else if limit > 100 {
+		limit = 100
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id FROM sessions
+		WHERE workspace = ? AND (? OR coalesce(json_extract(CAST(data AS TEXT), '$.archived'), 0) = 0)
+		ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?
+	`, workspace, includeArchived, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("query session ids: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("read session id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read session ids: %w", err)
+	}
+	return ids, nil
+}
+
 func (s *Store) query(ctx context.Context, statement string, args ...any) ([]Snapshot, error) {
 	if s == nil || s.db == nil {
 		return nil, errors.New("session store is not open")

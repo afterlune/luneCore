@@ -6,6 +6,37 @@ import (
 	"errors"
 )
 
+// RecentRuntimeEvents returns the newest durable runtime events without
+// subscribing to the live stream or scheduling queued work.
+func (r *SessionRuntime) RecentRuntimeEvents(ctx context.Context, limit int) ([]Event, error) {
+	if r == nil || r.core == nil || ctx == nil || limit <= 0 || limit > 2000 {
+		return nil, errors.New("session runtime, context, and a limit from 1 to 2000 are required")
+	}
+	latest, err := r.core.sessions.LatestRuntimeEventCursor(ctx, r.sessionID)
+	if err != nil {
+		return nil, err
+	}
+	after := latest - int64(limit)
+	if after < 0 {
+		after = 0
+	}
+	stored, err := r.core.sessions.RuntimeEventsAfter(ctx, r.sessionID, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	events := make([]Event, 0, len(stored))
+	for _, item := range stored {
+		var event Event
+		if err := json.Unmarshal(item.Payload, &event); err != nil {
+			return nil, err
+		}
+		event.Cursor = item.Cursor
+		event.OccurredAt = item.CreatedAt
+		events = append(events, event)
+	}
+	return events, nil
+}
+
 // SubscribeEvents replays durable events after afterCursor, then follows new
 // events. Model stream deltas are live-only and may be dropped if a consumer is slow.
 func (r *SessionRuntime) SubscribeEvents(ctx context.Context, afterCursor int64) (<-chan Event, error) {

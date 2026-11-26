@@ -193,6 +193,7 @@ type ProposedPlan = coreruntime.ProposedPlan
 type QueuedTurnState = coreruntime.QueuedTurnState
 type RuntimeState = coreruntime.RuntimeState
 type Session = coreruntime.Session
+type SessionTaskSnapshot = coreruntime.SessionTaskSnapshot
 type SessionRuntime = coreruntime.SessionRuntime
 type SessionSettings = coreruntime.SessionSettings
 type SessionApproval = coreruntime.SessionApproval
