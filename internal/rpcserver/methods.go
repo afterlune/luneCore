@@ -23,6 +23,7 @@ type sessionSummary struct {
 	Title              string                      `json:"title"`
 	Archived           bool                        `json:"archived"`
 	Settings           sessionSettings             `json:"settings"`
+	Analysis           *core.AnalysisMetadata      `json:"analysis,omitempty"`
 	UsageRequests      []core.UsageRecord          `json:"usageRequests,omitempty"`
 	AgentUsage         map[string]core.UsageTotals `json:"agentUsage,omitempty"`
 	AgentUsageComplete bool                        `json:"agentUsageComplete"`
@@ -51,6 +52,7 @@ func summarizeSession(session core.Session) sessionSummary {
 	return sessionSummary{
 		ID: session.ID, UpdatedAt: session.UpdatedAt, DataVersion: session.DataVersion,
 		Title: session.Title, Archived: session.Archived,
+		Analysis: session.Analysis,
 		Settings: sessionSettings{
 			ModelProfile: session.Settings.ModelProfile, ReasoningEffort: session.Settings.ReasoningEffort,
 			ContextWindow: session.Settings.ContextWindow, ReserveOutputTokens: session.Settings.ReserveOutputTokens,

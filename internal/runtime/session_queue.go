@@ -19,6 +19,10 @@ func (c *Core) submitTurnAdmitted(ctx context.Context, sessionID string, request
 }
 
 func (c *Core) submitTurnWithID(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, submissionID string, digest []byte) (TurnSubmission, <-chan turnResult, error) {
+	return c.submitTurnWithIDAndAnalysis(ctx, sessionID, request, mode, wait, submissionID, digest, nil)
+}
+
+func (c *Core) submitTurnWithIDAndAnalysis(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, submissionID string, digest []byte, analysis *AnalysisMetadata) (TurnSubmission, <-chan turnResult, error) {
 	if c == nil || ctx == nil {
 		return TurnSubmission{}, nil, errors.New("core and context are required")
 	}
@@ -26,14 +30,22 @@ func (c *Core) submitTurnWithID(ctx context.Context, sessionID string, request T
 		return TurnSubmission{}, nil, err
 	}
 	defer c.queueMutationMu.Unlock()
-	return c.submitTurnAdmittedWithID(ctx, sessionID, request, mode, wait, submissionID, digest)
+	return c.submitTurnAdmittedWithIDAndAnalysis(ctx, sessionID, request, mode, wait, submissionID, digest, analysis)
 }
 
 func (c *Core) submitTurnAdmittedWithID(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, submissionID string, digest []byte) (TurnSubmission, <-chan turnResult, error) {
-	return c.submitTurnAdmittedWithIDAndHistory(ctx, sessionID, request, mode, wait, submissionID, digest, nil, "", 0)
+	return c.submitTurnAdmittedWithIDAndAnalysis(ctx, sessionID, request, mode, wait, submissionID, digest, nil)
+}
+
+func (c *Core) submitTurnAdmittedWithIDAndAnalysis(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, submissionID string, digest []byte, analysis *AnalysisMetadata) (TurnSubmission, <-chan turnResult, error) {
+	return c.submitTurnAdmittedWithIDAndHistoryAndAnalysis(ctx, sessionID, request, mode, wait, submissionID, digest, nil, "", 0, analysis)
 }
 
 func (c *Core) submitTurnAdmittedWithIDAndHistory(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, submissionID string, digest []byte, replacementHistory json.RawMessage, expectedHistoryDigest string, replacedUserTurns int) (TurnSubmission, <-chan turnResult, error) {
+	return c.submitTurnAdmittedWithIDAndHistoryAndAnalysis(ctx, sessionID, request, mode, wait, submissionID, digest, replacementHistory, expectedHistoryDigest, replacedUserTurns, nil)
+}
+
+func (c *Core) submitTurnAdmittedWithIDAndHistoryAndAnalysis(ctx context.Context, sessionID string, request TurnRequest, mode SubmissionMode, wait bool, submissionID string, digest []byte, replacementHistory json.RawMessage, expectedHistoryDigest string, replacedUserTurns int, analysis *AnalysisMetadata) (TurnSubmission, <-chan turnResult, error) {
 
 	if c == nil || ctx == nil || sessionID == "" {
 		return TurnSubmission{}, nil, errors.New("core, context, and session id are required")
@@ -90,6 +102,18 @@ func (c *Core) submitTurnAdmittedWithIDAndHistory(ctx context.Context, sessionID
 	executionID, err := newID()
 	if err != nil {
 		return TurnSubmission{}, nil, err
+	}
+	var analysisJSON json.RawMessage
+	if analysis != nil {
+		if (analysis.Kind != "review" && analysis.Kind != "diagnosis") || analysis.SourceSessionID == "" || len(analysis.EvidenceDigest) != 64 {
+			return TurnSubmission{}, nil, errors.New("analysis kind, source session, and evidence digest are required")
+		}
+		persistedAnalysis := *analysis
+		persistedAnalysis.ExecutionID = executionID
+		analysisJSON, err = json.Marshal(persistedAnalysis)
+		if err != nil {
+			return TurnSubmission{}, nil, fmt.Errorf("encode analysis metadata: %w", err)
+		}
 	}
 	queueID, err := newID()
 	if err != nil {
@@ -193,6 +217,10 @@ func (c *Core) submitTurnAdmittedWithIDAndHistory(ctx context.Context, sessionID
 		})
 	} else if submissionID == "" {
 		queued, _, err = c.sessions.EnqueueTurn(ctx, queuedTurn, event)
+	} else if len(analysisJSON) > 0 {
+		queued, _, duplicateResult, duplicate, err = c.sessions.EnqueueTurnIdempotentWithAnalysis(ctx, queuedTurn, event, submissionID, digest, func(saved session.QueuedTurn) ([]byte, error) {
+			return json.Marshal(TurnSubmission{Status: status, QueueID: saved.QueueID, ExecutionID: executionID, ParentExecutionID: steeringParentID, Position: saved.Position})
+		}, analysisJSON)
 	} else {
 		queued, _, duplicateResult, duplicate, err = c.sessions.EnqueueTurnIdempotent(ctx, queuedTurn, event, submissionID, digest, func(saved session.QueuedTurn) ([]byte, error) {
 			return json.Marshal(TurnSubmission{Status: status, QueueID: saved.QueueID, ExecutionID: executionID, ParentExecutionID: steeringParentID, Position: saved.Position})

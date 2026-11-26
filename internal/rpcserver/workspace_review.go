@@ -11,6 +11,7 @@ import (
 
 	core "github.com/afterlune/luneCore"
 	"github.com/afterlune/luneCore/internal/workspacereview"
+	coremodel "github.com/afterlune/luneCore/model"
 )
 
 type workspaceReviewStartParams struct {
@@ -59,7 +60,11 @@ func (c *connection) startWorkspaceReview(raw json.RawMessage) (any, *rpcError) 
 	}
 	prompt += link + " This is an independent review; do not continue or alter the source conversation."
 
-	reviewSession, executionID, err := c.startReadOnlyAnalysis(source, "Review · ", prompt)
+	metadata := core.AnalysisMetadata{
+		Kind: "review", SourceSessionID: source.ID, SourceExecutionID: params.SourceExecutionID,
+		EvidenceDigest: materials.Digest, Path: params.Path,
+	}
+	reviewSession, executionID, err := c.startReadOnlyAnalysis(source, "Review · ", prompt, metadata)
 	if err != nil {
 		return nil, applicationError(err)
 	}
@@ -70,7 +75,7 @@ func (c *connection) startWorkspaceReview(raw json.RawMessage) (any, *rpcError) 
 	}, nil
 }
 
-func (c *connection) startReadOnlyAnalysis(source core.Session, titlePrefix, prompt string) (sessionSummary, string, error) {
+func (c *connection) startReadOnlyAnalysis(source core.Session, titlePrefix, prompt string, analysis core.AnalysisMetadata) (sessionSummary, string, error) {
 	reviewSession, err := c.server.core.CreateSession(c.ctx, nil)
 	if err != nil {
 		return sessionSummary{}, "", err
@@ -116,10 +121,10 @@ func (c *connection) startReadOnlyAnalysis(source core.Session, titlePrefix, pro
 	if err != nil {
 		return sessionSummary{}, "", err
 	}
-	submission, submitErr := runtime.SubmitTurnWithID(c.ctx, core.TurnRequest{
+	submission, submitErr := runtime.SubmitAnalysisTurnWithID(c.ctx, core.TurnRequest{
 		Input:          core.TaskInput{Raw: input},
 		PermissionMode: core.PermissionReadOnly,
-	}, core.StartIfIdle, submissionID, submissionDigest[:])
+	}, core.StartIfIdle, submissionID, submissionDigest[:], analysis)
 	closeErr := runtime.Close(context.Background())
 	if err := errors.Join(submitErr, closeErr); err != nil {
 		return sessionSummary{}, "", err
@@ -133,30 +138,44 @@ func (c *connection) startReadOnlyAnalysis(source core.Session, titlePrefix, pro
 
 func (c *connection) getWorkspaceReview(raw json.RawMessage) (any, *rpcError) {
 	var params struct {
-		SessionID       string `json:"sessionId"`
-		SourceSessionID string `json:"sourceSessionId"`
-		ExecutionID     string `json:"executionId,omitempty"`
-		Path            string `json:"path,omitempty"`
-		MaterialsDigest string `json:"materialsDigest"`
+		SessionID         string `json:"sessionId"`
+		SourceSessionID   string `json:"sourceSessionId"`
+		SourceExecutionID string `json:"sourceExecutionId,omitempty"`
+		ExecutionID       string `json:"executionId,omitempty"`
+		Path              string `json:"path,omitempty"`
+		MaterialsDigest   string `json:"materialsDigest"`
 	}
 	if err := c.readParams(raw, &params); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(params.SessionID) == "" || strings.TrimSpace(params.SourceSessionID) == "" || len(params.MaterialsDigest) != 64 {
-		return nil, &rpcError{Code: -32602, Message: "sessionId, sourceSessionId, and materialsDigest are required"}
+	if strings.TrimSpace(params.SessionID) == "" {
+		return nil, &rpcError{Code: -32602, Message: "sessionId is required"}
 	}
 	saved, err := c.server.core.GetSession(c.ctx, params.SessionID)
 	if err != nil {
 		return nil, applicationError(err)
 	}
-	materials, err := workspacereview.CollectMaterialsSnapshot(c.server.core.Workspace(), params.Path)
+	metadata, rpcErr := resolveAnalysisMetadata(saved, "review", core.AnalysisMetadata{
+		SourceSessionID:   strings.TrimSpace(params.SourceSessionID),
+		SourceExecutionID: strings.TrimSpace(params.SourceExecutionID), ExecutionID: strings.TrimSpace(params.ExecutionID),
+		EvidenceDigest: strings.TrimSpace(params.MaterialsDigest), Path: params.Path,
+	})
+	if rpcErr != nil {
+		return nil, rpcErr
+	}
+	materials, err := workspacereview.CollectMaterialsSnapshot(c.server.core.Workspace(), metadata.Path)
 	if err != nil {
 		return nil, applicationError(err)
 	}
 	currentDigest := materials.Digest
 	var sourceTitle string
-	if source, sourceErr := c.server.core.GetSession(c.ctx, params.SourceSessionID); sourceErr == nil {
+	sourceAvailable := true
+	if source, sourceErr := c.server.core.GetSession(c.ctx, metadata.SourceSessionID); sourceErr == nil {
 		sourceTitle = source.Title
+	} else if errors.Is(sourceErr, core.ErrSessionNotFound) {
+		sourceAvailable = false
+	} else {
+		return nil, applicationError(sourceErr)
 	}
 	runtime, err := c.server.core.OpenSessionRuntimeReadOnly(c.ctx, params.SessionID)
 	if err != nil {
@@ -164,8 +183,8 @@ func (c *connection) getWorkspaceReview(raw json.RawMessage) (any, *rpcError) {
 	}
 	state, stateErr := runtime.State(c.ctx)
 	var turnResult *core.TurnResult
-	if params.ExecutionID != "" {
-		if result, found, resultErr := runtime.GetTurnResult(c.ctx, params.ExecutionID); resultErr != nil {
+	if metadata.ExecutionID != "" {
+		if result, found, resultErr := runtime.GetTurnResult(c.ctx, metadata.ExecutionID); resultErr != nil {
 			stateErr = errors.Join(stateErr, resultErr)
 		} else if found {
 			turnResult = &result
@@ -178,8 +197,37 @@ func (c *connection) getWorkspaceReview(raw json.RawMessage) (any, *rpcError) {
 	return map[string]any{
 		"session": summarizeSession(saved), "runtime": state, "history": saved.History,
 		"turnResult":      turnResult,
-		"sourceSessionId": params.SourceSessionID, "sourceTitle": sourceTitle,
-		"materialsDigest": params.MaterialsDigest, "currentMaterialsDigest": currentDigest,
-		"stale": currentDigest != params.MaterialsDigest,
+		"report":          analysisReport(turnResult),
+		"sourceSessionId": metadata.SourceSessionID, "sourceExecutionId": metadata.SourceExecutionID,
+		"sourceTitle": sourceTitle, "sourceAvailable": sourceAvailable,
+		"executionId": metadata.ExecutionID, "path": metadata.Path,
+		"materialsDigest": metadata.EvidenceDigest, "currentMaterialsDigest": currentDigest,
+		"stale": !sourceAvailable || currentDigest != metadata.EvidenceDigest,
 	}, nil
+}
+
+func analysisReport(result *core.TurnResult) string {
+	if result == nil || result.Status != core.TaskCompleted || len(result.Response) == 0 {
+		return ""
+	}
+	var response coremodel.ModelResponse
+	if err := json.Unmarshal(result.Response, &response); err != nil {
+		return ""
+	}
+	var report strings.Builder
+	for _, item := range response.Output {
+		message, ok := item.(coremodel.OutputMessage)
+		if !ok || message.Role != coremodel.RoleAssistant {
+			continue
+		}
+		for _, part := range message.Content {
+			if text, ok := part.(coremodel.OutputText); ok && strings.TrimSpace(text.Text) != "" {
+				if report.Len() > 0 {
+					report.WriteString("\n")
+				}
+				report.WriteString(text.Text)
+			}
+		}
+	}
+	return strings.TrimSpace(report.String())
 }

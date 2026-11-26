@@ -119,6 +119,7 @@ var (
 	ErrPlanUnavailable            = coreruntime.ErrPlanUnavailable
 	ErrPlanOutdated               = coreruntime.ErrPlanOutdated
 	ErrSessionBusy                = coreruntime.ErrSessionBusy
+	ErrSessionNotFound            = coreruntime.ErrSessionNotFound
 	ErrTaskPaused                 = coreruntime.ErrTaskPaused
 	ErrTurnNotFound               = coreruntime.ErrTurnNotFound
 	ErrQueuedTurnStarted          = coreruntime.ErrQueuedTurnStarted
@@ -193,6 +194,7 @@ type ProposedPlan = coreruntime.ProposedPlan
 type QueuedTurnState = coreruntime.QueuedTurnState
 type RuntimeState = coreruntime.RuntimeState
 type Session = coreruntime.Session
+type AnalysisMetadata = coreruntime.AnalysisMetadata
 type SessionTaskSnapshot = coreruntime.SessionTaskSnapshot
 type SessionRuntime = coreruntime.SessionRuntime
 type SessionSettings = coreruntime.SessionSettings

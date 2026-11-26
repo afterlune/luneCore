@@ -56,6 +56,12 @@ func (s *Store) TurnSubmission(ctx context.Context, sessionID, submissionID stri
 // EnqueueTurnIdempotent stores a turn and its replayable submission result in
 // one transaction. Repeating a submission id returns the original result.
 func (s *Store) EnqueueTurnIdempotent(ctx context.Context, queued QueuedTurn, event json.RawMessage, submissionID string, digest []byte, encodeResult func(QueuedTurn) ([]byte, error)) (QueuedTurn, int64, []byte, bool, error) {
+	return s.EnqueueTurnIdempotentWithAnalysis(ctx, queued, event, submissionID, digest, encodeResult, nil)
+}
+
+// EnqueueTurnIdempotentWithAnalysis atomically stores analysis metadata with
+// the queue row, event, and idempotent submission result.
+func (s *Store) EnqueueTurnIdempotentWithAnalysis(ctx context.Context, queued QueuedTurn, event json.RawMessage, submissionID string, digest []byte, encodeResult func(QueuedTurn) ([]byte, error), analysis json.RawMessage) (QueuedTurn, int64, []byte, bool, error) {
 	if s == nil || s.db == nil {
 		return QueuedTurn{}, 0, nil, false, errors.New("session store is not open")
 	}
@@ -64,6 +70,9 @@ func (s *Store) EnqueueTurnIdempotent(ctx context.Context, queued QueuedTurn, ev
 	}
 	if submissionID != "" && (len(digest) == 0 || encodeResult == nil) {
 		return QueuedTurn{}, 0, nil, false, errors.New("submission digest and result encoder are required")
+	}
+	if len(analysis) > 0 && !json.Valid(analysis) {
+		return QueuedTurn{}, 0, nil, false, errors.New("analysis metadata must be valid JSON")
 	}
 	if queued.Status == "" {
 		queued.Status = QueuedTurnQueued
@@ -90,6 +99,21 @@ func (s *Store) EnqueueTurnIdempotent(ctx context.Context, queued QueuedTurn, ev
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
 			return QueuedTurn{}, 0, nil, false, fmt.Errorf("check turn submission: %w", err)
+		}
+	}
+	if len(analysis) > 0 {
+		updated, err := tx.ExecContext(ctx, `UPDATE sessions
+			SET data = CAST(json_set(CAST(data AS TEXT), '$.analysis', json(?)) AS BLOB), updated_at = ?
+			WHERE id = ?`, string(analysis), now.UnixNano(), queued.SessionID)
+		if err != nil {
+			return QueuedTurn{}, 0, nil, false, fmt.Errorf("persist analysis metadata: %w", err)
+		}
+		changed, err := updated.RowsAffected()
+		if err != nil {
+			return QueuedTurn{}, 0, nil, false, fmt.Errorf("check analysis metadata update: %w", err)
+		}
+		if changed == 0 {
+			return QueuedTurn{}, 0, nil, false, fmt.Errorf("session %q does not exist", queued.SessionID)
 		}
 	}
 	if queued.Position < 0 {

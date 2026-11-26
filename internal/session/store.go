@@ -10,6 +10,8 @@ import (
 	"time"
 )
 
+var ErrNotFound = errors.New("session not found")
+
 // Snapshot is the persisted state for one workspace session. Data is owned by
 // the caller so the session package does not depend on the TUI or model layer.
 type Snapshot struct {
@@ -232,7 +234,7 @@ func (s *Store) Get(ctx context.Context, id, workspace string) (*Snapshot, error
 		if err != nil {
 			return nil, err
 		}
-		return nil, fmt.Errorf("session %q not found in workspace", id)
+		return nil, fmt.Errorf("%w: %q in workspace", ErrNotFound, id)
 	}
 	return &rows[0], nil
 }

@@ -91,7 +91,11 @@ func (c *connection) startTaskDiagnosis(raw json.RawMessage) (any, *rpcError) {
 	}
 	digest := sha256.Sum256(encoded)
 	prompt := taskDiagnosisPrompt(encoded, evidence.SourceSessionID, evidence.SourceExecutionID)
-	session, executionID, err := c.startReadOnlyAnalysis(source, "Diagnosis · ", prompt)
+	metadata := core.AnalysisMetadata{
+		Kind: "diagnosis", SourceSessionID: source.ID, SourceExecutionID: params.SourceExecutionID,
+		EvidenceDigest: fmt.Sprintf("%x", digest),
+	}
+	session, executionID, err := c.startReadOnlyAnalysis(source, "Diagnosis · ", prompt, metadata)
 	if err != nil {
 		return nil, applicationError(err)
 	}
@@ -112,30 +116,41 @@ func (c *connection) getTaskDiagnosis(raw json.RawMessage) (any, *rpcError) {
 	if err := c.readParams(raw, &params); err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(params.SessionID) == "" || strings.TrimSpace(params.SourceSessionID) == "" || len(params.EvidenceDigest) != 64 {
-		return nil, &rpcError{Code: -32602, Message: "sessionId, sourceSessionId, and evidenceDigest are required"}
+	if strings.TrimSpace(params.SessionID) == "" {
+		return nil, &rpcError{Code: -32602, Message: "sessionId is required"}
 	}
 	diagnosis, err := c.server.core.GetSession(c.ctx, params.SessionID)
 	if err != nil {
 		return nil, applicationError(err)
 	}
-	source, err := c.server.core.GetSession(c.ctx, params.SourceSessionID)
-	if err != nil {
-		return nil, applicationError(err)
+	metadata, rpcErr := resolveAnalysisMetadata(diagnosis, "diagnosis", core.AnalysisMetadata{
+		SourceSessionID: strings.TrimSpace(params.SourceSessionID), SourceExecutionID: strings.TrimSpace(params.SourceExecutionID),
+		ExecutionID: strings.TrimSpace(params.ExecutionID), EvidenceDigest: strings.TrimSpace(params.EvidenceDigest),
+	})
+	if rpcErr != nil {
+		return nil, rpcErr
 	}
-	_, currentEvidence, err := c.collectTaskDiagnosis(params.SourceSessionID, params.SourceExecutionID, source.History)
-	if err != nil {
-		return nil, applicationError(err)
+	source, sourceErr := c.server.core.GetSession(c.ctx, metadata.SourceSessionID)
+	sourceAvailable := sourceErr == nil
+	currentDigest := ""
+	if sourceAvailable {
+		_, currentEvidence, evidenceErr := c.collectTaskDiagnosis(metadata.SourceSessionID, metadata.SourceExecutionID, source.History)
+		if evidenceErr != nil {
+			return nil, applicationError(evidenceErr)
+		}
+		digest := sha256.Sum256(currentEvidence)
+		currentDigest = fmt.Sprintf("%x", digest)
+	} else if !errors.Is(sourceErr, core.ErrSessionNotFound) {
+		return nil, applicationError(sourceErr)
 	}
-	currentDigest := sha256.Sum256(currentEvidence)
 	runtime, err := c.server.core.OpenSessionRuntimeReadOnly(c.ctx, params.SessionID)
 	if err != nil {
 		return nil, applicationError(err)
 	}
 	state, stateErr := runtime.State(c.ctx)
 	var turnResult *core.TurnResult
-	if params.ExecutionID != "" {
-		if result, found, resultErr := runtime.GetTurnResult(c.ctx, params.ExecutionID); resultErr != nil {
+	if metadata.ExecutionID != "" {
+		if result, found, resultErr := runtime.GetTurnResult(c.ctx, metadata.ExecutionID); resultErr != nil {
 			stateErr = errors.Join(stateErr, resultErr)
 		} else if found {
 			turnResult = &result
@@ -147,11 +162,12 @@ func (c *connection) getTaskDiagnosis(raw json.RawMessage) (any, *rpcError) {
 	}
 	return map[string]any{
 		"session": summarizeSession(diagnosis), "runtime": state, "history": diagnosis.History,
-		"turnResult":      turnResult,
-		"sourceSessionId": source.ID, "sourceTitle": source.Title,
-		"sourceExecutionId": params.SourceExecutionID, "evidenceDigest": params.EvidenceDigest,
-		"currentEvidenceDigest": fmt.Sprintf("%x", currentDigest),
-		"stale":                 fmt.Sprintf("%x", currentDigest) != params.EvidenceDigest,
+		"turnResult": turnResult, "report": analysisReport(turnResult),
+		"sourceSessionId": metadata.SourceSessionID, "sourceTitle": source.Title,
+		"sourceAvailable": sourceAvailable, "executionId": metadata.ExecutionID,
+		"sourceExecutionId": metadata.SourceExecutionID, "evidenceDigest": metadata.EvidenceDigest,
+		"currentEvidenceDigest": currentDigest,
+		"stale":                 !sourceAvailable || currentDigest != metadata.EvidenceDigest,
 	}, nil
 }
 

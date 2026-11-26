@@ -78,6 +78,9 @@ type Session struct {
 	Title       string          `json:"title"`
 	Archived    bool            `json:"archived"`
 	Settings    SessionSettings `json:"settings"`
+	// Analysis links an independent review or diagnosis session to its source.
+	// It is committed together with the analysis turn entering the durable queue.
+	Analysis *AnalysisMetadata `json:"analysis,omitempty"`
 	// PathGrants are explicit, session-scoped grants for built-in filesystem tools.
 	PathGrants []publictool.PathGrant `json:"path_grants,omitempty"`
 	// Approvals are explicit, session-scoped approvals for tool executions.
@@ -96,4 +99,16 @@ type Session struct {
 	AgentUsageComplete bool                   `json:"agent_usage_complete"`
 	TaskUsage          UsageTotals            `json:"task_usage,omitempty"`
 	SessionUsage       UsageTotals            `json:"session_usage,omitempty"`
+}
+
+// AnalysisMetadata identifies the source evidence and original execution for
+// an independent analysis session. It is durable session data so clients can
+// restore the relationship from session.get without browser-local state.
+type AnalysisMetadata struct {
+	Kind              string `json:"kind"`
+	SourceSessionID   string `json:"sourceSessionId"`
+	SourceExecutionID string `json:"sourceExecutionId,omitempty"`
+	ExecutionID       string `json:"executionId"`
+	EvidenceDigest    string `json:"evidenceDigest"`
+	Path              string `json:"path,omitempty"`
 }

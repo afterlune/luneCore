@@ -19,6 +19,7 @@ import (
 
 var (
 	ErrSessionBusy       = errors.New("session already has active or queued work")
+	ErrSessionNotFound   = session.ErrNotFound
 	ErrTaskPaused        = agentruntime.ErrTaskPaused
 	ErrTurnNotFound      = errors.New("execution id does not exist in this session")
 	ErrQueuedTurnStarted = errors.New("queued turn has already started")
@@ -284,6 +285,16 @@ func (r *SessionRuntime) SubmitTurnWithID(ctx context.Context, request TurnReque
 		return TurnSubmission{}, errors.New("session runtime, context, submission id, and digest are required")
 	}
 	submission, _, err := r.core.submitTurnWithID(ctx, r.sessionID, request, mode, false, submissionID, digest)
+	return submission, err
+}
+
+// SubmitAnalysisTurnWithID accepts a read-only analysis turn and persists its
+// source metadata in the same transaction as the durable queue entry.
+func (r *SessionRuntime) SubmitAnalysisTurnWithID(ctx context.Context, request TurnRequest, mode SubmissionMode, submissionID string, digest []byte, analysis AnalysisMetadata) (TurnSubmission, error) {
+	if r == nil || r.core == nil || ctx == nil || submissionID == "" || len(digest) == 0 {
+		return TurnSubmission{}, errors.New("session runtime, context, submission id, and digest are required")
+	}
+	submission, _, err := r.core.submitTurnWithIDAndAnalysis(ctx, r.sessionID, request, mode, false, submissionID, digest, &analysis)
 	return submission, err
 }
 
