@@ -137,16 +137,30 @@ func TestListIndexReturnsAllMetadataWithoutTranscriptLimit(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	for _, id := range []string{"tie-a", "tie-b"} {
+		data, err := json.Marshal(struct {
+			Title string `json:"title"`
+		}{Title: id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Create(ctx, Snapshot{ID: id, Workspace: "workspace", UpdatedAt: time.Unix(502, 0), Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	all, err := store.ListIndex(ctx, "workspace", true)
 	if err != nil {
 		t.Fatalf("ListIndex including archived: %v", err)
 	}
-	if len(all) != 501 {
-		t.Fatalf("ListIndex returned %d entries, want 501", len(all))
+	if len(all) != 503 {
+		t.Fatalf("ListIndex returned %d entries, want 503", len(all))
 	}
-	if all[0].ID != "session-500" || all[0].Title != "title-500" || !all[0].Archived || !all[0].UpdatedAt.Equal(time.Unix(501, 0)) {
-		t.Fatalf("newest metadata = %+v", all[0])
+	if all[0].ID != "tie-b" || all[1].ID != "tie-a" {
+		t.Fatalf("equal-time entries were not ordered by ID: %+v", all[:2])
+	}
+	if all[2].ID != "session-500" || all[2].Title != "title-500" || !all[2].Archived || !all[2].UpdatedAt.Equal(time.Unix(501, 0)) {
+		t.Fatalf("newest session metadata = %+v", all[2])
 	}
 	if all[len(all)-1].ID != "session-000" || all[len(all)-1].Title != "title-000" || !all[len(all)-1].Archived {
 		t.Fatalf("oldest metadata = %+v", all[len(all)-1])
@@ -156,8 +170,8 @@ func TestListIndexReturnsAllMetadataWithoutTranscriptLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListIndex excluding archived: %v", err)
 	}
-	if len(active) != 250 {
-		t.Fatalf("ListIndex returned %d active entries, want 250", len(active))
+	if len(active) != 252 {
+		t.Fatalf("ListIndex returned %d active entries, want 252", len(active))
 	}
 	for _, entry := range active {
 		if entry.Archived {
