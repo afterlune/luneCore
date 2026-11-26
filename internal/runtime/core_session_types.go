@@ -101,6 +101,15 @@ type Session struct {
 	SessionUsage       UsageTotals            `json:"session_usage,omitempty"`
 }
 
+// SessionIndexEntry is the lightweight metadata used to enumerate a workspace's
+// sessions without loading conversation histories.
+type SessionIndexEntry struct {
+	ID        string    `json:"id"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Title     string    `json:"title"`
+	Archived  bool      `json:"archived"`
+}
+
 // AnalysisMetadata identifies the source evidence and original execution for
 // an independent analysis session. It is durable session data so clients can
 // restore the relationship from session.get without browser-local state.

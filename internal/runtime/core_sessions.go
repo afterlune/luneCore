@@ -103,6 +103,25 @@ func (c *Core) ListSessionPage(ctx context.Context, offset, limit int, includeAr
 	return sessions, nil
 }
 
+// ListSessionIndex returns all session metadata from one consistent database
+// query without decoding or returning conversation histories.
+func (c *Core) ListSessionIndex(ctx context.Context, includeArchived bool) ([]SessionIndexEntry, error) {
+	if c == nil || ctx == nil {
+		return nil, errors.New("core and context are required")
+	}
+	entries, err := c.sessions.ListIndex(ctx, c.workspace, includeArchived)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]SessionIndexEntry, 0, len(entries))
+	for _, entry := range entries {
+		result = append(result, SessionIndexEntry{
+			ID: entry.ID, UpdatedAt: entry.UpdatedAt, Title: entry.Title, Archived: entry.Archived,
+		})
+	}
+	return result, nil
+}
+
 func (c *Core) SetSessionTitle(ctx context.Context, sessionID, title string) error {
 	if c == nil || ctx == nil || sessionID == "" {
 		return errors.New("core, context, and session id are required")

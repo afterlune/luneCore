@@ -21,6 +21,15 @@ type Snapshot struct {
 	Data      json.RawMessage
 }
 
+// IndexEntry contains the metadata needed to enumerate sessions without
+// loading their conversation payloads.
+type IndexEntry struct {
+	ID        string
+	UpdatedAt time.Time
+	Title     string
+	Archived  bool
+}
+
 type Store struct{ db *sql.DB }
 
 func (s *Store) Close() error {
@@ -271,6 +280,45 @@ func (s *Store) ListPage(ctx context.Context, workspace string, offset, limit in
 		WHERE workspace = ? AND (? OR coalesce(json_extract(CAST(data AS TEXT), '$.archived'), 0) = 0)
 		ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?
 	`, workspace, includeArchived, limit, offset)
+}
+
+// ListIndex returns all session metadata from one SQLite statement snapshot.
+func (s *Store) ListIndex(ctx context.Context, workspace string, includeArchived bool) ([]IndexEntry, error) {
+	if s == nil || s.db == nil || ctx == nil {
+		return nil, errors.New("session store and context are required")
+	}
+	if strings.TrimSpace(workspace) == "" {
+		return nil, errors.New("workspace is required")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id, updated_at,
+			COALESCE(json_extract(CAST(data AS TEXT), '$.title'), ''),
+			COALESCE(json_extract(CAST(data AS TEXT), '$.archived'), 0)
+		FROM sessions
+		WHERE workspace = ? AND (? OR coalesce(json_extract(CAST(data AS TEXT), '$.archived'), 0) = 0)
+		ORDER BY updated_at DESC, id DESC
+	`, workspace, includeArchived)
+	if err != nil {
+		return nil, fmt.Errorf("query session index: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []IndexEntry
+	for rows.Next() {
+		var entry IndexEntry
+		var updatedAt int64
+		var archived int64
+		if err := rows.Scan(&entry.ID, &updatedAt, &entry.Title, &archived); err != nil {
+			return nil, fmt.Errorf("read session index: %w", err)
+		}
+		entry.UpdatedAt = time.Unix(0, updatedAt)
+		entry.Archived = archived != 0
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read session index: %w", err)
+	}
+	return entries, nil
 }
 
 // ListIDsPage returns session IDs without reading the serialized transcript.

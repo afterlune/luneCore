@@ -194,6 +194,7 @@ type ProposedPlan = coreruntime.ProposedPlan
 type QueuedTurnState = coreruntime.QueuedTurnState
 type RuntimeState = coreruntime.RuntimeState
 type Session = coreruntime.Session
+type SessionIndexEntry = coreruntime.SessionIndexEntry
 type AnalysisMetadata = coreruntime.AnalysisMetadata
 type SessionTaskSnapshot = coreruntime.SessionTaskSnapshot
 type SessionRuntime = coreruntime.SessionRuntime

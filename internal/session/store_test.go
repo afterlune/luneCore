@@ -112,6 +112,60 @@ func TestListPageReturnsNewestNonArchivedSessions(t *testing.T) {
 	}
 }
 
+func TestListIndexReturnsAllMetadataWithoutTranscriptLimit(t *testing.T) {
+	store, _ := openTestStore(t)
+	ctx := context.Background()
+	for i := range 501 {
+		data, err := json.Marshal(struct {
+			Title    string `json:"title"`
+			Archived bool   `json:"archived"`
+			History  string `json:"history"`
+		}{Title: fmt.Sprintf("title-%03d", i), Archived: i%2 == 0, History: strings.Repeat("history ", 100)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := store.Create(ctx, Snapshot{
+			ID: fmt.Sprintf("session-%03d", i), Workspace: "workspace",
+			UpdatedAt: time.Unix(int64(i+1), 0), Data: data,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.Create(ctx, Snapshot{
+		ID: "other-workspace", Workspace: "other", UpdatedAt: time.Unix(999, 0),
+		Data: json.RawMessage(`{"title":"other","archived":false}`),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	all, err := store.ListIndex(ctx, "workspace", true)
+	if err != nil {
+		t.Fatalf("ListIndex including archived: %v", err)
+	}
+	if len(all) != 501 {
+		t.Fatalf("ListIndex returned %d entries, want 501", len(all))
+	}
+	if all[0].ID != "session-500" || all[0].Title != "title-500" || !all[0].Archived || !all[0].UpdatedAt.Equal(time.Unix(501, 0)) {
+		t.Fatalf("newest metadata = %+v", all[0])
+	}
+	if all[len(all)-1].ID != "session-000" || all[len(all)-1].Title != "title-000" || !all[len(all)-1].Archived {
+		t.Fatalf("oldest metadata = %+v", all[len(all)-1])
+	}
+
+	active, err := store.ListIndex(ctx, "workspace", false)
+	if err != nil {
+		t.Fatalf("ListIndex excluding archived: %v", err)
+	}
+	if len(active) != 250 {
+		t.Fatalf("ListIndex returned %d active entries, want 250", len(active))
+	}
+	for _, entry := range active {
+		if entry.Archived {
+			t.Fatalf("archived entry returned in active index: %+v", entry)
+		}
+	}
+}
+
 func TestOpenMigratesVersionThreeDatabaseToRuntimeTables(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sessions.db")
 	db, err := sql.Open("sqlite", path)
