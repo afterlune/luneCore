@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/afterlune/luneCore/internal/agentgraph"
 	"github.com/afterlune/luneCore/internal/model"
 )
 
@@ -36,7 +37,7 @@ func rewoundHistory(raw json.RawMessage, userTurns int) (json.RawMessage, int, e
 	items := responseHistoryItems(&history)
 	var starts []int
 	for index, item := range items {
-		if message, ok := item.(model.InputMessage); ok && message.Role == model.RoleUser {
+		if message, ok := item.(model.InputMessage); ok && message.Role == model.RoleUser && !agentgraph.IsHostContextMessage(message) {
 			starts = append(starts, index)
 		}
 	}

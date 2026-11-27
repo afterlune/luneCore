@@ -10,6 +10,8 @@ import (
 
 var errRunningCommands = errors.New("agent submitted a final answer twice while commands were running")
 
+const runningCommandsReminder = "Commands are still running. Use command_status until they finish, or explicitly command_stop them before submitting a final answer. A command start receipt is not evidence of success."
+
 func (a *Agent) deferCommandCompletion(ctx context.Context, state State) (graph.Transition[State], error) {
 	state.CommandFinalizeAttempts++
 	state.FinalResponse = nil
@@ -30,9 +32,9 @@ func (a *Agent) deferCommandCompletion(ctx context.Context, state State) (graph.
 		}
 		return graph.Wait(state, ExecutionBlockerContinuation, modelNode), nil
 	}
-	message := model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText("Commands are still running. Use command_status until they finish, or explicitly command_stop them before submitting a final answer. A command start receipt is not evidence of success.")}
+	ensureTranscript(&state)
+	message := model.InputMessage{Role: model.RoleUser, Content: model.NewMessageText(runningCommandsReminder)}
 	state.History.Items = append(state.History.Items, message)
-	state.Transcript.Items = append(state.Transcript.Items, message)
 	return a.nextModelTransition(state), nil
 }
 

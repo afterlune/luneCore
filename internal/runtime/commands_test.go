@@ -376,6 +376,13 @@ func TestRunningCommandsBlockCompletionAndSurviveRestartAsRecords(t *testing.T) 
 	if err != nil || completed.Status != TaskCompleted || completed.ExecutionID != result.ExecutionID || probe.calls.Load() != 1 {
 		t.Fatalf("resume=%+v calls=%d error=%v", completed, probe.calls.Load(), err)
 	}
+	reloadedSaved, err := client.GetSession(ctx, saved.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	if strings.Contains(string(reloadedSaved.History), "Commands are still running") {
+		t.Fatalf("saved transcript leaked internal running-command reminder: %s", reloadedSaved.History)
+	}
 	waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	next, err := runtime.WaitTurn(waitCtx, queued.ExecutionID)
@@ -454,4 +461,36 @@ func TestCommandStartupMarksUnfinishedRecordsInterrupted(t *testing.T) {
 	if err != nil || output.Command.Status != CommandInterrupted || output.Output != "saved before crash" {
 		t.Fatalf("restart=%+v error=%v", output, err)
 	}
+}
+
+func TestRunningCommandsReminderExcludedFromRewindAndTranscript(t *testing.T) {
+	legacy := mustMarshalJSON(t, publicmodel.NewResponseInputItems(
+		publicmodel.InputMessage{Role: publicmodel.RoleUser, Content: publicmodel.NewMessageText("first question")},
+		publicmodel.InputMessage{Role: publicmodel.RoleAssistant, Content: publicmodel.NewMessageText("first answer")},
+		publicmodel.InputMessage{Role: publicmodel.RoleUser, Content: publicmodel.NewMessageText("second question")},
+		publicmodel.InputMessage{Role: publicmodel.RoleUser, Content: publicmodel.NewMessageText("Commands are still running. Use command_status until they finish, or explicitly command_stop them before submitting a final answer. A command start receipt is not evidence of success.")},
+		publicmodel.InputMessage{Role: publicmodel.RoleAssistant, Content: publicmodel.NewMessageText("second answer")},
+	))
+	rewound, removed, err := rewoundHistory(legacy, 1)
+	if err != nil {
+		t.Fatalf("rewoundHistory: %v", err)
+	}
+	if removed != 1 {
+		t.Fatalf("removed = %d, want 1", removed)
+	}
+	if strings.Contains(string(rewound), "second question") || strings.Contains(string(rewound), "Commands are still running") {
+		t.Fatalf("rewound history still contains second turn or reminder: %s", rewound)
+	}
+	if !strings.Contains(string(rewound), "first question") {
+		t.Fatalf("rewound history dropped first turn: %s", rewound)
+	}
+}
+
+func mustMarshalJSON(t *testing.T, v any) json.RawMessage {
+	t.Helper()
+	b, err := json.Marshal(v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
 }

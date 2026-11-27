@@ -70,8 +70,19 @@ func hasHostContext(history model.ResponseInput, text string) bool {
 	return false
 }
 
-// IsHostContextMessage classifies model-only housekeeping for compaction;
-// it is never used to derive permissions or discovery state.
+// IsHostContextMessage classifies model-only housekeeping for compaction and transcript
+// sanitization; it is never used to derive permissions or discovery state.
 func IsHostContextMessage(message model.InputMessage) bool {
-	return message.Role == model.RoleUser && message.Content.Text != nil && strings.HasPrefix(*message.Content.Text, "[Lune runtime context]\n")
+	if message.Content.Text == nil {
+		return false
+	}
+	return IsHostContextText(string(message.Role), *message.Content.Text)
+}
+
+// IsHostContextText classifies serialized model-only host context or reminder text.
+func IsHostContextText(role, text string) bool {
+	if role != string(model.RoleUser) {
+		return false
+	}
+	return strings.HasPrefix(text, "[Lune runtime context]\n") || text == runningCommandsReminder
 }

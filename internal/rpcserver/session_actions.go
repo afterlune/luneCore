@@ -8,6 +8,7 @@ import (
 	"time"
 
 	core "github.com/afterlune/luneCore"
+	"github.com/afterlune/luneCore/internal/agentgraph"
 )
 
 type transcriptItem struct {
@@ -142,6 +143,9 @@ func (c *connection) manageSession(method string, raw json.RawMessage) (any, *rp
 				continue
 			}
 			text := chatText(item.Content)
+			if agentgraph.IsHostContextText(item.Role, strings.TrimSpace(text)) {
+				continue
+			}
 			runes := []rune(text)
 			if len(runes) > 120 {
 				text = string(runes[:120]) + "…"
