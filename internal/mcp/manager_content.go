@@ -45,7 +45,10 @@ func (instance *serverInstance) managerLimits() Limits {
 	if instance == nil || instance.owner == nil {
 		return Limits{MaxBinaryBlocks: 5, MaxFileBytes: 10 << 20, MaxTotalBytes: 20 << 20}
 	}
-	return instance.owner.limits
+	instance.owner.mu.Lock()
+	limits := instance.owner.limits
+	instance.owner.mu.Unlock()
+	return limits
 }
 
 func (remote *remoteTool) convertContent(ctx context.Context, blocks []json.RawMessage, depth int, budget *binaryBudget, parts *[]model.ContentPart, transcript *[]model.ContentPart) error {

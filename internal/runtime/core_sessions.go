@@ -27,7 +27,11 @@ func (c *Core) CreateSession(ctx context.Context, history json.RawMessage) (Sess
 	c.sessionOps.Add(1)
 	c.mu.Unlock()
 	defer c.sessionOps.Done()
-	return c.createSession(ctx, history, SessionSettings{ModelProfile: c.models.DefaultModel()})
+	defaultModel := ""
+	if snap := c.currentConfig(); snap != nil && snap.models != nil {
+		defaultModel = snap.models.DefaultModel()
+	}
+	return c.createSession(ctx, history, SessionSettings{ModelProfile: defaultModel})
 }
 
 func (c *Core) createSession(ctx context.Context, history json.RawMessage, settings SessionSettings) (Session, error) {

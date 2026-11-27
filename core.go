@@ -65,6 +65,7 @@ const (
 	EventContextCompaction        = coreruntime.EventContextCompaction
 	EventToolRecoveryRequired     = coreruntime.EventToolRecoveryRequired
 	EventExecutionBlocked         = coreruntime.EventExecutionBlocked
+	EventConfigReloaded           = coreruntime.EventConfigReloaded
 )
 
 const (
@@ -153,6 +154,7 @@ type CommandOutput = coreruntime.CommandOutput
 type CommandReadOptions = coreruntime.CommandReadOptions
 type CommandStatus = coreruntime.CommandStatus
 type Config = coreruntime.Config
+type ConfigReloadResult = coreruntime.ConfigReloadResult
 type ContextCompactionDetails = coreruntime.ContextCompactionDetails
 type CompactionResult = coreruntime.CompactionResult
 type ContextDefaults = coreruntime.ContextDefaults

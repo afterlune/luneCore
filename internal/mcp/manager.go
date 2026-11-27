@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net/url"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"sync"
 
@@ -195,6 +196,109 @@ func (manager *Manager) Disable(name string) error {
 		closeErr = instance.client.Close()
 	}
 	return errors.Join(closeErr, manager.persistEnabled(name, false))
+}
+
+func normalizeLimits(limits Limits) Limits {
+	if limits.MaxBinaryBlocks <= 0 {
+		limits.MaxBinaryBlocks = 5
+	}
+	if limits.MaxFileBytes <= 0 {
+		limits.MaxFileBytes = 10 << 20
+	}
+	if limits.MaxTotalBytes <= 0 {
+		limits.MaxTotalBytes = 20 << 20
+	}
+	return limits
+}
+
+// SetLimits updates MCP binary/attachment limits without restarting connected servers.
+func (manager *Manager) SetLimits(limits Limits) {
+	if manager == nil {
+		return
+	}
+	limits = normalizeLimits(limits)
+	manager.mu.Lock()
+	if !manager.closed {
+		manager.limits = limits
+	}
+	manager.mu.Unlock()
+}
+
+// UpdateServers incrementally applies updated MCP server definitions and attachment
+// limits, leaving unchanged connected servers online.
+func (manager *Manager) UpdateServers(servers map[string]projectconfig.MCPServerConfig, limits Limits) []error {
+	if manager == nil {
+		return nil
+	}
+	limits = normalizeLimits(limits)
+	nextServers := make(map[string]projectconfig.MCPServerConfig, len(servers))
+	for k, v := range servers {
+		nextServers[k] = v
+	}
+
+	manager.mu.Lock()
+	if manager.closed {
+		manager.mu.Unlock()
+		return []error{errors.New("MCP manager is closed")}
+	}
+	manager.limits = limits
+
+	affected := make(map[string]bool)
+	for name, oldCfg := range manager.servers {
+		newCfg, exists := nextServers[name]
+		if !exists || !reflect.DeepEqual(oldCfg, newCfg) {
+			affected[name] = true
+		}
+	}
+	for name := range manager.instances {
+		if _, exists := nextServers[name]; !exists {
+			affected[name] = true
+		}
+	}
+
+	var toClose []*serverInstance
+	var toReconnect []string
+	for name := range affected {
+		manager.generations[name]++
+		if cancel := manager.connecting[name]; cancel != nil {
+			cancel()
+		}
+		if inst := manager.instances[name]; inst != nil {
+			manager.cancelHostOperationsLocked(inst)
+			delete(manager.instances, name)
+			manager.unregister(inst)
+			toClose = append(toClose, inst)
+			if _, exists := nextServers[name]; exists && manager.enabled[name] {
+				toReconnect = append(toReconnect, name)
+			}
+		} else if _, exists := nextServers[name]; exists && manager.enabled[name] {
+			toReconnect = append(toReconnect, name)
+		}
+		if _, exists := nextServers[name]; !exists {
+			delete(manager.enabled, name)
+			delete(manager.errors, name)
+		} else {
+			delete(manager.errors, name)
+		}
+	}
+	manager.servers = nextServers
+	manager.mu.Unlock()
+
+	for _, inst := range toClose {
+		inst.hostOperationsWG.Wait()
+		_ = inst.client.Close()
+	}
+	sort.Strings(toReconnect)
+	var failures []error
+	for _, name := range toReconnect {
+		if err := manager.reconnect(name); err != nil {
+			manager.mu.Lock()
+			manager.errors[name] = err.Error()
+			manager.mu.Unlock()
+			failures = append(failures, fmt.Errorf("reconnect MCP server %q: %w", name, err))
+		}
+	}
+	return failures
 }
 
 func (manager *Manager) persistEnabled(name string, enabled bool) error {

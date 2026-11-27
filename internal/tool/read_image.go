@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 
 	"github.com/afterlune/luneCore/internal/model"
 	publictool "github.com/afterlune/luneCore/tool"
@@ -17,9 +18,10 @@ const readImageSchema = `{"type":"object","properties":{"path":{"type":"string",
 
 // ReadImageTool sends one bounded PNG, JPEG, or WebP image to the model.
 type ReadImageTool struct {
-	Workspace    string
-	MaxFileBytes int64
-	workspace    *workspaceIdentity
+	Workspace       string
+	MaxFileBytes    int64
+	maxFileBytesRef *atomic.Int64
+	workspace       *workspaceIdentity
 }
 
 func (ReadImageTool) Definition() model.FunctionTool {
@@ -63,6 +65,11 @@ func (t ReadImageTool) Run(ctx context.Context, raw json.RawMessage) Result {
 		return Result{Err: errors.New("image path does not refer to a regular file")}
 	}
 	maximum := t.MaxFileBytes
+	if t.maxFileBytesRef != nil {
+		if dynamic := t.maxFileBytesRef.Load(); dynamic > 0 {
+			maximum = dynamic
+		}
+	}
 	if maximum <= 0 {
 		maximum = 10 << 20
 	}

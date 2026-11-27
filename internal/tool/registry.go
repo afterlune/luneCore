@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/afterlune/luneCore/internal/model"
@@ -33,6 +34,7 @@ type Registry struct {
 	// allowLocalCommands mirrors the host's sandbox bypass, so approvals granted
 	// with the OS sandbox active are not reused once it is disabled.
 	allowLocalCommands bool
+	imageMaxBytes      atomic.Int64
 }
 
 // ToolEvent describes a tool call. Arguments are transient so clients can build
@@ -434,4 +436,12 @@ func (r *Registry) CommandToolchainPaths() []string {
 		return append([]string(nil), cmdTool.CommandToolchainPaths...)
 	}
 	return nil
+}
+
+// SetImageMaxBytes updates the maximum file size allowed by read_image.
+func (r *Registry) SetImageMaxBytes(limit int64) {
+	if r == nil {
+		return
+	}
+	r.imageMaxBytes.Store(limit)
 }

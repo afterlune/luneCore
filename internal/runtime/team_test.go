@@ -122,16 +122,17 @@ func TestTeamBranchesRunConcurrentlyAndJoinInAssignmentOrder(t *testing.T) {
 	}
 	defer sessionStore.Close()
 	core := &Core{
-		workspace: t.TempDir(), models: catalog, registry: registry, sessions: sessionStore,
+		workspace: t.TempDir(), registry: registry, sessions: sessionStore,
 		activeTasks: make(map[string]TaskState),
 	}
+	team := &teamExecutor{core: core, models: catalog, tools: registry}
+	core.configState.Store(&runtimeSnapshot{models: catalog, team: team})
 	saved, err := core.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	core.activeTasks[saved.ID] = TaskState{SessionID: saved.ID, TaskID: "team-task", ExecutionID: "team-execution", Status: TaskRunning}
 	core.publishTaskSnapshotLocked()
-	core.team = &teamExecutor{core: core, models: catalog, tools: registry}
 	profile, _ := catalog.Profile("lead")
 	requesterClient, err := catalog.NewClient("lead", registry, nil)
 	if err != nil {
@@ -140,7 +141,7 @@ func TestTeamBranchesRunConcurrentlyAndJoinInAssignmentOrder(t *testing.T) {
 	requester := agentruntime.NewUsageTrackingRequester(requesterClient, "lead", "lead", profile.Provider, profile.Model)
 	agent, err := agentgraph.NewWithOptions(requester, registry, agentgraph.AgentOptions{
 		ID: "lead", Name: "Lead", Profile: "lead", Provider: profile.Provider, Model: profile.Model,
-		Protocol: model.ProtocolResponses, Team: core.team,
+		Protocol: model.ProtocolResponses, Team: team,
 		Execution: agentgraph.ExecutionOptions{MaxTeamChildrenPerAgent: 2, MaxTeamDepth: 1},
 		StreamObserverFor: func(agent agentgraph.State, event model.ModelStreamEvent) {
 			core.onModelStreamForTask(TaskState{}, agent.AgentID, agent.AgentName, agent.ModelProfile, agent.Provider, agent.Model, event)

@@ -38,7 +38,9 @@ func (c *Core) decodeSession(ctx context.Context, snapshot session.Snapshot) (Se
 		saved.History = json.RawMessage(`null`)
 	}
 	if saved.Settings.ModelProfile == "" {
-		saved.Settings.ModelProfile = c.models.DefaultModel()
+		if snap := c.currentConfig(); snap != nil && snap.models != nil {
+			saved.Settings.ModelProfile = snap.models.DefaultModel()
+		}
 	}
 	return saved, nil
 }

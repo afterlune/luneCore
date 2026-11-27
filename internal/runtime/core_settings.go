@@ -44,10 +44,11 @@ func (c *Core) Workspace() string {
 
 // ListModelProfiles returns configured profiles in stable name order.
 func (c *Core) ListModelProfiles() []ModelOption {
-	if c == nil || c.models == nil {
+	snap := c.currentConfig()
+	if snap == nil || snap.models == nil {
 		return nil
 	}
-	profiles := c.models.Profiles()
+	profiles := snap.models.Profiles()
 	options := make([]ModelOption, 0, len(profiles))
 	for id, profile := range profiles {
 		m := profile.Model
@@ -69,11 +70,12 @@ func (c *Core) ListModelProfiles() []ModelOption {
 
 // DefaultModel returns the default configured model name or profile.
 func (c *Core) DefaultModel() string {
-	if c == nil || c.models == nil {
+	snap := c.currentConfig()
+	if snap == nil || snap.models == nil {
 		return ""
 	}
-	defaultProfile := c.models.DefaultModel()
-	if profile, ok := c.models.Profile(defaultProfile); ok && profile.Model != "" {
+	defaultProfile := snap.models.DefaultModel()
+	if profile, ok := snap.models.Profile(defaultProfile); ok && profile.Model != "" {
 		return profile.Model
 	}
 	return defaultProfile
@@ -82,7 +84,8 @@ func (c *Core) DefaultModel() string {
 // ModelForSession returns the configured model name for the session,
 // or the default model if none is explicitly configured on the session.
 func (c *Core) ModelForSession(ctx context.Context, sessionID string) string {
-	if c == nil || c.models == nil {
+	snap := c.currentConfig()
+	if snap == nil || snap.models == nil {
 		return ""
 	}
 	profileName := ""
@@ -92,9 +95,9 @@ func (c *Core) ModelForSession(ctx context.Context, sessionID string) string {
 		}
 	}
 	if profileName == "" {
-		profileName = c.models.DefaultModel()
+		profileName = snap.models.DefaultModel()
 	}
-	if profile, ok := c.models.Profile(profileName); ok && profile.Model != "" {
+	if profile, ok := snap.models.Profile(profileName); ok && profile.Model != "" {
 		return profile.Model
 	}
 	return profileName
@@ -124,19 +127,27 @@ func (c *Core) setSessionSettingsOwned(ctx context.Context, sessionID string, se
 }
 
 func (c *Core) ProjectContextDefaults() ContextDefaults {
-	if c == nil {
+	snap := c.currentConfig()
+	if snap == nil {
 		return ContextDefaults{}
 	}
 	return ContextDefaults{
-		ContextWindow: c.taskDefaults.ContextWindow, ReserveOutputTokens: c.taskDefaults.ReserveOutputTokens,
-		AutoCompact: c.taskDefaults.AutoCompact, AutoCompactThreshold: c.taskDefaults.AutoCompactThreshold,
+		ContextWindow: snap.taskDefaults.ContextWindow, ReserveOutputTokens: snap.taskDefaults.ReserveOutputTokens,
+		AutoCompact: snap.taskDefaults.AutoCompact, AutoCompactThreshold: snap.taskDefaults.AutoCompactThreshold,
 	}
+}
+
+func (c *Core) resolvedAttachmentLimits() model.AttachmentLimits {
+	if snap := c.currentConfig(); snap != nil {
+		return snap.attachmentLimits.Resolved()
+	}
+	return projectconfig.AttachmentLimits{}.Resolved()
 }
 
 func (c *Core) ProjectAttachmentLimits() AttachmentLimits {
 	limits := projectconfig.AttachmentLimits{}
-	if c != nil {
-		limits = c.attachmentLimits
+	if snap := c.currentConfig(); snap != nil {
+		limits = snap.attachmentLimits
 	}
 	if limits.MaxFiles <= 0 {
 		limits.MaxFiles = DefaultAttachmentMaxFiles
@@ -153,10 +164,17 @@ func (c *Core) ProjectAttachmentLimits() AttachmentLimits {
 }
 
 func (c *Core) normalizeSessionModelSettings(settings SessionSettings) (SessionSettings, error) {
-	if settings.ModelProfile == "" {
-		settings.ModelProfile = c.models.DefaultModel()
+	return normalizeSessionModelSettingsWithCatalog(c.currentConfig().models, settings)
+}
+
+func normalizeSessionModelSettingsWithCatalog(models *model.ProviderCatalog, settings SessionSettings) (SessionSettings, error) {
+	if models == nil {
+		return SessionSettings{}, errors.New("model catalog is unavailable")
 	}
-	if _, ok := c.models.Profile(settings.ModelProfile); !ok {
+	if settings.ModelProfile == "" {
+		settings.ModelProfile = models.DefaultModel()
+	}
+	if _, ok := models.Profile(settings.ModelProfile); !ok {
 		return SessionSettings{}, fmt.Errorf("unknown model profile %q", settings.ModelProfile)
 	}
 	effort := strings.TrimSpace(settings.ReasoningEffort)
@@ -171,7 +189,15 @@ func (c *Core) normalizeSessionModelSettings(settings SessionSettings) (SessionS
 }
 
 func (c *Core) normalizeSessionSettings(settings SessionSettings) (SessionSettings, error) {
-	settings, err := c.normalizeSessionModelSettings(settings)
+	snap := c.currentConfig()
+	return normalizeSessionSettingsWithSnapshot(snap, settings)
+}
+
+func normalizeSessionSettingsWithSnapshot(snap *runtimeSnapshot, settings SessionSettings) (SessionSettings, error) {
+	if snap == nil {
+		return SessionSettings{}, errors.New("core configuration snapshot is unavailable")
+	}
+	settings, err := normalizeSessionModelSettingsWithCatalog(snap.models, settings)
 	if err != nil {
 		return SessionSettings{}, err
 	}
@@ -185,14 +211,22 @@ func (c *Core) normalizeSessionSettings(settings SessionSettings) (SessionSettin
 		*settings.AutoCompactThreshold <= 0 || *settings.AutoCompactThreshold > 1) {
 		return SessionSettings{}, errors.New("autoCompactThreshold override must be greater than 0 and at most 1")
 	}
-	if _, err := c.resolveTaskSettings(settings); err != nil {
+	if _, err := resolveTaskSettingsFromDefaults(snap.taskDefaults, settings); err != nil {
 		return SessionSettings{}, err
 	}
 	return settings, nil
 }
 
 func (c *Core) resolveTaskSettings(settings SessionSettings) (taskSettings, error) {
-	effective := c.taskDefaults
+	snap := c.currentConfig()
+	var defaults taskSettings
+	if snap != nil {
+		defaults = snap.taskDefaults
+	}
+	return resolveTaskSettingsFromDefaults(defaults, settings)
+}
+
+func resolveTaskSettingsFromDefaults(effective taskSettings, settings SessionSettings) (taskSettings, error) {
 	if settings.ContextWindow != nil {
 		effective.ContextWindow = *settings.ContextWindow
 	}

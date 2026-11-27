@@ -81,13 +81,10 @@ func TestCoreDefaultsTeamTreeLimits(t *testing.T) {
 	workspace, stateDir := t.TempDir(), t.TempDir()
 	writeSettingsConfig(t, workspace, "http://127.0.0.1:1")
 	client := openSettingsCore(t, workspace, stateDir)
-	if client.executionDefaults.MaxTeamChildrenPerAgent != 0 || client.executionDefaults.MaxTeamDepth != agentgraph.DefaultMaxTeamDepth {
-		t.Fatalf("default team execution limits = %#v", client.executionDefaults)
+	if got := client.ExecutionDefaults(); got.MaxTeamChildrenPerAgent != 0 || got.MaxTeamDepth != agentgraph.DefaultMaxTeamDepth {
+		t.Fatalf("default team execution limits = %#v", got)
 	}
 	defaults := client.ExecutionDefaults()
-	if defaults != client.executionDefaults {
-		t.Fatalf("public execution defaults = %#v, want %#v", defaults, client.executionDefaults)
-	}
 	defaults.MaxTeamChildrenPerAgent = 99
 	if client.ExecutionDefaults().MaxTeamChildrenPerAgent != 0 {
 		t.Fatal("changing the returned defaults mutated Core")
@@ -106,7 +103,7 @@ func TestCoreTeamTreeLimitPrecedence(t *testing.T) {
 	writeProjectSettingsConfig(t, workspace, project.ProjectConfig)
 
 	projectClient := openSettingsCore(t, workspace, t.TempDir())
-	if got := projectClient.executionDefaults; got.MaxTeamChildrenPerAgent != 7 || got.MaxTeamDepth != 3 {
+	if got := projectClient.ExecutionDefaults(); got.MaxTeamChildrenPerAgent != 7 || got.MaxTeamDepth != 3 {
 		t.Fatalf("project team limits = %#v", got)
 	}
 
@@ -122,7 +119,7 @@ func TestCoreTeamTreeLimitPrecedence(t *testing.T) {
 			t.Errorf("close Core: %v", err)
 		}
 	})
-	if got := hostClient.executionDefaults; got.MaxTeamChildrenPerAgent != 2 || got.MaxTeamDepth != 1 {
+	if got := hostClient.ExecutionDefaults(); got.MaxTeamChildrenPerAgent != 2 || got.MaxTeamDepth != 1 {
 		t.Fatalf("host limits did not override project limits: %#v", got)
 	}
 }

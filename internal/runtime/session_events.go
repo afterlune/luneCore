@@ -129,6 +129,24 @@ func (c *Core) notifyEventHub(sessionID string) {
 	}
 }
 
+func (c *Core) publishLiveAll(event Event) {
+	c.eventHubMu.Lock()
+	type target struct {
+		sessionID string
+		hub       *sessionEventHub
+	}
+	targets := make([]target, 0, len(c.eventHubs))
+	for sid, hub := range c.eventHubs {
+		targets = append(targets, target{sessionID: sid, hub: hub})
+	}
+	c.eventHubMu.Unlock()
+	for _, t := range targets {
+		ev := event
+		ev.SessionID = t.sessionID
+		t.hub.publishLive(ev)
+	}
+}
+
 func (c *Core) emit(event Event) {
 	if event.SessionID == "" {
 		return

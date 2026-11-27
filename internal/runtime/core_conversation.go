@@ -57,16 +57,20 @@ func (c *Core) compactOwned(ctx context.Context, sessionID string) (agentgraph.C
 		}
 		transcript = &decoded
 	}
-	settings, err := c.normalizeSessionSettings(saved.Settings)
+	snap := c.currentConfig()
+	if snap == nil || snap.models == nil {
+		return agentgraph.CompactionResult{}, errors.New("core configuration snapshot is unavailable")
+	}
+	settings, err := normalizeSessionSettingsWithSnapshot(snap, saved.Settings)
 	if err != nil {
 		return agentgraph.CompactionResult{}, err
 	}
-	effective, err := c.resolveTaskSettings(settings)
+	effective, err := resolveTaskSettingsFromDefaults(snap.taskDefaults, settings)
 	if err != nil {
 		return agentgraph.CompactionResult{}, err
 	}
-	profile, _ := c.models.Profile(settings.ModelProfile)
-	providerConfig, ok := c.models.ProviderConfig(profile.Provider)
+	profile, _ := snap.models.Profile(settings.ModelProfile)
+	providerConfig, ok := snap.models.ProviderConfig(profile.Provider)
 	if !ok {
 		return agentgraph.CompactionResult{}, fmt.Errorf("provider %q is not configured", profile.Provider)
 	}
@@ -80,7 +84,7 @@ func (c *Core) compactOwned(ctx context.Context, sessionID string) (agentgraph.C
 		modelContext = &decoded
 	}
 	compactOptions := agentgraph.TaskOptions{
-		Execution:       agentExecutionOptions(c.executionDefaults),
+		Execution:       agentExecutionOptions(snap.executionDefaults),
 		ReasoningEffort: settings.ReasoningEffort, Goal: effective.Goal,
 		ContextWindow: effective.ContextWindow, ReserveOutputTokens: effective.ReserveOutputTokens,
 		AutoCompact: effective.AutoCompact, AutoCompactThreshold: effective.AutoCompactThreshold,
@@ -100,7 +104,7 @@ func (c *Core) compactOwned(ctx context.Context, sessionID string) (agentgraph.C
 	ctx = publictool.WithCallIdentity(ctx, publictool.CallIdentity{
 		SessionID: sessionID, TaskID: taskState.TaskID, RunID: c.runtime.CheckpointID(sessionID), AgentID: "lead",
 	})
-	taskRuntime, _, err := c.configureRuntime(settings.ModelProfile, settings.ReasoningEffort, taskState)
+	taskRuntime, _, err := c.configureRuntimeWithSnapshot(snap, settings.ModelProfile, settings.ReasoningEffort, taskState)
 	if err != nil {
 		c.finishTaskState(sessionID, TaskFailed, err)
 		return agentgraph.CompactionResult{}, err

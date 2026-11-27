@@ -160,7 +160,11 @@ func (r *SessionRuntime) mcpHostContext(ctx context.Context) (*mcp.Manager, cont
 	}
 	ctx = publictool.WithCallIdentity(ctx, publictool.CallIdentity{SessionID: r.sessionID, AgentID: "host"})
 	ctx = model.WithAgentID(ctx, "host")
-	profile, configured := r.core.models.Profile(session.Settings.ModelProfile)
+	var profile model.ModelProfile
+	var configured bool
+	if snap := r.core.currentConfig(); snap != nil && snap.models != nil {
+		profile, configured = snap.models.Profile(session.Settings.ModelProfile)
+	}
 	ctx = model.WithInputAudioSupport(ctx, configured && profile.SupportsInputAudio)
 	return r.core.mcpManager, ctx, nil
 }

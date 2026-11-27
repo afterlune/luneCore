@@ -120,7 +120,7 @@ func (c *Core) run(ctx context.Context, sessionID string, maxRounds int, modelOv
 			return failedRun(recoveryErr)
 		}
 	}
-	taskRuntime, _, err := c.configureRuntime(settings.ModelProfile, settings.ReasoningEffort, taskState)
+	taskRuntime, _, err := c.configureRuntimeWithSnapshot(setup.config, settings.ModelProfile, settings.ReasoningEffort, taskState)
 	if err != nil {
 		return failedRun(err)
 	}

@@ -42,6 +42,7 @@ const (
 	EventContextCompaction        EventKind = "context_compaction"
 	EventToolRecoveryRequired     EventKind = "tool_recovery_required"
 	EventExecutionBlocked         EventKind = "execution_blocked"
+	EventConfigReloaded           EventKind = "config_reloaded"
 )
 
 // Event is a structured runtime notification. Arguments and response payloads

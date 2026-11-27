@@ -95,7 +95,7 @@ func TestDeepSeekMCPInputProtocolsSmoke(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 	for _, profileID := range []string{"deepseek-responses", "deepseek-anthropic"} {
-		provider, err := client.models.NewClient(profileID, client.registry, client.logger)
+		provider, err := client.currentConfig().models.NewClient(profileID, client.registry, client.logger)
 		if err != nil {
 			t.Fatalf("create %s client: %v", profileID, err)
 		}

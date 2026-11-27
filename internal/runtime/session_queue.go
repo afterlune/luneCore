@@ -76,7 +76,11 @@ func (c *Core) submitTurnAdmittedWithIDAndHistoryAndAnalysis(ctx context.Context
 	if err != nil {
 		return TurnSubmission{}, nil, err
 	}
-	if err := model.ValidateInputAttachments(input, c.attachmentLimits.Resolved()); err != nil {
+	snap := c.currentConfig()
+	if snap == nil || snap.models == nil {
+		return TurnSubmission{}, nil, errors.New("core configuration snapshot is unavailable")
+	}
+	if err := model.ValidateInputAttachments(input, snap.attachmentLimits.Resolved()); err != nil {
 		return TurnSubmission{}, nil, err
 	}
 	if request.MaxToolRounds < 0 {
@@ -94,7 +98,7 @@ func (c *Core) submitTurnAdmittedWithIDAndHistoryAndAnalysis(ctx context.Context
 		return TurnSubmission{}, nil, err
 	}
 	if request.RequireImageProfile && len(model.TaskInputImages(input)) != 0 {
-		profile, ok := c.models.Profile(saved.Settings.ModelProfile)
+		profile, ok := snap.models.Profile(saved.Settings.ModelProfile)
 		if !ok || !profile.SupportsInputImages || (request.Model != "" && request.Model != profile.Model) {
 			return TurnSubmission{}, nil, fmt.Errorf("model profile %q is not configured for this image input", saved.Settings.ModelProfile)
 		}

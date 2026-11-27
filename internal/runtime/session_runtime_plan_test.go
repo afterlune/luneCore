@@ -47,7 +47,7 @@ func TestPlanModeHandoffImplementsInSameContextWithScopedPermission(t *testing.T
 	if err := client.SetPermissionMode(PermissionWorkspace); err != nil {
 		t.Fatal(err)
 	}
-	client.executionDefaults = ExecutionOptions{MaxSteps: 20}
+	client.setExecutionDefaultsForTest(ExecutionOptions{MaxSteps: 20})
 	saved, err := client.CreateSession(context.Background(), json.RawMessage("null"))
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestPlanModeHandoffImplementsInSameContextWithScopedPermission(t *testing.T
 	if planResult.ProposedPlan.Text != "Write the requested workspace file." {
 		t.Fatalf("proposed plan = %q", planResult.ProposedPlan.Text)
 	}
-	client.executionDefaults = ExecutionOptions{MaxSteps: 1}
+	client.setExecutionDefaultsForTest(ExecutionOptions{MaxSteps: 1})
 	provider.mu.Lock()
 	planningRequest := provider.seenRequests[0]
 	provider.mu.Unlock()

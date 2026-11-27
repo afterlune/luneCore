@@ -40,6 +40,13 @@ func NewDefaultRegistry(workspace string, options ...RegistryOptions) (*Registry
 		_ = workspaceID.closeRoot()
 		return nil, err
 	}
+	registry.SetImageMaxBytes(registryOptions.ImageMaxBytes)
+	registry.mu.Lock()
+	if imgTool, ok := registry.tools["read_image"].(ReadImageTool); ok {
+		imgTool.maxFileBytesRef = &registry.imageMaxBytes
+		registry.tools["read_image"] = imgTool
+	}
+	registry.mu.Unlock()
 	for _, registration := range registryOptions.Tools {
 		if err := registry.Register(registration); err != nil {
 			_ = registry.Close()

@@ -486,7 +486,7 @@ func (r *SessionRuntime) ReplaceQueuedTurnInput(ctx context.Context, executionID
 	if err != nil {
 		return TurnSubmission{}, nil, err
 	}
-	if err := model.ValidateInputAttachments(responseInput, r.core.attachmentLimits.Resolved()); err != nil {
+	if err := model.ValidateInputAttachments(responseInput, r.core.resolvedAttachmentLimits()); err != nil {
 		return TurnSubmission{}, nil, err
 	}
 

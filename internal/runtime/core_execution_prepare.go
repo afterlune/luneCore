@@ -27,6 +27,7 @@ type taskRunConfig struct {
 }
 
 type taskRunSetup struct {
+	config         *runtimeSnapshot
 	saved          Session
 	settings       SessionSettings
 	profile        model.ModelProfile
@@ -38,6 +39,10 @@ type taskRunSetup struct {
 }
 
 func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskRunSetup, error) {
+	snap := c.currentConfig()
+	if snap == nil || snap.models == nil {
+		return taskRunSetup{}, errors.New("core configuration snapshot is unavailable")
+	}
 	request.modelOverride = strings.TrimSpace(request.modelOverride)
 	saved, err := c.GetSession(ctx, request.sessionID)
 	if err != nil {
@@ -62,11 +67,11 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 		}
 		settings.ReasoningEffort = pendingState.ReasoningEffort
 	}
-	profile, ok := c.models.Profile(settings.ModelProfile)
+	profile, ok := snap.models.Profile(settings.ModelProfile)
 	if !ok {
 		return taskRunSetup{}, fmt.Errorf("session model profile %q is not configured", settings.ModelProfile)
 	}
-	providerConfig, ok := c.models.ProviderConfig(profile.Provider)
+	providerConfig, ok := snap.models.ProviderConfig(profile.Provider)
 	if !ok {
 		return taskRunSetup{}, fmt.Errorf("provider %q is not configured", profile.Provider)
 	}
@@ -78,23 +83,23 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 		return taskRunSetup{}, fmt.Errorf("paused task provider protocol or compaction capability changed; it remains pinned to %q with serverCompaction=%t", pendingState.Protocol, pendingState.ServerCompaction)
 	}
 	if request.resume {
-		settings, err = c.normalizeSessionModelSettings(settings)
+		settings, err = normalizeSessionModelSettingsWithCatalog(snap.models, settings)
 	} else {
-		settings, err = c.normalizeSessionSettings(settings)
+		settings, err = normalizeSessionSettingsWithSnapshot(snap, settings)
 	}
 	if err != nil {
 		return taskRunSetup{}, err
 	}
-	profile, _ = c.models.Profile(settings.ModelProfile)
+	profile, _ = snap.models.Profile(settings.ModelProfile)
 	var taskOptions agentgraph.TaskOptions
 	if request.resume {
 		taskOptions = taskOptionsFromState(pendingState)
 		if request.executionOverride {
-			taskOptions.Execution = agentExecutionOptions(mergeTeamExecutionDefaults(c.executionDefaults, request.executionOptions))
+			taskOptions.Execution = agentExecutionOptions(mergeTeamExecutionDefaults(snap.executionDefaults, request.executionOptions))
 		}
 		request.maxRounds = taskOptions.MaxToolRounds
 	} else {
-		effective, resolveErr := c.resolveTaskSettings(settings)
+		effective, resolveErr := resolveTaskSettingsFromDefaults(snap.taskDefaults, settings)
 		if resolveErr != nil {
 			return taskRunSetup{}, resolveErr
 		}
@@ -107,12 +112,12 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 		taskOptions = agentgraph.TaskOptions{
 			MaxToolRounds: request.maxRounds, ReasoningEffort: settings.ReasoningEffort,
 			PlanMode: request.planMode,
-			Model:    request.modelOverride, PersonalInstructions: c.personalInstructions,
+			Model:    request.modelOverride, PersonalInstructions: snap.personalInstructions,
 			Goal: effective.Goal, ContextWindow: effective.ContextWindow,
 			ReserveOutputTokens: effective.ReserveOutputTokens, AutoCompact: effective.AutoCompact,
 			AutoCompactThreshold:   effective.AutoCompactThreshold,
 			LastInputTokens:        latestLeadInputTokens(saved.UsageRequests, profile.Provider, settings.ModelProfile),
-			Execution:              agentExecutionOptions(mergeExecutionOptions(c.executionDefaults, request.executionOptions)),
+			Execution:              agentExecutionOptions(mergeExecutionOptions(snap.executionDefaults, request.executionOptions)),
 			PermissionOverride:     request.permissionOverride,
 			PlanAuthorization:      request.authorization,
 			NoInteractiveDecisions: request.noInteractiveDecisions,
@@ -176,5 +181,5 @@ func (c *Core) prepareTaskRun(ctx context.Context, request taskRunConfig) (taskR
 		}
 		modelContext = &decoded
 	}
-	return taskRunSetup{saved: saved, settings: settings, profile: profile, effectiveModel: effectiveModel, taskOptions: taskOptions, transcript: transcript, modelContext: modelContext, contextKey: contextKey}, nil
+	return taskRunSetup{config: snap, saved: saved, settings: settings, profile: profile, effectiveModel: effectiveModel, taskOptions: taskOptions, transcript: transcript, modelContext: modelContext, contextKey: contextKey}, nil
 }

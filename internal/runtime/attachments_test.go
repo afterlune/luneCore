@@ -118,7 +118,8 @@ func TestRunTaskRejectsAttachmentsBeforeStartingWhenOverLimit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	client := &Core{attachmentLimits: projectconfig.AttachmentLimits{MaxFiles: 1}, active: TaskState{Status: TaskIdle}}
+	client := &Core{active: TaskState{Status: TaskIdle}}
+	client.setAttachmentLimitsForTest(projectconfig.AttachmentLimits{MaxFiles: 1})
 	_, err = client.RunTask(context.Background(), TaskRequest{SessionID: "not-started", Input: TaskInput{Raw: input}})
 	if err == nil || !strings.Contains(err.Error(), "attachments.maxFiles") {
 		t.Fatalf("RunTask validation error = %v, want attachment limit error", err)
@@ -137,14 +138,16 @@ func TestProjectAttachmentLimitsExposeEffectiveProjectValues(t *testing.T) {
 	if defaults != wantDefaults {
 		t.Fatalf("default ProjectAttachmentLimits() = %#v, want %#v", defaults, wantDefaults)
 	}
-	client := &Core{attachmentLimits: projectconfig.AttachmentLimits{
+	client := &Core{}
+	client.setAttachmentLimitsForTest(projectconfig.AttachmentLimits{
 		MaxFiles: 3, MaxFileBytes: 4 << 20, MaxTotalBytes: 7 << 20,
-	}}
+	})
 	want := AttachmentLimits{MaxFiles: 3, MaxFileBytes: 4 << 20, MaxTotalBytes: 7 << 20}
 	if got := client.ProjectAttachmentLimits(); got != want {
 		t.Fatalf("ProjectAttachmentLimits() = %#v, want %#v", got, want)
 	}
-	partial := &Core{attachmentLimits: projectconfig.AttachmentLimits{MaxFiles: 3}}
+	partial := &Core{}
+	partial.setAttachmentLimitsForTest(projectconfig.AttachmentLimits{MaxFiles: 3})
 	wantPartial := AttachmentLimits{
 		MaxFiles: 3, MaxFileBytes: DefaultAttachmentMaxFileBytes, MaxTotalBytes: DefaultAttachmentMaxTotalBytes,
 	}

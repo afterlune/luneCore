@@ -352,9 +352,11 @@ func (c *Core) onAgentUsageForTask(state TaskState, usage model.ResponseUsage, a
 	c.accountGoalUsage(state, value, agentID, estimatedInputTokens, trace)
 	contextWindow := state.ContextWindow
 	if agentID != "" && agentID != "lead" {
-		if workerProfile, ok := c.models.Profile(profile); ok {
-			if workerProfile.ContextWindow > 0 {
-				contextWindow = workerProfile.ContextWindow
+		if snap := c.currentConfig(); snap != nil && snap.models != nil {
+			if workerProfile, ok := snap.models.Profile(profile); ok {
+				if workerProfile.ContextWindow > 0 {
+					contextWindow = workerProfile.ContextWindow
+				}
 			}
 		}
 	}
@@ -427,8 +429,8 @@ func (c *Core) autoReviewProfileID(sessionID string) string {
 			return state.ModelProfile
 		}
 	}
-	if c.models != nil {
-		return c.models.DefaultModel()
+	if snap := c.currentConfig(); snap != nil && snap.models != nil {
+		return snap.models.DefaultModel()
 	}
 	return ""
 }
@@ -440,7 +442,8 @@ type autoReviewModelOutput struct {
 }
 
 func (c *Core) autoReviewToolRequest(ctx context.Context, request tool.PermissionRequest) (tool.AutoReviewResult, error) {
-	if c == nil || ctx == nil || c.models == nil {
+	snap := c.currentConfig()
+	if c == nil || ctx == nil || snap == nil || snap.models == nil {
 		return tool.AutoReviewResult{Decision: tool.AutoReviewAskUser, Reason: "auto-review model client is unavailable"}, nil
 	}
 	identity := publictool.CallIdentityFromContext(ctx)
@@ -448,7 +451,7 @@ func (c *Core) autoReviewToolRequest(ctx context.Context, request tool.Permissio
 	if profileID == "" {
 		return tool.AutoReviewResult{Decision: tool.AutoReviewAskUser, Reason: "model profile for auto-review is unconfigured"}, nil
 	}
-	client, err := c.models.NewClient(profileID, c.registry, c.logger)
+	client, err := snap.models.NewClient(profileID, c.registry, c.logger)
 	if err != nil {
 		c.logger.Warn("auto-review client creation failed", "error", err)
 		return tool.AutoReviewResult{Decision: tool.AutoReviewAskUser, Reason: fmt.Sprintf("create auto-review client: %v", err)}, nil

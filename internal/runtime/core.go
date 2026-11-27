@@ -81,23 +81,36 @@ type MemoryConfig struct {
 	Disabled bool
 }
 
-type Core struct {
-	commands             *commandruntime.Manager
-	logger               *slog.Logger
-	workspace            string
-	stateDir             string
-	registry             *tool.Registry
+type runtimeSnapshot struct {
 	models               *model.ProviderCatalog
-	taskDefaults         taskSettings
-	attachmentLimits     projectconfig.AttachmentLimits
 	team                 *teamExecutor
-	runtime              *agentruntime.Responder
-	mcpManager           *mcp.Manager
-	checkpoints          *sqlite.Store[agentgraph.State]
-	sessions             *session.Store
+	attachmentLimits     projectconfig.AttachmentLimits
+	taskDefaults         taskSettings
 	executionDefaults    ExecutionOptions
-	callbackLimiter      *graph.Limiter
 	personalInstructions string
+	mcpServers           map[string]projectconfig.MCPServerConfig
+	memoryDisabled       bool
+	modelConfig          *publicmodel.Config
+	resolvedModelConfig  model.Config
+	modelProviders       map[string]publicmodel.Provider
+	maxParallelAgents    int
+	hostExecution        ExecutionOptions
+}
+
+type Core struct {
+	commands    *commandruntime.Manager
+	logger      *slog.Logger
+	workspace   string
+	stateDir    string
+	registry    *tool.Registry
+	runtime     *agentruntime.Responder
+	configState atomic.Pointer[runtimeSnapshot]
+	mcpManager  *mcp.Manager
+	checkpoints *sqlite.Store[agentgraph.State]
+	sessions    *session.Store
+	// configMu serializes ReloadConfig and initial snapshot transitions.
+	configMu        sync.Mutex
+	callbackLimiter *graph.Limiter
 	// liveExecutions keeps warm Graph handles for Advance; checkpoints remain
 	// the recovery source after process restart.
 	liveExecutions map[string]*graph.Execution[agentgraph.State]
@@ -230,7 +243,8 @@ func New(config Config) (_ *Core, err error) {
 			_ = registry.Close()
 		}
 	}()
-	models, err := model.NewProviderCatalogWithHostProviders(projectConfig.ModelConfig(), config.ModelProviders)
+	resolvedModelConfig := projectConfig.ModelConfig()
+	models, err := model.NewProviderCatalogWithHostProviders(resolvedModelConfig, config.ModelProviders)
 	if err != nil {
 		return nil, err
 	}
@@ -268,22 +282,14 @@ func New(config Config) (_ *Core, err error) {
 		executionDefaults.MaxTeamDepth = agentgraph.DefaultMaxTeamDepth
 	}
 	c := &Core{
-		logger:           logger,
-		workspace:        workspace,
-		stateDir:         stateDir,
-		stateLock:        stateLock,
-		registry:         registry,
-		models:           models,
-		attachmentLimits: projectConfig.Attachments,
-		taskDefaults: taskSettings{
-			ContextWindow: projectConfig.Runtime.ContextWindow, ReserveOutputTokens: projectConfig.Runtime.ReserveOutputTokens,
-			AutoCompact: projectConfig.Runtime.AutoCompact, AutoCompactThreshold: projectConfig.Runtime.AutoCompactThreshold,
-		},
+		logger:                logger,
+		workspace:             workspace,
+		stateDir:              stateDir,
+		stateLock:             stateLock,
+		registry:              registry,
 		checkpoints:           checkpoints,
 		sessions:              sessions,
-		executionDefaults:     executionDefaults,
 		callbackLimiter:       callbackLimiter,
-		personalInstructions:  config.PersonalInstructions,
 		liveExecutions:        make(map[string]*graph.Execution[agentgraph.State]),
 		active:                TaskState{Status: TaskIdle},
 		activeTasks:           make(map[string]TaskState),
@@ -304,22 +310,28 @@ func New(config Config) (_ *Core, err error) {
 	if err := c.configureCommands(config); err != nil {
 		return nil, err
 	}
-	attachmentLimits := c.ProjectAttachmentLimits()
-	mcpServers := projectConfig.MCPServers
-	if config.Memory.Disabled && len(mcpServers) > 0 {
-		if _, exists := mcpServers["engram"]; exists {
-			cloned := make(map[string]projectconfig.MCPServerConfig, len(mcpServers)-1)
-			for name, server := range mcpServers {
-				if name != "engram" {
-					cloned[name] = server
-				}
-			}
-			mcpServers = cloned
-		}
-	}
+	attachmentLimits := projectConfig.Attachments
+	mcpServers := resolveMCPServers(projectConfig.MCPServers, config.Memory.Disabled)
+	team := &teamExecutor{core: c, models: models, tools: registry}
+	c.configState.Store(&runtimeSnapshot{
+		models:               models,
+		team:                 team,
+		attachmentLimits:     attachmentLimits,
+		taskDefaults:         taskSettings{ContextWindow: projectConfig.Runtime.ContextWindow, ReserveOutputTokens: projectConfig.Runtime.ReserveOutputTokens, AutoCompact: projectConfig.Runtime.AutoCompact, AutoCompactThreshold: projectConfig.Runtime.AutoCompactThreshold},
+		executionDefaults:    executionDefaults,
+		personalInstructions: config.PersonalInstructions,
+		mcpServers:           cloneMCPServerMap(mcpServers),
+		memoryDisabled:       config.Memory.Disabled,
+		modelConfig:          config.ModelConfig,
+		resolvedModelConfig:  resolvedModelConfig,
+		modelProviders:       config.ModelProviders,
+		maxParallelAgents:    config.MaxParallelAgents,
+		hostExecution:        config.Execution,
+	})
+	resolvedLimits := c.ProjectAttachmentLimits()
 	mcpManager, err := mcp.NewManager(mcp.Options{
 		Workspace: workspace, StateDir: stateDir, Servers: mcpServers, Registry: registry,
-		Limits:             mcp.Limits{MaxBinaryBlocks: attachmentLimits.MaxFiles, MaxFileBytes: attachmentLimits.MaxFileBytes, MaxTotalBytes: attachmentLimits.MaxTotalBytes},
+		Limits:             mcp.Limits{MaxBinaryBlocks: resolvedLimits.MaxFiles, MaxFileBytes: resolvedLimits.MaxFileBytes, MaxTotalBytes: resolvedLimits.MaxTotalBytes},
 		Logger:             logger,
 		RequestInteraction: c.requestUserInteraction,
 		RestoreEnabled:     config.RestoreEnabledMCP,
@@ -341,8 +353,6 @@ func New(config Config) (_ *Core, err error) {
 			c.logger.Warn("could not restore enabled MCP server", "error_type", fmt.Sprintf("%T", restoreErr))
 		}
 	}
-	team := &teamExecutor{core: c, models: models, tools: registry}
-	c.team = team
 	c.runtime = agentruntime.NewResponder(checkpoints, callbackLimiter, c.logger)
 	if err := c.registerGoalTools(); err != nil {
 		return nil, err
@@ -356,21 +366,68 @@ func New(config Config) (_ *Core, err error) {
 	return c, nil
 }
 
+// currentConfig returns the active immutable runtime configuration snapshot.
+func (c *Core) currentConfig() *runtimeSnapshot {
+	if c == nil {
+		return nil
+	}
+	return c.configState.Load()
+}
+
+func resolveMCPServers(servers map[string]projectconfig.MCPServerConfig, memoryDisabled bool) map[string]projectconfig.MCPServerConfig {
+	if !memoryDisabled || len(servers) == 0 {
+		return servers
+	}
+	if _, exists := servers["engram"]; !exists {
+		return servers
+	}
+	cloned := make(map[string]projectconfig.MCPServerConfig, len(servers)-1)
+	for name, server := range servers {
+		if name != "engram" {
+			cloned[name] = server
+		}
+	}
+	return cloned
+}
+
+func cloneMCPServerMap(servers map[string]projectconfig.MCPServerConfig) map[string]projectconfig.MCPServerConfig {
+	if len(servers) == 0 {
+		return nil
+	}
+	cloned := make(map[string]projectconfig.MCPServerConfig, len(servers))
+	for k, v := range servers {
+		if len(v.Args) > 0 {
+			v.Args = append([]string(nil), v.Args...)
+		}
+		if len(v.Env) > 0 {
+			env := make(map[string]string, len(v.Env))
+			for ek, ev := range v.Env {
+				env[ek] = ev
+			}
+			v.Env = env
+		}
+		cloned[k] = v
+	}
+	return cloned
+}
+
 // MaxParallelAgents returns the maximum parallel agent limit for team delegations.
 func (c *Core) MaxParallelAgents() int {
-	if c.team == nil {
+	snap := c.currentConfig()
+	if snap == nil || snap.team == nil {
 		return 0
 	}
-	return c.team.MaxParallelAgents()
+	return snap.team.MaxParallelAgents()
 }
 
 // ExecutionDefaults returns the resolved host and project execution limits.
 // A running or paused task keeps its own effective limits in TaskState.Execution.
 func (c *Core) ExecutionDefaults() ExecutionOptions {
-	if c == nil {
+	snap := c.currentConfig()
+	if snap == nil {
 		return ExecutionOptions{}
 	}
-	return c.executionDefaults
+	return snap.executionDefaults
 }
 
 func (c *Core) SetCommandToolchainPaths(paths []string) error {

@@ -242,7 +242,7 @@ func (c *Core) runSynchronous(ctx context.Context, request TaskRequest) (TaskRes
 	if err != nil {
 		return TaskResult{}, err
 	}
-	if err := model.ValidateInputAttachments(input, c.attachmentLimits.Resolved()); err != nil {
+	if err := model.ValidateInputAttachments(input, c.resolvedAttachmentLimits()); err != nil {
 		return TaskResult{}, err
 	}
 	runtime, err := c.OpenSessionRuntime(ctx, request.SessionID)

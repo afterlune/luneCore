@@ -256,12 +256,14 @@ func (c *Core) completeQueuedTurnFromCheckpoint(ctx context.Context, queued sess
 	}
 	contextKey = saved.ModelContextKey
 	if state != nil && state.Provider != "" {
-		if providerConfig, ok := c.models.ProviderConfig(state.Provider); ok {
-			effectiveModel := state.Model
-			if state.ModelOverride != "" {
-				effectiveModel = state.ModelOverride
+		if snap := c.currentConfig(); snap != nil && snap.models != nil {
+			if providerConfig, ok := snap.models.ProviderConfig(state.Provider); ok {
+				effectiveModel := state.Model
+				if state.ModelOverride != "" {
+					effectiveModel = state.ModelOverride
+				}
+				contextKey = modelContextKey(state.Provider, effectiveModel, providerConfig)
 			}
-			contextKey = modelContextKey(state.Provider, effectiveModel, providerConfig)
 		}
 	}
 	if state != nil && state.TaskError != "" {

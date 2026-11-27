@@ -12,16 +12,22 @@ import (
 	publictool "github.com/afterlune/luneCore/tool"
 )
 
-func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Agent, *agentruntime.UsageTrackingRequester, model.ModelProfile, error) {
-	profile, ok := c.models.Profile(profileID)
+func (c *Core) buildAgent(snap *runtimeSnapshot, profileID string, taskState TaskState) (*agentgraph.Agent, *agentruntime.UsageTrackingRequester, model.ModelProfile, error) {
+	if snap == nil {
+		snap = c.currentConfig()
+	}
+	if snap == nil || snap.models == nil {
+		return nil, nil, model.ModelProfile{}, errors.New("core configuration snapshot is unavailable")
+	}
+	profile, ok := snap.models.Profile(profileID)
 	if !ok {
 		return nil, nil, model.ModelProfile{}, fmt.Errorf("unknown model profile %q", profileID)
 	}
-	providerConfig, ok := c.models.ProviderConfig(profile.Provider)
+	providerConfig, ok := snap.models.ProviderConfig(profile.Provider)
 	if !ok {
 		return nil, nil, model.ModelProfile{}, fmt.Errorf("unknown provider %q for model profile %q", profile.Provider, profileID)
 	}
-	client, err := c.models.NewClient(profileID, c.registry, c.logger)
+	client, err := snap.models.NewClient(profileID, c.registry, c.logger)
 	if err != nil {
 		return nil, nil, model.ModelProfile{}, err
 	}
@@ -48,7 +54,7 @@ func (c *Core) buildAgent(profileID string, taskState TaskState) (*agentgraph.Ag
 		},
 		Protocol: providerConfig.Protocol, ServerCompaction: providerConfig.ServerCompaction,
 		SupportsInputAudio: profile.SupportsInputAudio, Execution: agentExecutionOptions(taskState.Execution),
-		Team:    c.team,
+		Team:    snap.team,
 		AskUser: true,
 		ModelObserver: func(state agentgraph.State, stage string, failure publicmodel.Failure) {
 			c.onModelRecoveryEvent(taskState.SessionID, state, stage, failure)
@@ -134,7 +140,11 @@ func (c *Core) onExecutionBlocker(ctx context.Context, state agentgraph.State, b
 }
 
 func (c *Core) configureRuntime(profileID, reasoningEffort string, taskState TaskState) (*agentruntime.Responder, model.ModelProfile, error) {
-	agent, requester, profile, err := c.buildAgent(profileID, taskState)
+	return c.configureRuntimeWithSnapshot(c.currentConfig(), profileID, reasoningEffort, taskState)
+}
+
+func (c *Core) configureRuntimeWithSnapshot(snap *runtimeSnapshot, profileID, reasoningEffort string, taskState TaskState) (*agentruntime.Responder, model.ModelProfile, error) {
+	agent, requester, profile, err := c.buildAgent(snap, profileID, taskState)
 	if err != nil {
 		return nil, model.ModelProfile{}, err
 	}
